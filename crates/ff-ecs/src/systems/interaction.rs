@@ -3,7 +3,8 @@
 
 use crate::components::identity::{NetworkId, Owner};
 use crate::components::physics::{Collider, Grounded};
-use crate::components::plant::{GrowthStage, Harvestable, Plant};
+use crate::components::plant::{FellingPhase, GrowthStage, Harvestable, Plant, TreeFelling};
+use crate::components::player::PlayerSkills;
 use crate::components::transform::{Position, Rotation, Velocity};
 use crate::Resources;
 use ff_common::{EntityId, PlayerId, VoxelMaterial};
@@ -149,6 +150,79 @@ pub fn process_action(
             let [x, y, z] = *position;
             terrain.set(x, y, z, VoxelMaterial::Mulch);
             ActionResult::Success("Added mulch".into())
+        }
+
+        ActionKind::CutTree { entity_id } => {
+            let mut target_entity = None;
+            let mut tree_pos = Vec3::ZERO;
+            let mut species_id = 0u16;
+
+            for (entity, (net_id, pos, plant)) in
+                world.query_mut::<(&NetworkId, &Position, &Plant)>()
+            {
+                if net_id.0 == *entity_id {
+                    let dist = (pos.0 - player_pos).length();
+                    if dist > 6.0 {
+                        return ActionResult::Failure("Too far away".into());
+                    }
+
+                    /*if plant.growth_stage != GrowthStage::Mature
+                        && plant.growth_stage != GrowthStage::Fruiting
+                    {
+                        return ActionResult::Failure("Tree not mature enough to cut".into());
+                    }*/
+                    target_entity = Some(entity);
+                    tree_pos = pos.0;
+                    species_id = plant.species_id;
+                    break;
+                }
+            }
+
+            let Some(te) = target_entity else {
+                return ActionResult::Failure("No tree found".into());
+            };
+
+            if world.get::<&TreeFelling>(te).is_ok() {
+                return ActionResult::Failure("Already being cut".into());
+            }
+
+            let species = resources.species_db.get_plant(species_id);
+            let (height, density) = match species {
+                Some(s) => (s.max_height_voxels as f32, if s.id == 103 { 0.7 } else { 1.0 }),
+                None => (8.0, 1.0),
+            };
+
+            let dir_to_player = Vec3::new(
+                player_pos.x - tree_pos.x,
+                0.0,
+                player_pos.z - tree_pos.z,
+            );
+            let len = dir_to_player.length().max(0.01);
+            let fall_away = [-dir_to_player.x / len, -dir_to_player.z / len];
+
+            let wind = resources.weather.wind_speed;
+            let stability = if wind > 10.0 { 0.6 } else { 0.9 };
+            let trunk = height * 0.08 + 0.3;
+            let cut_time = trunk * density * 20.0;
+
+            let felling = TreeFelling {
+                phase: FellingPhase::Cutting,
+                cutter_entity_id: player_entity.id() as u64,
+                progress: 0.0,
+                cut_threshold: cut_time,
+                trunk_diameter: trunk,
+                tree_height: height,
+                wood_density: density,
+                root_stability: stability,
+                fall_direction: fall_away,
+                hazard_radius: height * 1.2,
+                ticks_in_phase: 0,
+            };
+
+            let _ = world.insert_one(te, felling);
+
+            let name = species.map(|s| s.name.as_str()).unwrap_or("tree");
+            ActionResult::Success(format!("Cutting {} (height {:.0})...", name, height))
         }
 
         _ => ActionResult::Failure("Action not implemented yet".into()),

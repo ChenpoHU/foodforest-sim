@@ -3,7 +3,7 @@
 use ff_common::{EntityId, PlayerId, ShardId, SOIL_LAYERS};
 use ff_ecs::components::identity::{NetworkId, Owner};
 use ff_ecs::components::physics::{Collider, Grounded};
-use ff_ecs::components::player::{Hunger, Inventory, Player, Stamina};
+use ff_ecs::components::player::{Hunger, Inventory, Player, PlayerSkills, Stamina};
 use ff_ecs::components::soil::SoilGrid;
 use ff_ecs::components::transform::{Position, Rotation, Velocity};
 use ff_ecs::Resources;
@@ -85,6 +85,7 @@ impl Shard {
             Inventory::new(),
             Stamina(100.0),
             Hunger(0.0),
+            PlayerSkills::default(),
         ));
 
         self.sessions.insert(player_id, session);
@@ -119,23 +120,39 @@ impl Shard {
         let w = self.terrain.width as i32;
         let d = self.terrain.depth as i32;
 
-        // Scatter some trees
-        let tree_species = [100u16, 101, 102, 200, 201, 202];
-        for i in 0..50 {
-            let x = (i * 7 + 13) % w;
-            let z = (i * 11 + 7) % d;
+        for i in 0..80 {
+            let x = (i * 5 + 3) % w;
+            let z = (i * 7 + 2) % d;
             let y = self.terrain.spawn_height(x, z) as f32;
 
-            let species_id = tree_species[(i as usize) % tree_species.len()];
+            let eid = EntityId(self.next_entity_id);
+            self.next_entity_id += 1;
+
+            let mut plant = Plant::new_seed(103);
+            plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
+            plant.growth_points = 60000.0;
+
+            self.ecs_world.spawn((
+                NetworkId(eid),
+                Position(Vec3::new(x as f32, y, z as f32)),
+                Rotation(0.0),
+                plant,
+            ));
+        }
+
+        let native_species = [100u16, 101, 102, 200, 201, 202];
+        for i in 0..12 {
+            let x = (i * 11 + 17) % w;
+            let z = (i * 13 + 11) % d;
+            let y = self.terrain.spawn_height(x, z) as f32;
+
+            let species_id = native_species[(i as usize) % native_species.len()];
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
 
             let mut plant = Plant::new_seed(species_id);
-            // Start some plants as already mature
-            if i % 3 == 0 {
-                plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
-                plant.growth_points = 50000.0;
-            }
+            plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
+            plant.growth_points = 50000.0;
 
             self.ecs_world.spawn((
                 NetworkId(eid),
@@ -227,17 +244,17 @@ impl Shard {
             ));
         }
 
-        tracing::info!("Spawned initial ecosystem: 150 plants, 15 animals");
+        tracing::info!("Spawned initial ecosystem: 80 eucalyptus, 12 native trees, 100 herbs/groundcover, 15 animals");
     }
 
     /// Run one ECS tick. Borrows fields separately to satisfy the borrow checker.
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> Vec<ff_ecs::systems::tree_felling::FellMessage> {
         ff_ecs::systems::run_tick(
             &mut self.ecs_world,
             &mut self.resources,
             &mut self.soil_grid,
             &self.terrain,
-        );
+        )
     }
 
     /// Process a player action. Borrows fields separately.

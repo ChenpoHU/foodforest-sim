@@ -11,3 +11,4 @@ hecs = { workspace = true }
 glam = { workspace = true }
 serde = { workspace = true }
 rand = { workspace = true }
+tracing = { workspace = true }

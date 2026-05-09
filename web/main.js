@@ -407,9 +407,20 @@ function handleBatchUpdate(payload) {
             }
 
             createOrUpdateEntity(eid, px, py, pz, rot, category);
+
+            const isFalling = (flags & 0x08) !== 0;
+            const isCollapsed = (flags & 0x10) !== 0;
+            const isDead = (flags & 0x20) !== 0;
+
+            if (isFalling || isCollapsed || isDead) {
+                const obj = entityMeshes.get(eid);
+                if (obj) {
+                    const progress = (isCollapsed || isDead) ? 1.0 : 0.5;
+                    obj.rotation.x = -Math.PI / 2 * progress;
+                }
+            }
         }
     } catch (e) {
-        // Silent fail on parse errors during streaming updates
     }
 }
 
@@ -449,6 +460,7 @@ function classifyEntity(kind, speciesId) {
     if (kind === "animal") return "animal";
     if (kind === "npc") return "npc";
     if (kind === "plant") {
+        if (speciesId === 103) return "eucalyptus";
         if (speciesId >= 100 && speciesId < 300) return "tree";
         if (speciesId >= 300 && speciesId < 400) return "shrub";
         if (speciesId >= 400 && speciesId < 600) return "herb";
@@ -558,13 +570,14 @@ function renderTerrain(terrainData) {
 // --- Entity rendering ---
 
 const ENTITY_DEFS = {
-    player: { color: 0x4488ff, geo: "capsule", scale: [0.8, 1.4, 0.8] },
-    tree:   { color: 0x1a6a1a, geo: "tree",    scale: [2, 6, 2] },
-    shrub:  { color: 0x3a8a2a, geo: "cone",    scale: [1.2, 2.5, 1.2] },
-    herb:   { color: 0x5a9a3a, geo: "cone",    scale: [0.4, 0.8, 0.4] },
-    animal: { color: 0xcc8844, geo: "sphere",  scale: [0.6, 0.6, 0.6] },
-    npc:    { color: 0x8844cc, geo: "capsule", scale: [0.8, 1.4, 0.8] },
-    unknown:{ color: 0xffffff, geo: "sphere",  scale: [0.5, 0.5, 0.5] },
+    player:     { color: 0x4488ff, geo: "capsule", scale: [0.8, 1.4, 0.8] },
+    tree:       { color: 0x1a6a1a, geo: "tree",    scale: [2, 6, 2] },
+    eucalyptus: { color: 0x5a7a5a, geo: "eucalyptus", scale: [2, 8, 2] },
+    shrub:      { color: 0x3a8a2a, geo: "cone",    scale: [1.2, 2.5, 1.2] },
+    herb:       { color: 0x5a9a3a, geo: "cone",    scale: [0.4, 0.8, 0.4] },
+    animal:     { color: 0xcc8844, geo: "sphere",  scale: [0.6, 0.6, 0.6] },
+    npc:        { color: 0x8844cc, geo: "capsule", scale: [0.8, 1.4, 0.8] },
+    unknown:    { color: 0xffffff, geo: "sphere",  scale: [0.5, 0.5, 0.5] },
 };
 
 const geoCache = {};
@@ -594,16 +607,32 @@ function getGeometry(type) {
 function createEntityMesh(category) {
     const def = ENTITY_DEFS[category] || ENTITY_DEFS.unknown;
 
+    if (category === "eucalyptus") {
+        const group = new THREE.Group();
+        const trunkGeo = new THREE.CylinderGeometry(0.15, 0.25, 6, 6);
+        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8a7a6a });
+        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+        trunk.position.y = 3.0;
+        trunk.castShadow = true;
+        group.add(trunk);
+        const canopyGeo = new THREE.SphereGeometry(1.5, 8, 6);
+        canopyGeo.scale(1.0, 1.4, 1.0);
+        const canopyMat = new THREE.MeshStandardMaterial({ color: 0x5a7a5a });
+        const canopy = new THREE.Mesh(canopyGeo, canopyMat);
+        canopy.position.y = 7.0;
+        canopy.castShadow = true;
+        group.add(canopy);
+        return group;
+    }
+
     if (category === "tree") {
         const group = new THREE.Group();
-        // Trunk
         const trunkGeo = new THREE.CylinderGeometry(0.2, 0.3, 3, 6);
         const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5c3a1a });
         const trunk = new THREE.Mesh(trunkGeo, trunkMat);
         trunk.position.y = 1.5;
         trunk.castShadow = true;
         group.add(trunk);
-        // Canopy
         const canopyGeo = new THREE.SphereGeometry(2, 8, 6);
         const canopyMat = new THREE.MeshStandardMaterial({ color: def.color });
         const canopy = new THREE.Mesh(canopyGeo, canopyMat);
@@ -674,8 +703,11 @@ function onWorldClick(event) {
 
         const eid = hitObj.userData.entityId;
         if (eid && selectedAction === "harvest") {
-            const actionPayload = encodeHarvestAction(eid);
-            ws.send(buildActionMessage(actionPayload));
+            ws.send(buildActionMessage(encodeHarvestAction(eid)));
+            return;
+        }
+        if (eid && selectedAction === "cut-tree") {
+            ws.send(buildActionMessage(encodeCutTreeAction(eid)));
             return;
         }
     }
@@ -747,6 +779,10 @@ function encodeHugelAction(x, y, z) {
     ];
 }
 
+function encodeCutTreeAction(entityId) {
+    return [...encodeVarint(10), ...encodeVarint(entityId)];
+}
+
 // --- Input ---
 
 document.addEventListener("keydown", (e) => {
@@ -768,6 +804,8 @@ document.addEventListener("keydown", (e) => {
 
 document.addEventListener("keyup", (e) => keys.delete(e.code));
 
+let wasMoving = false;
+
 function sendInput() {
     if (!connected) return;
 
@@ -783,9 +821,10 @@ function sendInput() {
     const jump = keys.has("Space");
     const sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
 
-    if (mx === 0 && mz === 0 && !jump) return;
+    const isMoving = mx !== 0 || mz !== 0 || jump;
+    if (!isMoving && !wasMoving) return;
+    wasMoving = isMoving;
 
-    // Normalize diagonal
     const len = Math.sqrt(mx*mx + mz*mz);
     if (len > 0) { mx /= len; mz /= len; }
 

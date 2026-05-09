@@ -64,10 +64,37 @@ pub struct ItemStack {
     pub count: u16,
 }
 
-/// Player stamina (0.0..100.0). Depleted by sprinting, digging, etc.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Stamina(pub f32);
 
-/// Player hunger (0.0..100.0). Slowly increases, reduced by eating.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Hunger(pub f32);
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PlayerSkills {
+    pub logging: f32,
+    pub agility: f32,
+    pub tool_quality: f32,
+}
+
+impl Default for PlayerSkills {
+    fn default() -> Self {
+        Self {
+            logging: 0.1,
+            agility: 0.3,
+            tool_quality: 0.2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Dead {
+    pub death_tick: u64,
+    pub cause: DeathCause,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum DeathCause {
+    CrushedByTree,
+    Starvation,
+}

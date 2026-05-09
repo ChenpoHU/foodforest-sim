@@ -82,6 +82,7 @@ pub enum ActionKind {
         offer_count: u16,
     },
     PickUp { entity_id: EntityId },
+    CutTree { entity_id: EntityId },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

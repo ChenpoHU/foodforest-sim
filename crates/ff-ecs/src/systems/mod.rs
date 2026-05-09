@@ -6,6 +6,7 @@ pub mod npc_ai;
 pub mod physics;
 pub mod plant_growth;
 pub mod soil;
+pub mod tree_felling;
 pub mod water;
 
 use crate::components::soil::SoilGrid;
@@ -28,7 +29,7 @@ pub fn run_tick(
     resources: &mut Resources,
     soil_grid: &mut SoilGrid,
     terrain: &VoxelWorld,
-) {
+) -> Vec<tree_felling::FellMessage> {
     let tick = resources.calendar.tick.0;
     let dt = ff_common::TICK_DT;
 
@@ -46,6 +47,11 @@ pub fn run_tick(
 
     // 2. Plant growth — every tick
     plant_growth::run(world, resources, soil_grid);
+
+    let mut fell_messages = Vec::new();
+    if tick % 2 == 0 {
+        fell_messages = tree_felling::run(world, resources);
+    }
 
     // 3. Soil dynamics — every 20 ticks (1 second)
     if tick % 20 == 0 {
@@ -66,6 +72,8 @@ pub fn run_tick(
     if tick % 10 == 0 {
         npc_ai::run(world, terrain, resources);
     }
+
+    fell_messages
 }
 
 /// Simple deterministic pseudo-random for weather generation.

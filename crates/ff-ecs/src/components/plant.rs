@@ -59,12 +59,18 @@ pub struct NutrientUptake {
     pub potassium: f32,
 }
 
-/// Companion planting effect on nearby species.
+/// Plant interaction effect on nearby species — covers companion planting,
+/// allelopathy, water competition, and nutrient dynamics.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CompanionEffect {
+    /// 0 = affects all species, otherwise a specific species id.
     pub target_species: u16,
-    /// Growth multiplier: positive = beneficial, negative = antagonistic.
+    /// Growth multiplier: positive = beneficial, negative = antagonistic (allelopathy).
     pub growth_modifier: f32,
+    /// Water impact on neighbors: negative = drains moisture (eucalyptus), positive = retains.
+    pub water_modifier: f32,
+    /// Nutrient impact on neighbors: negative = depletes, positive = enriches (nitrogen fixers).
+    pub nutrient_modifier: f32,
     /// Pest resistance bonus (0.0..1.0).
     pub pest_resistance: f32,
     /// Effect radius in voxel units.
@@ -78,4 +84,26 @@ pub struct Harvestable {
     pub yield_amount: u16,
     pub cooldown_ticks: u32,
     pub last_harvest_tick: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FellingPhase {
+    Cutting,
+    Falling,
+    Collapsed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeFelling {
+    pub phase: FellingPhase,
+    pub cutter_entity_id: u64,
+    pub progress: f32,
+    pub cut_threshold: f32,
+    pub trunk_diameter: f32,
+    pub tree_height: f32,
+    pub wood_density: f32,
+    pub root_stability: f32,
+    pub fall_direction: [f32; 2],
+    pub hazard_radius: f32,
+    pub ticks_in_phase: u32,
 }

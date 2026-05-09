@@ -25,10 +25,21 @@ pub async fn run_tick_loop(shard: Arc<Mutex<Shard>>) {
         {
             let mut shard = shard.lock().await;
 
-            // Run all ECS systems
-            shard.tick();
+            let fell_messages = shard.tick();
 
-            // Broadcast entity updates every NET_SEND_INTERVAL ticks
+            for msg in &fell_messages {
+                let chat = ServerChat {
+                    sender: ff_common::PlayerId(0),
+                    sender_name: "[World]".into(),
+                    message: msg.text.clone(),
+                };
+                if let Ok(buf) = encode(MessageType::ServerChat, &chat) {
+                    for session in shard.sessions.values() {
+                        session.send(buf.clone());
+                    }
+                }
+            }
+
             if tick_count % NET_SEND_INTERVAL as u64 == 0 {
                 broadcast_updates(&shard);
             }
@@ -92,6 +103,27 @@ fn broadcast_updates(shard: &Shard) {
         let mut flags: u8 = 0;
         if grounded {
             flags |= 1;
+        }
+
+        if let Ok(felling) = shard.ecs_world.get::<&ff_ecs::components::plant::TreeFelling>(_entity) {
+            use ff_ecs::components::plant::FellingPhase;
+            match felling.phase {
+                FellingPhase::Cutting => flags |= 0x04,
+                FellingPhase::Falling => flags |= 0x08,
+                FellingPhase::Collapsed => flags |= 0x10,
+            }
+        }
+
+        if shard.ecs_world.get::<&ff_ecs::components::player::Dead>(_entity).is_ok() {
+            flags |= 0x20;
+        }
+
+        if let Ok(plant) = shard.ecs_world.get::<&ff_ecs::components::plant::Plant>(_entity) {
+            if plant.growth_stage == ff_ecs::components::plant::GrowthStage::Dead
+                && shard.ecs_world.get::<&ff_ecs::components::plant::TreeFelling>(_entity).is_err()
+            {
+                flags |= 0x20;
+            }
         }
 
         updates.push(ServerEntityUpdate {

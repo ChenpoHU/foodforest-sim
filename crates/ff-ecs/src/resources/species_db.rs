@@ -1,7 +1,6 @@
 use crate::components::plant::{CompanionEffect, ForestLayer, NutrientUptake};
 use serde::{Deserialize, Serialize};
 
-/// Database of all plant and animal species definitions.
 pub struct SpeciesDb {
     pub plants: Vec<PlantSpecies>,
     pub animals: Vec<AnimalSpecies>,
@@ -12,32 +11,19 @@ pub struct PlantSpecies {
     pub id: u16,
     pub name: String,
     pub layer: ForestLayer,
-    /// Base growth points per tick under ideal conditions.
     pub growth_rate: f32,
-    /// Growth points needed to reach Mature stage.
     pub maturity_threshold: f32,
-    /// Water need (0.0..1.0, where 1.0 = very thirsty).
     pub water_need: f32,
-    /// Ideal nutrient uptake rates.
     pub nutrient_need: NutrientUptake,
-    /// Preferred soil pH range.
     pub preferred_ph_min: f32,
     pub preferred_ph_max: f32,
-    /// Shade tolerance (0.0 = needs full sun, 1.0 = thrives in shade).
     pub shade_tolerance: f32,
-    /// Frost tolerance (0.0 = dies at first frost, 1.0 = hardy).
     pub frost_tolerance: f32,
-    /// Companion planting effects on other species.
-    pub companions: Vec<CompanionEffect>,
-    /// Visual: max height in voxels when mature.
+    pub interactions: Vec<CompanionEffect>,
     pub max_height_voxels: u8,
-    /// Root depth in soil layers.
     pub root_depth_voxels: u8,
-    /// Canopy / spread radius in voxels.
     pub canopy_radius_voxels: u8,
-    /// Item ID yielded when harvested.
     pub harvest_item_id: u16,
-    /// Typical yield per harvest.
     pub harvest_amount: u16,
 }
 
@@ -45,29 +31,21 @@ pub struct PlantSpecies {
 pub struct AnimalSpecies {
     pub id: u16,
     pub name: String,
-    /// Movement speed in voxels per second.
     pub speed: f32,
-    /// What does it eat? (plant species IDs, or 0 for omnivore).
     pub diet: Vec<u16>,
-    /// Does it provide ecosystem services?
     pub ecosystem_service: EcosystemService,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum EcosystemService {
     None,
-    /// Chickens: reduce compaction, add organic matter.
     SoilScratching,
-    /// Ducks: eat slugs/pests.
     PestControl,
-    /// Bees: pollinate flowering plants, increase yield.
     Pollination,
-    /// Earthworms: improve soil structure.
     SoilAeration,
 }
 
 impl SpeciesDb {
-    /// Create a default species database with Mediterranean food forest species.
     pub fn new_default() -> Self {
         Self {
             plants: default_plants(),
@@ -97,7 +75,7 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.3, phosphorus: 0.2, potassium: 0.2 },
             preferred_ph_min: 5.5, preferred_ph_max: 6.5,
             shade_tolerance: 0.2, frost_tolerance: 0.7,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 12, root_depth_voxels: 4, canopy_radius_voxels: 6,
             harvest_item_id: 1100, harvest_amount: 20,
         },
@@ -111,7 +89,17 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.3, phosphorus: 0.15, potassium: 0.25 },
             preferred_ph_min: 6.0, preferred_ph_max: 7.5,
             shade_tolerance: 0.1, frost_tolerance: 0.6,
-            companions: vec![],
+            // Juglone allelopathy — suppresses nearby plants, especially understory
+            interactions: vec![
+                CompanionEffect {
+                    target_species: 0,
+                    growth_modifier: -0.15,
+                    water_modifier: 0.0,
+                    nutrient_modifier: -0.1,
+                    pest_resistance: 0.0,
+                    radius: 6.0,
+                },
+            ],
             max_height_voxels: 15, root_depth_voxels: 4, canopy_radius_voxels: 8,
             harvest_item_id: 1101, harvest_amount: 15,
         },
@@ -125,9 +113,36 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.15, phosphorus: 0.1, potassium: 0.1 },
             preferred_ph_min: 6.5, preferred_ph_max: 8.5,
             shade_tolerance: 0.1, frost_tolerance: 0.3,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 10, root_depth_voxels: 3, canopy_radius_voxels: 5,
             harvest_item_id: 1102, harvest_amount: 25,
+        },
+        // Eucalyptus — invasive, fast-growing, allelopathic, water-draining
+        // High economic value (timber, essential oil) but devastating to ecosystem
+        PlantSpecies {
+            id: 103,
+            name: "Eucalyptus".into(),
+            layer: ForestLayer::Canopy,
+            growth_rate: 2.3,
+            maturity_threshold: 55_000.0,
+            water_need: 0.9,
+            nutrient_need: NutrientUptake { nitrogen: 0.25, phosphorus: 0.15, potassium: 0.2 },
+            preferred_ph_min: 5.0, preferred_ph_max: 7.5,
+            shade_tolerance: 0.05,
+            frost_tolerance: 0.2,
+            interactions: vec![
+                // Allelopathy + water competition — suppresses all nearby plants
+                CompanionEffect {
+                    target_species: 0,
+                    growth_modifier: -0.3,
+                    water_modifier: -0.5,
+                    nutrient_modifier: -0.2,
+                    pest_resistance: 0.0,
+                    radius: 10.0,
+                },
+            ],
+            max_height_voxels: 18, root_depth_voxels: 7, canopy_radius_voxels: 8,
+            harvest_item_id: 1103, harvest_amount: 40,
         },
         // === UNDERSTORY (Layer 1) ===
         PlantSpecies {
@@ -140,7 +155,7 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.2, phosphorus: 0.15, potassium: 0.2 },
             preferred_ph_min: 6.0, preferred_ph_max: 8.0,
             shade_tolerance: 0.4, frost_tolerance: 0.3,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 6, root_depth_voxels: 3, canopy_radius_voxels: 4,
             harvest_item_id: 1200, harvest_amount: 30,
         },
@@ -154,7 +169,7 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.15, phosphorus: 0.1, potassium: 0.15 },
             preferred_ph_min: 5.5, preferred_ph_max: 7.5,
             shade_tolerance: 0.3, frost_tolerance: 0.4,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 5, root_depth_voxels: 2, canopy_radius_voxels: 3,
             harvest_item_id: 1201, harvest_amount: 15,
         },
@@ -168,7 +183,7 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.25, phosphorus: 0.15, potassium: 0.3 },
             preferred_ph_min: 6.0, preferred_ph_max: 7.0,
             shade_tolerance: 0.2, frost_tolerance: 0.2,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 5, root_depth_voxels: 2, canopy_radius_voxels: 3,
             harvest_item_id: 1202, harvest_amount: 25,
         },
@@ -183,8 +198,15 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.05, phosphorus: 0.05, potassium: 0.05 },
             preferred_ph_min: 6.0, preferred_ph_max: 8.0,
             shade_tolerance: 0.3, frost_tolerance: 0.5,
-            companions: vec![
-                CompanionEffect { target_species: 202, growth_modifier: 0.1, pest_resistance: 0.2, radius: 4.0 },
+            interactions: vec![
+                CompanionEffect {
+                    target_species: 202,
+                    growth_modifier: 0.1,
+                    water_modifier: 0.0,
+                    nutrient_modifier: 0.0,
+                    pest_resistance: 0.2,
+                    radius: 4.0,
+                },
             ],
             max_height_voxels: 2, root_depth_voxels: 1, canopy_radius_voxels: 1,
             harvest_item_id: 1300, harvest_amount: 5,
@@ -199,7 +221,7 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.03, phosphorus: 0.03, potassium: 0.03 },
             preferred_ph_min: 6.5, preferred_ph_max: 8.5,
             shade_tolerance: 0.1, frost_tolerance: 0.6,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 1, root_depth_voxels: 1, canopy_radius_voxels: 1,
             harvest_item_id: 1301, harvest_amount: 10,
         },
@@ -215,9 +237,16 @@ fn default_plants() -> Vec<PlantSpecies> {
             preferred_ph_min: 6.0, preferred_ph_max: 7.5,
             shade_tolerance: 0.7,
             frost_tolerance: 0.8,
-            companions: vec![
-                // Comfrey is a dynamic accumulator — benefits all nearby plants
-                CompanionEffect { target_species: 0, growth_modifier: 0.15, pest_resistance: 0.0, radius: 3.0 },
+            interactions: vec![
+                // Dynamic accumulator — deep roots pull nutrients up for neighbors
+                CompanionEffect {
+                    target_species: 0,
+                    growth_modifier: 0.15,
+                    water_modifier: 0.05,
+                    nutrient_modifier: 0.1,
+                    pest_resistance: 0.0,
+                    radius: 3.0,
+                },
             ],
             max_height_voxels: 1, root_depth_voxels: 3, canopy_radius_voxels: 1,
             harvest_item_id: 1400, harvest_amount: 8,
@@ -233,12 +262,19 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.0, phosphorus: 0.05, potassium: 0.05 },
             preferred_ph_min: 6.0, preferred_ph_max: 7.0,
             shade_tolerance: 0.5, frost_tolerance: 0.8,
-            companions: vec![
-                // Nitrogen fixer — benefits all nearby plants
-                CompanionEffect { target_species: 0, growth_modifier: 0.1, pest_resistance: 0.0, radius: 2.0 },
+            interactions: vec![
+                // Nitrogen fixer — enriches soil nitrogen for all neighbors
+                CompanionEffect {
+                    target_species: 0,
+                    growth_modifier: 0.1,
+                    water_modifier: 0.0,
+                    nutrient_modifier: 0.15,
+                    pest_resistance: 0.0,
+                    radius: 2.0,
+                },
             ],
             max_height_voxels: 0, root_depth_voxels: 1, canopy_radius_voxels: 2,
-            harvest_item_id: 0, harvest_amount: 0, // not harvested directly
+            harvest_item_id: 0, harvest_amount: 0,
         },
         PlantSpecies {
             id: 501,
@@ -250,7 +286,7 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.1, phosphorus: 0.1, potassium: 0.15 },
             preferred_ph_min: 5.5, preferred_ph_max: 6.5,
             shade_tolerance: 0.3, frost_tolerance: 0.5,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 0, root_depth_voxels: 1, canopy_radius_voxels: 1,
             harvest_item_id: 1501, harvest_amount: 10,
         },
@@ -265,7 +301,7 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.1, phosphorus: 0.1, potassium: 0.2 },
             preferred_ph_min: 5.5, preferred_ph_max: 7.0,
             shade_tolerance: 0.2, frost_tolerance: 0.4,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 4, root_depth_voxels: 2, canopy_radius_voxels: 2,
             harvest_item_id: 1600, harvest_amount: 20,
         },
@@ -280,7 +316,7 @@ fn default_plants() -> Vec<PlantSpecies> {
             nutrient_need: NutrientUptake { nitrogen: 0.05, phosphorus: 0.05, potassium: 0.1 },
             preferred_ph_min: 6.0, preferred_ph_max: 7.5,
             shade_tolerance: 0.3, frost_tolerance: 0.9,
-            companions: vec![],
+            interactions: vec![],
             max_height_voxels: 2, root_depth_voxels: 2, canopy_radius_voxels: 1,
             harvest_item_id: 1700, harvest_amount: 12,
         },
@@ -293,7 +329,7 @@ fn default_animals() -> Vec<AnimalSpecies> {
             id: 10,
             name: "Chicken".into(),
             speed: 2.0,
-            diet: vec![500, 501], // eats ground cover
+            diet: vec![500, 501],
             ecosystem_service: EcosystemService::SoilScratching,
         },
         AnimalSpecies {
@@ -314,14 +350,14 @@ fn default_animals() -> Vec<AnimalSpecies> {
             id: 20,
             name: "Wild Boar".into(),
             speed: 4.0,
-            diet: vec![700, 501], // digs roots, eats fruit
+            diet: vec![700, 501],
             ecosystem_service: EcosystemService::SoilAeration,
         },
         AnimalSpecies {
             id: 21,
             name: "Deer".into(),
             speed: 6.0,
-            diet: vec![400, 300], // browses herbs and shrubs
+            diet: vec![400, 300],
             ecosystem_service: EcosystemService::None,
         },
     ]

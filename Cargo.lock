@@ -245,6 +245,7 @@ dependencies = [
  "hecs",
  "rand 0.9.4",
  "serde",
+ "tracing",
 ]
 
 [[package]]
