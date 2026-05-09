@@ -6,6 +6,7 @@ let connected = false;
 let playerName = "Farmer";
 let selectedAction = null;
 let myEntityId = 0;
+let selectedGameMode = 0;
 
 let scene, camera, renderer, controls;
 let entityMeshes = new Map();
@@ -25,6 +26,29 @@ document.getElementById("connect-btn").addEventListener("click", () => {
 
 document.getElementById("player-name").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("connect-btn").click();
+});
+
+const modeDescriptions = {
+    0: "No casualties. Trees disappear when cut. Relaxed pace for all ages.",
+    1: "Full felling physics. Falling trees can crush you. Real danger.",
+    2: "Clear the eucalyptus in 15 minutes or wildfire burns everything.",
+};
+
+document.querySelectorAll(".mode-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+        document.querySelectorAll(".mode-btn").forEach(b => {
+            b.style.background = "#1a2a1a";
+            b.style.color = "#aaa";
+            b.style.borderColor = "#444";
+            b.classList.remove("active");
+        });
+        btn.style.background = "#2a5a2a";
+        btn.style.color = "#cfc";
+        btn.style.borderColor = "#4a4";
+        btn.classList.add("active");
+        selectedGameMode = parseInt(btn.dataset.mode);
+        document.getElementById("mode-desc").textContent = modeDescriptions[selectedGameMode];
+    });
 });
 
 // Toolbar
@@ -195,11 +219,12 @@ function buildFramedMessage(msgType, payloadBytes) {
     return frame;
 }
 
-function buildHelloMessage(name) {
+function buildHelloMessage(name, gameMode) {
     const payload = new Uint8Array([
         ...encodeBincodeString(name),
         ...encodeBincodeString("dev-token"),
         ...encodeVarint(1),
+        gameMode,
     ]);
     return buildFramedMessage(0x0001, payload);
 }
@@ -245,7 +270,7 @@ function connectWebSocket(url) {
     ws.onopen = () => {
         updateStatus("Connected! Sending hello...");
         connected = true;
-        ws.send(buildHelloMessage(playerName));
+        ws.send(buildHelloMessage(playerName, selectedGameMode));
     };
 
     ws.onmessage = (event) => {
@@ -277,6 +302,7 @@ function handleServerMessage(data) {
         case 0x0102: handleWorldState(payload); break;
         case 0x010D: handleBatchUpdate(payload); break;
         case 0x010A: handleChat(payload); break;
+        case 0x0104: handleEntityDespawn(payload); break;
         case 0x010B: break; // pong
         case 0x010C: handleActionResult(payload); break;
         default:
@@ -411,6 +437,7 @@ function handleBatchUpdate(payload) {
             const isFalling = (flags & 0x08) !== 0;
             const isCollapsed = (flags & 0x10) !== 0;
             const isDead = (flags & 0x20) !== 0;
+            const isBurning = (flags & 0x40) !== 0;
 
             if (isFalling || isCollapsed || isDead) {
                 const obj = entityMeshes.get(eid);
@@ -418,6 +445,10 @@ function handleBatchUpdate(payload) {
                     const progress = (isCollapsed || isDead) ? 1.0 : 0.5;
                     obj.rotation.x = -Math.PI / 2 * progress;
                 }
+            }
+
+            if (isBurning) {
+                addFlameEffect(eid);
             }
         }
     } catch (e) {
@@ -435,6 +466,18 @@ function handleChat(payload) {
     line.textContent = senderName + ": " + message;
     chatLog.appendChild(line);
     chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function handleEntityDespawn(payload) {
+    const r = new BincodeReader(payload);
+    const eid = r.readU64();
+    removeFlameEffect(eid);
+    const obj = entityMeshes.get(eid);
+    if (obj) {
+        scene.remove(obj);
+        entityMeshes.delete(eid);
+    }
+    entityKinds.delete(eid);
 }
 
 function handleActionResult(payload) {
@@ -833,6 +876,82 @@ function sendInput() {
     ws.send(msg);
 }
 
+// --- Flame effect ---
+
+const flameEntities = new Map();
+
+function addFlameEffect(eid) {
+    if (flameEntities.has(eid)) return;
+    const obj = entityMeshes.get(eid);
+    if (!obj) return;
+
+    const flameGroup = new THREE.Group();
+
+    const flameCount = 6;
+    const flameMat = new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.8 });
+    const flameMat2 = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0.6 });
+    const flameGeo = new THREE.ConeGeometry(0.3, 1.2, 5);
+    const flameGeo2 = new THREE.ConeGeometry(0.2, 0.8, 5);
+
+    const flames = [];
+    for (let i = 0; i < flameCount; i++) {
+        const angle = (i / flameCount) * Math.PI * 2;
+        const r = 0.4 + Math.random() * 0.3;
+        const flame = new THREE.Mesh(flameGeo, flameMat.clone());
+        flame.position.set(Math.cos(angle) * r, 1.0 + Math.random() * 2.0, Math.sin(angle) * r);
+        flame.userData.baseY = flame.position.y;
+        flame.userData.phase = Math.random() * Math.PI * 2;
+        flame.userData.speed = 2 + Math.random() * 3;
+        flameGroup.add(flame);
+        flames.push(flame);
+
+        const inner = new THREE.Mesh(flameGeo2, flameMat2.clone());
+        inner.position.set(Math.cos(angle) * r * 0.5, flame.position.y + 0.5, Math.sin(angle) * r * 0.5);
+        inner.userData.baseY = inner.position.y;
+        inner.userData.phase = Math.random() * Math.PI * 2;
+        inner.userData.speed = 3 + Math.random() * 3;
+        flameGroup.add(inner);
+        flames.push(inner);
+    }
+
+    const light = new THREE.PointLight(0xff6600, 3, 15);
+    light.position.y = 3;
+    flameGroup.add(light);
+    flameGroup.userData.light = light;
+    flameGroup.userData.flames = flames;
+
+    obj.add(flameGroup);
+    flameEntities.set(eid, flameGroup);
+}
+
+function removeFlameEffect(eid) {
+    const flame = flameEntities.get(eid);
+    if (!flame) return;
+    if (flame.parent) flame.parent.remove(flame);
+    flameEntities.delete(eid);
+}
+
+function updateFlames(time) {
+    for (const [eid, flameGroup] of flameEntities) {
+        if (!entityMeshes.has(eid)) {
+            if (flameGroup.parent) flameGroup.parent.remove(flameGroup);
+            flameEntities.delete(eid);
+            continue;
+        }
+        const flames = flameGroup.userData.flames;
+        for (const f of flames) {
+            f.position.y = f.userData.baseY + Math.sin(time * f.userData.speed + f.userData.phase) * 0.4;
+            const scale = 0.7 + Math.sin(time * f.userData.speed * 1.5 + f.userData.phase) * 0.3;
+            f.scale.set(scale, 0.8 + Math.random() * 0.4, scale);
+            f.material.opacity = 0.5 + Math.sin(time * f.userData.speed + f.userData.phase * 2) * 0.3;
+        }
+        const light = flameGroup.userData.light;
+        if (light) {
+            light.intensity = 2 + Math.sin(time * 5) * 1.5;
+        }
+    }
+}
+
 // --- Game loop ---
 
 let lastTime = performance.now();
@@ -843,12 +962,13 @@ function gameLoop(now) {
     const dt = (now - lastTime) / 1000;
     lastTime = now;
 
-    // Send input at 20Hz
     inputTimer += dt;
     if (inputTimer >= 0.05) {
         inputTimer = 0;
         sendInput();
     }
+
+    updateFlames(now / 1000);
 
     if (controls) controls.update();
     if (renderer && scene && camera) renderer.render(scene, camera);

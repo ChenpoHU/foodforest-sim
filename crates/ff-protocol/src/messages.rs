@@ -40,6 +40,7 @@ pub struct ClientHello {
     pub player_name: String,
     pub token: String,
     pub protocol_version: u16,
+    pub game_mode: u8,
 }
 
 /// Sent every tick (50ms) with the player's movement input.

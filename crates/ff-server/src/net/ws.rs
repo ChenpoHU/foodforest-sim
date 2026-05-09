@@ -76,17 +76,19 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
         }
     };
 
-    info!("Player '{}' connected from {peer_addr}", hello.player_name);
+    info!("Player '{}' connected from {peer_addr} (mode={})", hello.player_name, hello.game_mode);
 
-    // Create player session with an outbound channel
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-
-    // Assign player ID (simple: hash of name for now)
     let player_id = PlayerId(hash_name(&hello.player_name));
 
-    // Add player to shard
     let (entity_id, shard_id, tick, terrain_bytes) = {
         let mut shard = shard.lock().await;
+
+        if shard.sessions.is_empty() {
+            let mode = ff_common::GameMode::from(hello.game_mode);
+            shard.resources.game_mode = mode;
+            info!("Game mode set to {:?} by first player", mode);
+        }
         let session = PlayerSession::new(
             player_id,
             EntityId(0), // will be set below
@@ -282,9 +284,12 @@ async fn handle_message(
             if let Some(pe) = player_entity {
                 let result = shard.process_action(pe, player_id, &action.action);
 
-                let (success, message) = match result {
-                    ff_ecs::systems::interaction::ActionResult::Success(msg) => (true, msg),
-                    ff_ecs::systems::interaction::ActionResult::Failure(msg) => (false, msg),
+                let (success, message, despawned) = match result {
+                    ff_ecs::systems::interaction::ActionResult::Success(msg) => (true, msg, None),
+                    ff_ecs::systems::interaction::ActionResult::Failure(msg) => (false, msg, None),
+                    ff_ecs::systems::interaction::ActionResult::SuccessWithDespawn(msg, eid) => {
+                        (true, msg, Some(eid))
+                    }
                 };
 
                 let response = ServerActionResult {
@@ -296,6 +301,15 @@ async fn handle_message(
                 if let Ok(buf) = encode(MessageType::ServerActionResult, &response) {
                     if let Some(session) = shard.sessions.get(&player_id) {
                         session.send(buf);
+                    }
+                }
+
+                if let Some(eid) = despawned {
+                    let despawn = ServerEntityDespawn { entity_id: eid };
+                    if let Ok(buf) = encode(MessageType::ServerEntityDespawn, &despawn) {
+                        for session in shard.sessions.values() {
+                            session.send(buf.clone());
+                        }
                     }
                 }
             }

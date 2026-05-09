@@ -8,32 +8,28 @@ pub mod plant_growth;
 pub mod soil;
 pub mod tree_felling;
 pub mod water;
+pub mod wildfire;
 
 use crate::components::soil::SoilGrid;
 use crate::Resources;
+use ff_common::GameMode;
 use ff_voxel::VoxelWorld;
 
+pub struct TickResult {
+    pub messages: Vec<tree_felling::FellMessage>,
+    pub despawned: Vec<ff_common::EntityId>,
+}
+
 /// Run all simulation systems for one tick.
-///
-/// Called by the server at TICK_RATE (20 Hz). Systems run in this exact order:
-/// 1. Physics (gravity, collision)
-/// 2. Plant growth (every tick)
-/// 3. Soil dynamics (every 20 ticks = 1 sec)
-/// 4. Water cycle (every 20 ticks = 1 sec)
-/// 5. Animal AI (every 5 ticks = 250ms)
-/// 6. NPC AI (every 10 ticks = 500ms)
-///
-/// Interaction system is driven by player input, not the tick loop.
 pub fn run_tick(
     world: &mut hecs::World,
     resources: &mut Resources,
     soil_grid: &mut SoilGrid,
     terrain: &VoxelWorld,
-) -> Vec<tree_felling::FellMessage> {
+) -> TickResult {
     let tick = resources.calendar.tick.0;
     let dt = ff_common::TICK_DT;
 
-    // Update calendar; regenerate weather on day change
     let day_changed = resources.calendar.advance();
     if day_changed {
         let rand_val = simple_rand(tick);
@@ -42,38 +38,40 @@ pub fn run_tick(
     }
     resources.weather.update_sunlight(&resources.calendar);
 
-    // 1. Physics — every tick
     physics::run(world, terrain, dt);
 
-    // 2. Plant growth — every tick
     plant_growth::run(world, resources, soil_grid);
 
     let mut fell_messages = Vec::new();
-    if tick % 2 == 0 {
+    let mut despawned = Vec::new();
+
+    if resources.game_mode != GameMode::Peaceful && tick % 2 == 0 {
         fell_messages = tree_felling::run(world, resources);
     }
 
-    // 3. Soil dynamics — every 20 ticks (1 second)
+    if resources.game_mode == GameMode::Hardcore {
+        let fire_result = wildfire::run(world, resources);
+        fell_messages.extend(fire_result.messages);
+        despawned.extend(fire_result.despawned);
+    }
+
     if tick % 20 == 0 {
         soil::run(soil_grid, resources);
     }
 
-    // 4. Water cycle — every 20 ticks
     if tick % 20 == 0 {
         water::run(soil_grid, terrain, resources);
     }
 
-    // 5. Animal AI — every 5 ticks (250ms)
     if tick % 5 == 0 {
         animal_ai::run(world, terrain, soil_grid, resources);
     }
 
-    // 6. NPC AI — every 10 ticks (500ms)
     if tick % 10 == 0 {
         npc_ai::run(world, terrain, resources);
     }
 
-    fell_messages
+    TickResult { messages: fell_messages, despawned }
 }
 
 /// Simple deterministic pseudo-random for weather generation.

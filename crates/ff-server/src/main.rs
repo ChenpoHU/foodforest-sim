@@ -47,8 +47,15 @@ async fn main() {
         terrain.data.len()
     );
 
-    // Create shard
-    let shard = shard::Shard::new(ff_common::ShardId(shard_id), terrain, terrain_bytes);
+    let game_mode = std::env::var("GAME_MODE")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(ff_common::GameMode::from)
+        .unwrap_or(ff_common::GameMode::Survival);
+
+    info!("Game mode: {:?}", game_mode);
+
+    let shard = shard::Shard::new(ff_common::ShardId(shard_id), terrain, terrain_bytes, game_mode);
 
     // Start the server
     net::ws::run_server(addr, shard).await;

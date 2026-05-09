@@ -97,4 +97,5 @@ pub struct Dead {
 pub enum DeathCause {
     CrushedByTree,
     Starvation,
+    Wildfire,
 }

@@ -10,6 +10,20 @@ pub struct Plant {
     /// Accumulated growth points (drives stage transitions).
     pub growth_points: f32,
     pub water_stored: f32,
+    /// How many times this plant has been cut. Eucalyptus resprouts until cut 3 times.
+    pub cut_count: u8,
+    /// Tick at which a cut eucalyptus resprouts. 0 = not waiting to resprout.
+    pub resprout_at_tick: u64,
+}
+
+/// Marks an entity as crushed by a falling tree (renders lying on the ground).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Crushed;
+
+/// Marks an entity as burning. Despawned after burn_until tick.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Burning {
+    pub burn_until: u64,
 }
 
 impl Plant {
@@ -21,6 +35,8 @@ impl Plant {
             age_ticks: 0,
             growth_points: 0.0,
             water_stored: 0.0,
+            cut_count: 0,
+            resprout_at_tick: 0,
         }
     }
 }

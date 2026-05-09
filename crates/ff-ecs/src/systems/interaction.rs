@@ -7,7 +7,7 @@ use crate::components::plant::{FellingPhase, GrowthStage, Harvestable, Plant, Tr
 use crate::components::player::PlayerSkills;
 use crate::components::transform::{Position, Rotation, Velocity};
 use crate::Resources;
-use ff_common::{EntityId, PlayerId, VoxelMaterial};
+use ff_common::{EntityId, GameMode, PlayerId, VoxelMaterial};
 use ff_protocol::ActionKind;
 use ff_voxel::VoxelWorld;
 use glam::Vec3;
@@ -16,6 +16,7 @@ use glam::Vec3;
 pub enum ActionResult {
     Success(String),
     Failure(String),
+    SuccessWithDespawn(String, EntityId),
 }
 
 /// Process a single player action. Returns success/failure for the client.
@@ -165,12 +166,14 @@ pub fn process_action(
                     if dist > 6.0 {
                         return ActionResult::Failure("Too far away".into());
                     }
-
-                    /*if plant.growth_stage != GrowthStage::Mature
-                        && plant.growth_stage != GrowthStage::Fruiting
+                    if plant.growth_stage == GrowthStage::Dead {
+                        return ActionResult::Failure("Tree is already dead".into());
+                    }
+                    if plant.growth_stage == GrowthStage::Seed
+                        || plant.growth_stage == GrowthStage::Germinating
                     {
-                        return ActionResult::Failure("Tree not mature enough to cut".into());
-                    }*/
+                        return ActionResult::Failure("Too small to cut, pull the sprout instead".into());
+                    }
                     target_entity = Some(entity);
                     tree_pos = pos.0;
                     species_id = plant.species_id;
@@ -182,13 +185,30 @@ pub fn process_action(
                 return ActionResult::Failure("No tree found".into());
             };
 
+            let species = resources.species_db.get_plant(species_id);
+            let name = species.map(|s| s.name.as_str()).unwrap_or("tree");
+
+            if resources.game_mode == GameMode::Peaceful {
+                let _ = world.despawn(te);
+                return ActionResult::SuccessWithDespawn(format!("Removed {}", name), *entity_id);
+            }
+
             if world.get::<&TreeFelling>(te).is_ok() {
                 return ActionResult::Failure("Already being cut".into());
             }
 
-            let species = resources.species_db.get_plant(species_id);
+            let growth_ratio = if let Ok(plant) = world.get::<&Plant>(te) {
+                (plant.growth_points / species.map(|s| s.maturity_threshold).unwrap_or(50000.0))
+                    .min(1.0)
+                    .max(0.1)
+            } else {
+                1.0
+            };
             let (height, density) = match species {
-                Some(s) => (s.max_height_voxels as f32, if s.id == 103 { 0.7 } else { 1.0 }),
+                Some(s) => (
+                    s.max_height_voxels as f32 * growth_ratio,
+                    if s.id == 103 { 0.7 } else { 1.0 },
+                ),
                 None => (8.0, 1.0),
             };
 
@@ -220,8 +240,6 @@ pub fn process_action(
             };
 
             let _ = world.insert_one(te, felling);
-
-            let name = species.map(|s| s.name.as_str()).unwrap_or("tree");
             ActionResult::Success(format!("Cutting {} (height {:.0})...", name, height))
         }
 

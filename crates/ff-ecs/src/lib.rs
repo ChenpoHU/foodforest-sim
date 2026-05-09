@@ -7,6 +7,7 @@ pub mod components;
 pub mod resources;
 pub mod systems;
 
+use ff_common::GameMode;
 use resources::{GameCalendar, SpeciesDb, Weather};
 
 /// All global resources available to systems during a tick.
@@ -14,6 +15,7 @@ pub struct Resources {
     pub calendar: GameCalendar,
     pub weather: Weather,
     pub species_db: SpeciesDb,
+    pub game_mode: GameMode,
 }
 
 impl Resources {
@@ -22,6 +24,7 @@ impl Resources {
             calendar: GameCalendar::new(),
             weather: Weather::default(),
             species_db: SpeciesDb::new_default(),
+            game_mode: GameMode::Survival,
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::components::animal::Animal;
-use crate::components::plant::{FellingPhase, GrowthStage, Plant, TreeFelling};
+use crate::components::plant::{Crushed, FellingPhase, GrowthStage, Plant, TreeFelling};
 use crate::components::player::{Dead, DeathCause, PlayerSkills};
 use crate::components::transform::{Position, Velocity};
 use crate::Resources;
@@ -94,8 +94,29 @@ pub fn run(world: &mut hecs::World, resources: &Resources) -> Vec<FellMessage> {
 
     for entity in mark_dead {
         if let Ok(mut plant) = world.get::<&mut Plant>(entity) {
-            plant.growth_stage = GrowthStage::Dead;
+            if plant.species_id == 103 {
+                plant.cut_count += 1;
+                plant.growth_stage = GrowthStage::Dead;
+                if plant.cut_count >= 3 {
+                    messages.push(FellMessage {
+                        text: "Eucalyptus stump finally dead after repeated cutting".into(),
+                        is_death: false,
+                    });
+                } else {
+                    plant.resprout_at_tick = tick + 1200;
+                    messages.push(FellMessage {
+                        text: format!(
+                            "Eucalyptus collapsed. It will resprout in 1 minute. ({}/3 cuts)",
+                            plant.cut_count
+                        ),
+                        is_death: false,
+                    });
+                }
+            } else {
+                plant.growth_stage = GrowthStage::Dead;
+            }
         }
+        let _ = world.insert_one(entity, Crushed);
     }
 
     messages
@@ -201,10 +222,13 @@ fn resolve_impact(
 
     for entity in &kill_players {
         info!("Player crushed by falling tree");
-        let _ = world.insert_one(*entity, Dead {
-            death_tick: event.tick,
-            cause: DeathCause::CrushedByTree,
-        });
+        let _ = world.insert(*entity, (
+            Dead {
+                death_tick: event.tick,
+                cause: DeathCause::CrushedByTree,
+            },
+            Crushed,
+        ));
         if let Ok(mut vel) = world.get::<&mut Velocity>(*entity) {
             vel.0 = glam::Vec3::ZERO;
         }
@@ -225,20 +249,25 @@ fn resolve_impact(
         });
     }
 
+    let mut crushed_count = 0u32;
     for entity in &kill_plants {
         if let Ok(mut plant) = world.get::<&mut Plant>(*entity) {
-            let name = plant.species_id;
+            if plant.species_id == 103 {
+                continue;
+            }
             plant.growth_stage = GrowthStage::Dead;
             plant.health = 0.0;
-            info!("Plant {} crushed by falling tree", name);
+            info!("Plant {} crushed by falling tree", plant.species_id);
+            crushed_count += 1;
         }
+        let _ = world.insert_one(*entity, Crushed);
         if let Ok(mut vel) = world.get::<&mut Velocity>(*entity) {
             vel.0 = glam::Vec3::ZERO;
         }
     }
-    if !kill_plants.is_empty() {
+    if crushed_count > 0 {
         messages.push(FellMessage {
-            text: format!("{} plant(s) crushed by the tree", kill_plants.len()),
+            text: format!("{} plant(s) crushed by the tree", crushed_count),
             is_death: false,
         });
     }

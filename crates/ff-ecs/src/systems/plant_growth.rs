@@ -9,7 +9,7 @@
 //!          * companion_factor(nearby_companions)
 //!          * mycorrhizal_bonus(soil.mycorrhizal_network)
 
-use crate::components::plant::{GrowthStage, Harvestable, Plant};
+use crate::components::plant::{Crushed, GrowthStage, Harvestable, Plant};
 use crate::components::soil::SoilGrid;
 use crate::components::transform::Position;
 use crate::resources::calendar::Season;
@@ -39,8 +39,18 @@ pub fn run(world: &mut hecs::World, resources: &Resources, soil_grid: &SoilGrid)
         }
     }
 
+    let mut resprout_entities: Vec<hecs::Entity> = Vec::new();
+
     for (_entity, (plant, pos)) in world.query_mut::<(&mut Plant, &Position)>() {
         if plant.growth_stage == GrowthStage::Dead {
+            if plant.resprout_at_tick > 0 && tick as u64 >= plant.resprout_at_tick {
+                plant.resprout_at_tick = 0;
+                plant.growth_stage = GrowthStage::Seed;
+                plant.growth_points = 0.0;
+                plant.health = 1.0;
+                plant.age_ticks = 0;
+                resprout_entities.push(_entity);
+            }
             continue;
         }
 
@@ -59,14 +69,15 @@ pub fn run(world: &mut hecs::World, resources: &Resources, soil_grid: &SoilGrid)
         let mut pressure = InteractionPressure { growth: 0.0, water: 0.0, nutrient: 0.0 };
         if do_interactions {
             for &(npos, nspecies) in &neighbor_data {
-                if nspecies == plant.species_id && (npos - pos.0).length_squared() < 0.01 {
-                    continue; // skip self
+                if (npos - pos.0).length_squared() < 0.01 {
+                    continue;
                 }
                 let Some(nspec) = species_db.get_plant(nspecies) else { continue };
                 let dist = (npos - pos.0).length();
                 for fx in &nspec.interactions {
                     if dist > fx.radius { continue; }
                     if fx.target_species != 0 && fx.target_species != plant.species_id { continue; }
+                    if fx.target_species == 0 && nspecies == plant.species_id { continue; }
                     let falloff = 1.0 - (dist / fx.radius);
                     pressure.growth += fx.growth_modifier * falloff;
                     pressure.water += fx.water_modifier * falloff;
@@ -134,11 +145,13 @@ pub fn run(world: &mut hecs::World, resources: &Resources, soil_grid: &SoilGrid)
 
         plant.growth_points += growth;
 
-        // Health: declines if conditions are very poor
-        if soil_factor < 0.3 || water_factor < 0.3 {
-            plant.health = (plant.health - 0.001).max(0.0);
-        } else {
-            plant.health = (plant.health + 0.0005).min(1.0);
+        // Health: declines if conditions are very poor (eucalyptus is immune)
+        if plant.species_id != 103 {
+            if soil_factor < 0.3 || water_factor < 0.3 {
+                plant.health = (plant.health - 0.001).max(0.0);
+            } else {
+                plant.health = (plant.health + 0.0005).min(1.0);
+            }
         }
 
         // Stage transitions
@@ -189,6 +202,11 @@ pub fn run(world: &mut hecs::World, resources: &Resources, soil_grid: &SoilGrid)
         }
 
         let _ = (old_stage, tick); // suppress unused warnings
+    }
+
+    for entity in resprout_entities {
+        let _ = world.remove_one::<Crushed>(entity);
+        let _ = world.remove_one::<crate::components::plant::TreeFelling>(entity);
     }
 
     // Update harvestable cooldowns

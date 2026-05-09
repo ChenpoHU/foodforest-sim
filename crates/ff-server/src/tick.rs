@@ -25,15 +25,24 @@ pub async fn run_tick_loop(shard: Arc<Mutex<Shard>>) {
         {
             let mut shard = shard.lock().await;
 
-            let fell_messages = shard.tick();
+            let tick_result = shard.tick();
 
-            for msg in &fell_messages {
+            for msg in &tick_result.messages {
                 let chat = ServerChat {
                     sender: ff_common::PlayerId(0),
                     sender_name: "[World]".into(),
                     message: msg.text.clone(),
                 };
                 if let Ok(buf) = encode(MessageType::ServerChat, &chat) {
+                    for session in shard.sessions.values() {
+                        session.send(buf.clone());
+                    }
+                }
+            }
+
+            for eid in &tick_result.despawned {
+                let despawn = ServerEntityDespawn { entity_id: *eid };
+                if let Ok(buf) = encode(MessageType::ServerEntityDespawn, &despawn) {
                     for session in shard.sessions.values() {
                         session.send(buf.clone());
                     }
@@ -114,16 +123,14 @@ fn broadcast_updates(shard: &Shard) {
             }
         }
 
-        if shard.ecs_world.get::<&ff_ecs::components::player::Dead>(_entity).is_ok() {
+        if shard.ecs_world.get::<&ff_ecs::components::plant::Crushed>(_entity).is_ok()
+            || shard.ecs_world.get::<&ff_ecs::components::player::Dead>(_entity).is_ok()
+        {
             flags |= 0x20;
         }
 
-        if let Ok(plant) = shard.ecs_world.get::<&ff_ecs::components::plant::Plant>(_entity) {
-            if plant.growth_stage == ff_ecs::components::plant::GrowthStage::Dead
-                && shard.ecs_world.get::<&ff_ecs::components::plant::TreeFelling>(_entity).is_err()
-            {
-                flags |= 0x20;
-            }
+        if shard.ecs_world.get::<&ff_ecs::components::plant::Burning>(_entity).is_ok() {
+            flags |= 0x40;
         }
 
         updates.push(ServerEntityUpdate {

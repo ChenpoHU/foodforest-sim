@@ -1,6 +1,6 @@
 //! Shard: holds the ECS world, resources, terrain, soil grid, and player sessions.
 
-use ff_common::{EntityId, PlayerId, ShardId, SOIL_LAYERS};
+use ff_common::{EntityId, GameMode, PlayerId, ShardId, SOIL_LAYERS};
 use ff_ecs::components::identity::{NetworkId, Owner};
 use ff_ecs::components::physics::{Collider, Grounded};
 use ff_ecs::components::player::{Hunger, Inventory, Player, PlayerSkills, Stamina};
@@ -28,16 +28,19 @@ pub struct Shard {
 }
 
 impl Shard {
-    pub fn new(id: ShardId, terrain: VoxelWorld, terrain_bytes: Vec<u8>) -> Arc<Mutex<Self>> {
+    pub fn new(id: ShardId, terrain: VoxelWorld, terrain_bytes: Vec<u8>, game_mode: GameMode) -> Arc<Mutex<Self>> {
         let w = terrain.width as usize;
         let d = terrain.depth as usize;
 
         let soil_grid = SoilGrid::new(w, d, SOIL_LAYERS);
 
+        let mut resources = Resources::new();
+        resources.game_mode = game_mode;
+
         let mut shard = Self {
             id,
             ecs_world: hecs::World::new(),
-            resources: Resources::new(),
+            resources,
             terrain,
             terrain_bytes,
             soil_grid,
@@ -248,7 +251,7 @@ impl Shard {
     }
 
     /// Run one ECS tick. Borrows fields separately to satisfy the borrow checker.
-    pub fn tick(&mut self) -> Vec<ff_ecs::systems::tree_felling::FellMessage> {
+    pub fn tick(&mut self) -> ff_ecs::systems::TickResult {
         ff_ecs::systems::run_tick(
             &mut self.ecs_world,
             &mut self.resources,

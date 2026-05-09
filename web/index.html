@@ -140,6 +140,12 @@
         <p>Multiplayer ecosystem simulation</p>
         <input id="player-name" type="text" placeholder="Your name" value="Farmer" />
         <input id="server-url" type="text" placeholder="Server URL" value="ws://localhost:9000" />
+        <div style="display:flex; gap:8px; margin: 12px 0;">
+            <button class="mode-btn active" data-mode="0" style="background:#2a5a2a; color:#cfc; border:1px solid #4a4; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer;">Peaceful</button>
+            <button class="mode-btn" data-mode="1" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer;">Survival</button>
+            <button class="mode-btn" data-mode="2" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer;">Hardcore</button>
+        </div>
+        <p id="mode-desc" style="color:#888; font-size:12px; margin-bottom:16px; max-width:320px; text-align:center;">No casualties. Trees disappear when cut. Relaxed pace for all ages.</p>
         <button id="connect-btn">Enter World</button>
     </div>
 

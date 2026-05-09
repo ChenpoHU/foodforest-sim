@@ -83,6 +83,7 @@ pub fn client_connect(server_url: &str, player_name: &str) -> bool {
         player_name: name,
         token: "dev-token".into(),
         protocol_version: 1,
+        game_mode: 1,
     };
 
     if let Ok(_buf) = encode(MessageType::ClientHello, &hello) {
@@ -100,6 +101,7 @@ pub fn build_hello_message(player_name: &str) -> Vec<u8> {
         player_name: player_name.to_string(),
         token: "dev-token".into(),
         protocol_version: 1,
+        game_mode: 1,
     };
     encode(MessageType::ClientHello, &hello).unwrap_or_default()
 }
