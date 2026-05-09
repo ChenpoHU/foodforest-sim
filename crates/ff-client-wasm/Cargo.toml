@@ -1,0 +1,16 @@
+[package]
+name = "ff-client-wasm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ff-common = { path = "../ff-common" }
+ff-protocol = { path = "../ff-protocol" }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }

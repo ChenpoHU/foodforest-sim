@@ -1,0 +1,19 @@
+[package]
+name = "ff-shard-manager"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ff-shard-manager"
+path = "src/main.rs"
+
+[dependencies]
+ff-common = { path = "../ff-common" }
+ff-protocol = { path = "../ff-protocol" }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

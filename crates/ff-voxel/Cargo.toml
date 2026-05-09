@@ -1,0 +1,32 @@
+[package]
+name = "ff-voxel"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ff-common = { path = "../ff-common" }
+serde = { workspace = true }
+
+# WASM bridge (only for client builds)
+wasm-bindgen = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true }
+
+[features]
+default = ["native"]
+native = []
+wasm = ["wasm-bindgen", "js-sys", "web-sys"]
+
+# Native CLI tool deps
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+geo = { workspace = true }
+ndarray = { workspace = true }
+tiff = { workspace = true }
+
+[[bin]]
+name = "voxelize"
+path = "src/bin/voxelize.rs"
+required-features = ["native"]

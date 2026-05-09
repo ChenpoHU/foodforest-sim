@@ -1,0 +1,15 @@
+[package]
+name = "ff-tools"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ff-tools"
+path = "src/main.rs"
+
+[dependencies]
+ff-common = { path = "../ff-common" }
+ff-protocol = { path = "../ff-protocol" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

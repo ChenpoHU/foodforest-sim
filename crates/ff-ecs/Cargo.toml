@@ -1,0 +1,13 @@
+[package]
+name = "ff-ecs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ff-common = { path = "../ff-common" }
+ff-voxel = { path = "../ff-voxel", default-features = false }
+ff-protocol = { path = "../ff-protocol" }
+hecs = { workspace = true }
+glam = { workspace = true }
+serde = { workspace = true }
+rand = { workspace = true }

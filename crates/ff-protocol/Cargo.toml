@@ -1,0 +1,9 @@
+[package]
+name = "ff-protocol"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ff-common = { path = "../ff-common" }
+serde = { workspace = true }
+bincode = { workspace = true }

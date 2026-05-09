@@ -1,0 +1,25 @@
+[package]
+name = "ff-server"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ff-server"
+path = "src/main.rs"
+
+[dependencies]
+ff-common = { path = "../ff-common" }
+ff-protocol = { path = "../ff-protocol" }
+ff-ecs = { path = "../ff-ecs" }
+ff-voxel = { path = "../ff-voxel", default-features = false }
+
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+hecs = { workspace = true }
+glam = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rand = { workspace = true }
