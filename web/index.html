@@ -155,10 +155,25 @@
         <canvas id="minimap"></canvas>
     </div>
 
+    <!-- Player status -->
+    <div id="player-hud" style="position:fixed; top:50px; left:12px; color:#cfc; font-size:12px; font-family:monospace; background:rgba(0,0,0,0.6); padding:8px 12px; border-radius:6px; display:none; pointer-events:none;">
+        <div id="hud-name"></div>
+        <div id="hud-stamina"></div>
+        <div id="hud-hunger"></div>
+    </div>
+
+    <!-- Inspect panel -->
+    <div id="inspect-panel" style="position:fixed; top:50px; right:12px; width:200px; color:#eee; font-size:12px; font-family:monospace; background:rgba(0,20,0,0.8); padding:10px; border-radius:8px; border:1px solid #4a4; display:none; pointer-events:all; z-index:150;">
+        <div id="inspect-content"></div>
+        <button onclick="document.getElementById('inspect-panel').style.display='none'" style="margin-top:6px; background:#333; color:#aaa; border:1px solid #555; border-radius:4px; padding:2px 8px; cursor:pointer; font-size:11px;">Close</button>
+    </div>
+
     <!-- Toolbar -->
     <div id="toolbar">
         <button data-action="plant-chestnut">Chestnut</button>
+        <button data-action="plant-olive">Olive</button>
         <button data-action="plant-fig">Fig</button>
+        <button data-action="plant-lavender">Lavender</button>
         <button data-action="plant-rosemary">Rosemary</button>
         <button data-action="plant-comfrey">Comfrey</button>
         <button data-action="plant-clover">Clover</button>
@@ -167,6 +182,7 @@
         <button data-action="water">Water</button>
         <button data-action="harvest">Harvest</button>
         <button data-action="cut-tree">Cut Tree</button>
+        <button data-action="inspect">Inspect</button>
     </div>
 
     <!-- Chat -->

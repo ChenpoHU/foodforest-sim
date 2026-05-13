@@ -187,6 +187,20 @@ fn default_plants() -> Vec<PlantSpecies> {
             max_height_voxels: 5, root_depth_voxels: 2, canopy_radius_voxels: 3,
             harvest_item_id: 1202, harvest_amount: 25,
         },
+        PlantSpecies {
+            id: 203,
+            name: "Olive".into(),
+            layer: ForestLayer::Understory,
+            growth_rate: 0.4,
+            maturity_threshold: 60_000.0,
+            water_need: 0.2,
+            nutrient_need: NutrientUptake { nitrogen: 0.1, phosphorus: 0.1, potassium: 0.1 },
+            preferred_ph_min: 6.0, preferred_ph_max: 8.5,
+            shade_tolerance: 0.1, frost_tolerance: 0.3,
+            interactions: vec![],
+            max_height_voxels: 6, root_depth_voxels: 3, canopy_radius_voxels: 4,
+            harvest_item_id: 1203, harvest_amount: 35,
+        },
         // === SHRUB (Layer 2) ===
         PlantSpecies {
             id: 300,

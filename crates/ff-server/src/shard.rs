@@ -143,8 +143,8 @@ impl Shard {
             ));
         }
 
-        let native_species = [100u16, 101, 102, 200, 201, 202];
-        for i in 0..12 {
+        let native_species = [100u16, 101, 102, 200, 201, 202, 203];
+        for i in 0..21 {
             let x = (i * 11 + 17) % w;
             let z = (i * 13 + 11) % d;
             let y = self.terrain.spawn_height(x, z) as f32;

@@ -243,6 +243,76 @@ pub fn process_action(
             ActionResult::Success(format!("Cutting {} (height {:.0})...", name, height))
         }
 
+        ActionKind::Inspect { entity_id } => {
+            for (entity, (net_id, pos)) in
+                world.query_mut::<(&NetworkId, &Position)>()
+            {
+                if net_id.0 != *entity_id { continue; }
+                let dist = (pos.0 - player_pos).length();
+                if dist > 20.0 {
+                    return ActionResult::Failure("Too far away".into());
+                }
+
+                if let Ok(plant) = world.get::<&Plant>(entity) {
+                    let name = resources.species_db.get_plant(plant.species_id)
+                        .map(|s| s.name.as_str()).unwrap_or("Unknown");
+                    let stage = match plant.growth_stage {
+                        GrowthStage::Seed => "Seed",
+                        GrowthStage::Germinating => "Germinating",
+                        GrowthStage::Seedling => "Seedling",
+                        GrowthStage::Juvenile => "Juvenile",
+                        GrowthStage::Mature => "Mature",
+                        GrowthStage::Fruiting => "Fruiting",
+                        GrowthStage::Dormant => "Dormant",
+                        GrowthStage::Dead => "Dead",
+                    };
+                    let species = resources.species_db.get_plant(plant.species_id);
+                    let max_gp = species.map(|s| s.maturity_threshold).unwrap_or(1.0);
+                    let growth_pct = ((plant.growth_points / max_gp) * 100.0).min(100.0);
+                    return ActionResult::Success(format!(
+                        "INSPECT|plant|{}|{}|{:.0}%|{:.0}%|{}",
+                        name, stage, plant.health * 100.0, growth_pct, plant.cut_count
+                    ));
+                }
+
+                if let Ok(animal) = world.get::<&crate::components::animal::Animal>(entity) {
+                    let name = resources.species_db.get_animal(animal.species_id)
+                        .map(|s| s.name.as_str()).unwrap_or("Unknown");
+                    let behavior = match &animal.behavior {
+                        crate::components::animal::AnimalBehavior::Idle => "Idle",
+                        crate::components::animal::AnimalBehavior::Wandering => "Wandering",
+                        crate::components::animal::AnimalBehavior::Foraging => "Foraging",
+                        crate::components::animal::AnimalBehavior::Fleeing { .. } => "Fleeing",
+                        crate::components::animal::AnimalBehavior::Following { .. } => "Following",
+                        crate::components::animal::AnimalBehavior::Sleeping => "Sleeping",
+                        crate::components::animal::AnimalBehavior::Scratching => "Scratching",
+                        crate::components::animal::AnimalBehavior::Pollinating => "Pollinating",
+                        _ => "Active",
+                    };
+                    return ActionResult::Success(format!(
+                        "INSPECT|animal|{}|{}|hunger:{:.0}%|energy:{:.0}%",
+                        name, behavior, animal.hunger * 100.0, animal.energy * 100.0
+                    ));
+                }
+
+                if let Ok(player) = world.get::<&crate::components::player::Player>(entity) {
+                    let player_name = world.get::<&crate::components::identity::Name>(entity)
+                        .map(|n| n.0.clone()).unwrap_or_else(|_| "Unknown".into());
+                    let stamina = world.get::<&crate::components::player::Stamina>(entity)
+                        .map(|s| s.0).unwrap_or(0.0);
+                    let hunger = world.get::<&crate::components::player::Hunger>(entity)
+                        .map(|h| h.0).unwrap_or(0.0);
+                    return ActionResult::Success(format!(
+                        "INSPECT|player|{}|stamina:{:.0}%|hunger:{:.0}%",
+                        player_name, stamina, hunger
+                    ));
+                }
+
+                return ActionResult::Success("INSPECT|unknown|Entity".into());
+            }
+            ActionResult::Failure("Entity not found".into())
+        }
+
         _ => ActionResult::Failure("Action not implemented yet".into()),
     }
 }

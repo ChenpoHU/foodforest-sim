@@ -84,6 +84,7 @@ pub enum ActionKind {
     },
     PickUp { entity_id: EntityId },
     CutTree { entity_id: EntityId },
+    Inspect { entity_id: EntityId },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

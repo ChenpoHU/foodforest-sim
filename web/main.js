@@ -319,6 +319,12 @@ function handleWelcome(payload) {
     const tickRate = r.readU32();
     updateStatus("Welcome! Entity " + myEntityId + " | Tick " + tick + " | " + tickRate + "Hz");
     console.log("Welcome: entity=" + myEntityId + " player=" + playerId + " shard=" + shardId);
+
+    const hud = document.getElementById("player-hud");
+    hud.style.display = "block";
+    document.getElementById("hud-name").textContent = playerName;
+    document.getElementById("hud-stamina").textContent = "Stamina: 100%";
+    document.getElementById("hud-hunger").textContent = "Hunger: 0%";
 }
 
 function handleWorldState(payload) {
@@ -370,25 +376,23 @@ function handleWorldState(payload) {
         const rot = r.readF32();
 
         // EntityState enum
+        let growthStage = 0;
         const stateTag = r.readVarint();
         if (stateTag === 0) {
-            // Active - no extra fields
+            // Active
         } else if (stateTag === 1) {
-            // PlantGrowth { stage: u8, health: f32 }
-            r.readU8();
+            growthStage = r.readU8();
             r.readF32();
         } else if (stateTag === 2) {
-            // AnimalBehavior { behavior: u8, hunger: f32 }
             r.readU8();
             r.readF32();
         } else if (stateTag === 3) {
-            // PlayerVisible { held_item: Option<u16>, animation: u8 }
             const hasItem = r.readU8();
             if (hasItem === 1) r.readU16();
             r.readU8();
         }
 
-        entityKinds.set(eid, { kind, speciesId });
+        entityKinds.set(eid, { kind, speciesId, growthStage });
 
         // Determine visual category
         let category = classifyEntity(kind, speciesId);
@@ -488,6 +492,11 @@ function handleActionResult(payload) {
     let message = "";
     if (hasMsg === 1) message = r.readString();
 
+    if (success && message.startsWith("INSPECT|")) {
+        showInspectPanel(message);
+        return;
+    }
+
     const chatLog = document.getElementById("chat-log");
     const line = document.createElement("div");
     line.style.color = success ? "#8f8" : "#f88";
@@ -496,14 +505,62 @@ function handleActionResult(payload) {
     chatLog.scrollTop = chatLog.scrollHeight;
 }
 
+function showInspectPanel(data) {
+    const parts = data.split("|");
+    const panel = document.getElementById("inspect-panel");
+    const content = document.getElementById("inspect-content");
+    const type = parts[1];
+    let html = "";
+
+    if (type === "plant") {
+        const name = parts[2], stage = parts[3], health = parts[4], growth = parts[5], cuts = parts[6];
+        html = "<div style='color:#6d6; font-size:14px; margin-bottom:6px;'>" + name + "</div>";
+        html += "<div>Stage: <span style='color:#cfc'>" + stage + "</span></div>";
+        html += "<div>Health: <span style='color:#cfc'>" + health + "</span></div>";
+        html += "<div>Growth: <span style='color:#cfc'>" + growth + "</span></div>";
+        if (parseInt(cuts) > 0) html += "<div>Cut count: <span style='color:#fa8'>" + cuts + "/3</span></div>";
+    } else if (type === "animal") {
+        const name = parts[2], behavior = parts[3], hunger = parts[4], energy = parts[5];
+        html = "<div style='color:#da6; font-size:14px; margin-bottom:6px;'>" + name + "</div>";
+        html += "<div>Behavior: <span style='color:#cfc'>" + behavior + "</span></div>";
+        html += "<div>" + hunger + "</div>";
+        html += "<div>" + energy + "</div>";
+    } else if (type === "player") {
+        const name = parts[2], stamina = parts[3], hunger = parts[4];
+        html = "<div style='color:#48f; font-size:14px; margin-bottom:6px;'>" + name + "</div>";
+        html += "<div>" + stamina + "</div>";
+        html += "<div>" + hunger + "</div>";
+    }
+
+    content.innerHTML = html;
+    panel.style.display = "block";
+}
+
 // --- Entity classification ---
 
 function classifyEntity(kind, speciesId) {
     if (kind === "player") return "player";
-    if (kind === "animal") return "animal";
+    if (kind === "animal") {
+        if (speciesId === 10) return "chicken";
+        if (speciesId === 21) return "deer";
+        return "animal";
+    }
     if (kind === "npc") return "npc";
     if (kind === "plant") {
+        if (speciesId === 100) return "chestnut";
+        if (speciesId === 101) return "walnut";
+        if (speciesId === 102) return "carob";
         if (speciesId === 103) return "eucalyptus";
+        if (speciesId === 200) return "fig";
+        if (speciesId === 201) return "pomegranate";
+        if (speciesId === 202) return "citrus";
+        if (speciesId === 203) return "olive";
+        if (speciesId === 300) return "rosemary";
+        if (speciesId === 301) return "lavender";
+        if (speciesId === 400) return "comfrey";
+        if (speciesId === 500) return "clover";
+        if (speciesId === 501) return "strawberry";
+        if (speciesId === 600) return "grapevine";
         if (speciesId >= 100 && speciesId < 300) return "tree";
         if (speciesId >= 300 && speciesId < 400) return "shrub";
         if (speciesId >= 400 && speciesId < 600) return "herb";
@@ -612,85 +669,223 @@ function renderTerrain(terrainData) {
 
 // --- Entity rendering ---
 
-const ENTITY_DEFS = {
-    player:     { color: 0x4488ff, geo: "capsule", scale: [0.8, 1.4, 0.8] },
-    tree:       { color: 0x1a6a1a, geo: "tree",    scale: [2, 6, 2] },
-    eucalyptus: { color: 0x5a7a5a, geo: "eucalyptus", scale: [2, 8, 2] },
-    shrub:      { color: 0x3a8a2a, geo: "cone",    scale: [1.2, 2.5, 1.2] },
-    herb:       { color: 0x5a9a3a, geo: "cone",    scale: [0.4, 0.8, 0.4] },
-    animal:     { color: 0xcc8844, geo: "sphere",  scale: [0.6, 0.6, 0.6] },
-    npc:        { color: 0x8844cc, geo: "capsule", scale: [0.8, 1.4, 0.8] },
-    unknown:    { color: 0xffffff, geo: "sphere",  scale: [0.5, 0.5, 0.5] },
-};
-
-const geoCache = {};
-
-function getGeometry(type) {
-    if (geoCache[type]) return geoCache[type];
-    switch (type) {
-        case "capsule":
-            geoCache[type] = new THREE.CapsuleGeometry(0.4, 1.2, 4, 8);
-            break;
-        case "cone":
-            geoCache[type] = new THREE.ConeGeometry(0.5, 1, 8);
-            break;
-        case "sphere":
-            geoCache[type] = new THREE.SphereGeometry(0.5, 8, 6);
-            break;
-        case "tree":
-            // Trunk + canopy group merged into a single buffer geometry
-            geoCache[type] = new THREE.ConeGeometry(1, 4, 8);
-            break;
-        default:
-            geoCache[type] = new THREE.BoxGeometry(1, 1, 1);
-    }
-    return geoCache[type];
+function makeTree(trunkColor, trunkW, trunkH, canopyColor, canopyR, canopyH, canopyY) {
+    const group = new THREE.Group();
+    const trunkGeo = new THREE.CylinderGeometry(trunkW * 0.6, trunkW, trunkH, 6);
+    const trunk = new THREE.Mesh(trunkGeo, new THREE.MeshStandardMaterial({ color: trunkColor }));
+    trunk.position.y = trunkH / 2;
+    trunk.castShadow = true;
+    group.add(trunk);
+    const canopyGeo = new THREE.SphereGeometry(canopyR, 8, 6);
+    if (canopyH !== canopyR) canopyGeo.scale(1, canopyH / canopyR, 1);
+    const canopy = new THREE.Mesh(canopyGeo, new THREE.MeshStandardMaterial({ color: canopyColor }));
+    canopy.position.y = canopyY;
+    canopy.castShadow = true;
+    group.add(canopy);
+    return group;
 }
 
 function createEntityMesh(category) {
-    const def = ENTITY_DEFS[category] || ENTITY_DEFS.unknown;
-
-    if (category === "eucalyptus") {
-        const group = new THREE.Group();
-        const trunkGeo = new THREE.CylinderGeometry(0.15, 0.25, 6, 6);
-        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8a7a6a });
-        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-        trunk.position.y = 3.0;
-        trunk.castShadow = true;
-        group.add(trunk);
-        const canopyGeo = new THREE.SphereGeometry(1.5, 8, 6);
-        canopyGeo.scale(1.0, 1.4, 1.0);
-        const canopyMat = new THREE.MeshStandardMaterial({ color: 0x5a7a5a });
-        const canopy = new THREE.Mesh(canopyGeo, canopyMat);
-        canopy.position.y = 7.0;
-        canopy.castShadow = true;
-        group.add(canopy);
-        return group;
+    switch (category) {
+        case "player": {
+            const group = new THREE.Group();
+            const body = new THREE.Mesh(
+                new THREE.CapsuleGeometry(0.3, 0.8, 4, 8),
+                new THREE.MeshStandardMaterial({ color: 0x4488ff })
+            );
+            body.position.y = 0.9;
+            body.castShadow = true;
+            group.add(body);
+            const head = new THREE.Mesh(
+                new THREE.SphereGeometry(0.25, 8, 6),
+                new THREE.MeshStandardMaterial({ color: 0xddbb88 })
+            );
+            head.position.y = 1.65;
+            group.add(head);
+            return group;
+        }
+        case "eucalyptus":
+            return makeTree(0x8a7a6a, 0.2, 6, 0x5a7a5a, 1.5, 2.1, 7.0);
+        case "chestnut":
+            return makeTree(0x5c3a1a, 0.3, 4, 0x1a6a1a, 2.5, 2.5, 5.5);
+        case "walnut":
+            return makeTree(0x4a3018, 0.35, 5, 0x2a5a1a, 2.8, 2.8, 6.5);
+        case "carob":
+            return makeTree(0x3a2a1a, 0.25, 3, 0x2a4a1a, 2.0, 2.0, 4.5);
+        case "fig": {
+            const g = makeTree(0x6a5a3a, 0.15, 1.5, 0x3a7a2a, 1.8, 1.2, 2.8);
+            const c2 = new THREE.Mesh(
+                new THREE.SphereGeometry(1.3, 7, 5),
+                new THREE.MeshStandardMaterial({ color: 0x4a8a3a })
+            );
+            c2.position.set(0.6, 2.4, 0.4);
+            c2.castShadow = true;
+            g.add(c2);
+            return g;
+        }
+        case "pomegranate":
+            return makeTree(0x5a3a2a, 0.12, 1.8, 0x3a6a1a, 1.2, 1.2, 3.0);
+        case "citrus":
+            return makeTree(0x5a4a2a, 0.15, 1.5, 0x2a7a1a, 1.5, 1.5, 3.0);
+        case "olive": {
+            const g = makeTree(0x7a6a4a, 0.2, 2.5, 0x6a8a5a, 1.8, 1.2, 3.8);
+            const c2 = new THREE.Mesh(
+                new THREE.SphereGeometry(1.4, 7, 5),
+                new THREE.MeshStandardMaterial({ color: 0x7a9a6a })
+            );
+            c2.position.set(-0.5, 3.5, 0.3);
+            c2.castShadow = true;
+            g.add(c2);
+            return g;
+        }
+        case "rosemary": {
+            const group = new THREE.Group();
+            for (let i = 0; i < 5; i++) {
+                const angle = (i / 5) * Math.PI * 2;
+                const spike = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.15, 1.0, 4),
+                    new THREE.MeshStandardMaterial({ color: 0x3a6a3a })
+                );
+                spike.position.set(Math.cos(angle) * 0.3, 0.5, Math.sin(angle) * 0.3);
+                spike.castShadow = true;
+                group.add(spike);
+            }
+            return group;
+        }
+        case "lavender": {
+            const group = new THREE.Group();
+            for (let i = 0; i < 7; i++) {
+                const angle = (i / 7) * Math.PI * 2;
+                const r = 0.2 + Math.random() * 0.15;
+                const stem = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.02, 0.02, 0.7, 3),
+                    new THREE.MeshStandardMaterial({ color: 0x4a6a3a })
+                );
+                stem.position.set(Math.cos(angle) * r, 0.35, Math.sin(angle) * r);
+                group.add(stem);
+                const flower = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.08, 0.25, 4),
+                    new THREE.MeshStandardMaterial({ color: 0x8855aa })
+                );
+                flower.position.set(Math.cos(angle) * r, 0.8, Math.sin(angle) * r);
+                group.add(flower);
+            }
+            return group;
+        }
+        case "comfrey": {
+            const group = new THREE.Group();
+            for (let i = 0; i < 6; i++) {
+                const angle = (i / 6) * Math.PI * 2;
+                const leaf = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.2, 0.6, 4),
+                    new THREE.MeshStandardMaterial({ color: 0x3a7a2a })
+                );
+                leaf.position.set(Math.cos(angle) * 0.25, 0.3, Math.sin(angle) * 0.25);
+                leaf.rotation.z = Math.cos(angle) * 0.3;
+                leaf.rotation.x = Math.sin(angle) * 0.3;
+                group.add(leaf);
+            }
+            return group;
+        }
+        case "clover": {
+            const group = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: 0x2a8a2a });
+            for (let i = 0; i < 4; i++) {
+                const angle = (i / 4) * Math.PI * 2;
+                const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), mat);
+                leaf.position.set(Math.cos(angle) * 0.12, 0.1, Math.sin(angle) * 0.12);
+                leaf.scale.y = 0.4;
+                group.add(leaf);
+            }
+            return group;
+        }
+        case "strawberry": {
+            const group = new THREE.Group();
+            const leaves = new THREE.Mesh(
+                new THREE.SphereGeometry(0.2, 6, 4),
+                new THREE.MeshStandardMaterial({ color: 0x3a8a2a })
+            );
+            leaves.position.y = 0.15;
+            leaves.scale.y = 0.5;
+            group.add(leaves);
+            return group;
+        }
+        case "grapevine": {
+            const group = new THREE.Group();
+            const vine = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.05, 0.08, 2.0, 4),
+                new THREE.MeshStandardMaterial({ color: 0x5a4a2a })
+            );
+            vine.position.y = 1.0;
+            group.add(vine);
+            const foliage = new THREE.Mesh(
+                new THREE.SphereGeometry(0.8, 6, 5),
+                new THREE.MeshStandardMaterial({ color: 0x4a7a2a })
+            );
+            foliage.position.y = 2.0;
+            foliage.scale.y = 0.6;
+            group.add(foliage);
+            return group;
+        }
+        case "chicken": {
+            const group = new THREE.Group();
+            const body = new THREE.Mesh(
+                new THREE.SphereGeometry(0.25, 6, 5),
+                new THREE.MeshStandardMaterial({ color: 0xddaa66 })
+            );
+            body.position.y = 0.3;
+            body.scale.set(1, 0.8, 1.3);
+            group.add(body);
+            const head = new THREE.Mesh(
+                new THREE.SphereGeometry(0.12, 5, 4),
+                new THREE.MeshStandardMaterial({ color: 0xddaa66 })
+            );
+            head.position.set(0, 0.5, 0.2);
+            group.add(head);
+            const comb = new THREE.Mesh(
+                new THREE.BoxGeometry(0.04, 0.08, 0.06),
+                new THREE.MeshStandardMaterial({ color: 0xcc2222 })
+            );
+            comb.position.set(0, 0.6, 0.2);
+            group.add(comb);
+            return group;
+        }
+        case "deer": {
+            const group = new THREE.Group();
+            const body = new THREE.Mesh(
+                new THREE.CapsuleGeometry(0.3, 0.8, 4, 6),
+                new THREE.MeshStandardMaterial({ color: 0x8a6a3a })
+            );
+            body.position.y = 0.8;
+            body.rotation.z = Math.PI / 2;
+            body.castShadow = true;
+            group.add(body);
+            const head = new THREE.Mesh(
+                new THREE.SphereGeometry(0.18, 6, 5),
+                new THREE.MeshStandardMaterial({ color: 0x9a7a4a })
+            );
+            head.position.set(0, 1.1, 0.5);
+            group.add(head);
+            return group;
+        }
+        case "animal": {
+            const mesh = new THREE.Mesh(
+                new THREE.SphereGeometry(0.3, 6, 5),
+                new THREE.MeshStandardMaterial({ color: 0xcc8844 })
+            );
+            mesh.position.y = 0.3;
+            mesh.castShadow = true;
+            return mesh;
+        }
+        default: {
+            const mesh = new THREE.Mesh(
+                new THREE.SphereGeometry(0.3, 6, 5),
+                new THREE.MeshStandardMaterial({ color: 0xaaaaaa })
+            );
+            mesh.position.y = 0.3;
+            return mesh;
+        }
     }
-
-    if (category === "tree") {
-        const group = new THREE.Group();
-        const trunkGeo = new THREE.CylinderGeometry(0.2, 0.3, 3, 6);
-        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5c3a1a });
-        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-        trunk.position.y = 1.5;
-        trunk.castShadow = true;
-        group.add(trunk);
-        const canopyGeo = new THREE.SphereGeometry(2, 8, 6);
-        const canopyMat = new THREE.MeshStandardMaterial({ color: def.color });
-        const canopy = new THREE.Mesh(canopyGeo, canopyMat);
-        canopy.position.y = 4.5;
-        canopy.castShadow = true;
-        group.add(canopy);
-        return group;
-    }
-
-    const geo = getGeometry(def.geo);
-    const mat = new THREE.MeshStandardMaterial({ color: def.color });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.scale.set(...def.scale);
-    mesh.castShadow = true;
-    return mesh;
 }
 
 function createOrUpdateEntity(eid, x, y, z, rot, category) {
@@ -753,6 +948,10 @@ function onWorldClick(event) {
             ws.send(buildActionMessage(encodeCutTreeAction(eid)));
             return;
         }
+        if (eid && selectedAction === "inspect") {
+            ws.send(buildActionMessage(encodeInspectAction(eid)));
+            return;
+        }
     }
 
     // Hit terrain — plant/build at that position
@@ -767,7 +966,9 @@ function onWorldClick(event) {
             if (selectedAction.startsWith("plant-")) {
                 const speciesMap = {
                     "plant-chestnut": 100,
+                    "plant-olive": 203,
                     "plant-fig": 200,
+                    "plant-lavender": 301,
                     "plant-rosemary": 300,
                     "plant-comfrey": 400,
                     "plant-clover": 500,
@@ -824,6 +1025,10 @@ function encodeHugelAction(x, y, z) {
 
 function encodeCutTreeAction(entityId) {
     return [...encodeVarint(10), ...encodeVarint(entityId)];
+}
+
+function encodeInspectAction(entityId) {
+    return [...encodeVarint(11), ...encodeVarint(entityId)];
 }
 
 // --- Input ---
