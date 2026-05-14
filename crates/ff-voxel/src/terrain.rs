@@ -45,6 +45,13 @@ impl VoxelWorld {
         self.height_at(x, z) as f32 + 0.5
     }
 
+    /// Check if the surface at (x, z) is water or ocean.
+    pub fn is_water_surface(&self, x: i32, z: i32) -> bool {
+        let h = self.height_at(x, z);
+        let mat = self.get(x, h, z);
+        matches!(mat, VoxelMaterial::Water | VoxelMaterial::Ocean)
+    }
+
     /// Simple slope check: max height difference among 4 neighbors.
     /// Used for water flow direction.
     pub fn slope_at(&self, x: i32, z: i32) -> f32 {

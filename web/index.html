@@ -259,6 +259,14 @@
         <div id="hud-hunger"></div>
     </div>
 
+    <!-- Edge direction hints -->
+    <div id="edge-hints" style="position:fixed; pointer-events:none; z-index:100; display:none;">
+        <div id="hint-north" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); top:40px; color:rgba(200,255,200,0.5); font-size:11px; font-family:monospace; text-align:center;"></div>
+        <div id="hint-south" style="position:fixed; bottom:85px; left:50%; transform:translateX(-50%); color:rgba(200,255,200,0.5); font-size:11px; font-family:monospace; text-align:center;"></div>
+        <div id="hint-west" style="position:fixed; top:50%; left:12px; transform:translateY(-50%); color:rgba(200,255,200,0.5); font-size:11px; font-family:monospace;"></div>
+        <div id="hint-east" style="position:fixed; top:50%; right:220px; transform:translateY(-50%); color:rgba(200,255,200,0.5); font-size:11px; font-family:monospace; text-align:right;"></div>
+    </div>
+
     <!-- Inspect panel -->
     <div id="inspect-panel" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:240px; color:#eee; font-size:13px; font-family:monospace; background:rgba(0,20,0,0.9); padding:14px; border-radius:10px; border:1px solid #4a4; display:none; pointer-events:all; z-index:150; box-shadow:0 4px 24px rgba(0,0,0,0.5);">
         <div id="inspect-content"></div>

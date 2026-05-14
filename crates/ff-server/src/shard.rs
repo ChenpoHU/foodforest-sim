@@ -132,6 +132,7 @@ impl Shard {
             for i in 0..count {
                 let x = ((i as i64 * 17 + 3) % w as i64) as i32;
                 let z = ((i as i64 * 23 + 7) % d as i64) as i32;
+                if self.terrain.is_water_surface(x, z) { continue; }
                 let y = self.terrain.spawn_height(x, z);
                 if !self.terrain.is_solid(x, y as i32 - 1, z) { continue; }
 
@@ -156,6 +157,7 @@ impl Shard {
         for i in 0..native_count {
             let x = ((i as i64 * 31 + 17) % w as i64) as i32;
             let z = ((i as i64 * 37 + 11) % d as i64) as i32;
+            if self.terrain.is_water_surface(x, z) { continue; }
             let y = self.terrain.spawn_height(x, z);
 
             let species_id = native_species[i as usize % native_species.len()];
@@ -183,6 +185,7 @@ impl Shard {
         for i in 0..herb_count {
             let x = ((i as i64 * 13 + 5) % w as i64) as i32;
             let z = ((i as i64 * 19 + 3) % d as i64) as i32;
+            if self.terrain.is_water_surface(x, z) { continue; }
             let y = self.terrain.spawn_height(x, z);
 
             let species_id = herb_list[i as usize % herb_list.len()];
@@ -203,16 +206,17 @@ impl Shard {
 
         let chicken_count = (10.0 * area_scale) as i32;
         for i in 0..chicken_count {
-            let x = ((i as i64 * 29 + 40) % w as i64) as f32;
-            let z = ((i as i64 * 41 + 60) % d as i64) as f32;
-            let y = self.terrain.spawn_height(x as i32, z as i32);
+            let x = ((i as i64 * 29 + 40) % w as i64) as i32;
+            let z = ((i as i64 * 41 + 60) % d as i64) as i32;
+            if self.terrain.is_water_surface(x, z) { continue; }
+            let y = self.terrain.spawn_height(x, z);
 
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
 
             self.ecs_world.spawn((
                 NetworkId(eid),
-                Position(Vec3::new(x, y, z)),
+                Position(Vec3::new(x as f32, y, z as f32)),
                 Rotation(0.0),
                 Velocity(Vec3::ZERO),
                 Collider {
@@ -226,7 +230,7 @@ impl Shard {
                     energy: 0.8,
                 },
                 Domesticated {
-                    pen_center: Vec3::new(x, y, z),
+                    pen_center: Vec3::new(x as f32, y, z as f32),
                     pen_radius: 30.0,
                 },
             ));
@@ -236,6 +240,7 @@ impl Shard {
         for i in 0..deer_count {
             let x = ((i as i64 * 47 + 10) % w as i64) as i32;
             let z = ((i as i64 * 53 + 20) % d as i64) as i32;
+            if self.terrain.is_water_surface(x, z) { continue; }
             let y = self.terrain.spawn_height(x, z);
 
             let eid = EntityId(self.next_entity_id);

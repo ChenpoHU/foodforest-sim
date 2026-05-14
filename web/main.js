@@ -270,10 +270,24 @@ async function init(serverUrl) {
 
 function initRenderer() {
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87CEEB);
-    scene.fog = new THREE.Fog(0x87CEEB, 300, 1000);
 
-    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+    // Warm golden-hour sky gradient
+    const skyCanvas = document.createElement("canvas");
+    skyCanvas.width = 1; skyCanvas.height = 256;
+    const skyCtx = skyCanvas.getContext("2d");
+    const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 256);
+    skyGrad.addColorStop(0, "#4a7ab5");
+    skyGrad.addColorStop(0.3, "#7db8d8");
+    skyGrad.addColorStop(0.55, "#b8dce8");
+    skyGrad.addColorStop(0.75, "#e8d8c0");
+    skyGrad.addColorStop(1.0, "#d4b896");
+    skyCtx.fillStyle = skyGrad;
+    skyCtx.fillRect(0, 0, 1, 256);
+    const skyTexture = new THREE.CanvasTexture(skyCanvas);
+    scene.background = skyTexture;
+    scene.fog = new THREE.FogExp2(0xb8dce8, 0.0015);
+
+    camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 3000);
     camera.position.set(160, 80, 160);
     camera.lookAt(160, 0, 160);
 
@@ -281,17 +295,20 @@ function initRenderer() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
     document.body.appendChild(renderer.domElement);
 
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.1;
+    controls.dampingFactor = 0.08;
     controls.maxPolarAngle = Math.PI * 0.45;
-    controls.minDistance = 5;
-    controls.maxDistance = 500;
+    controls.minDistance = 3;
+    controls.maxDistance = 600;
 
-    const sun = new THREE.DirectionalLight(0xfff5e0, 1.5);
-    sun.position.set(200, 300, 200);
+    // Warm sun with golden light
+    const sun = new THREE.DirectionalLight(0xffeedd, 1.8);
+    sun.position.set(200, 300, 150);
     sun.castShadow = true;
     sun.shadow.mapSize.width = 4096;
     sun.shadow.mapSize.height = 4096;
@@ -302,8 +319,13 @@ function initRenderer() {
     sun.shadow.camera.top = 200;
     sun.shadow.camera.bottom = -200;
     scene.add(sun);
-    scene.add(new THREE.AmbientLight(0x404860, 0.6));
-    scene.add(new THREE.HemisphereLight(0x87CEEB, 0x4a3a2a, 0.4));
+    scene.add(new THREE.AmbientLight(0x606878, 0.5));
+    scene.add(new THREE.HemisphereLight(0x88bbdd, 0x556633, 0.6));
+
+    // Secondary fill light from opposite side
+    const fill = new THREE.DirectionalLight(0xaabbcc, 0.3);
+    fill.position.set(-100, 150, -100);
+    scene.add(fill);
 
     // Raycaster for click interactions
     renderer.domElement.addEventListener("click", onWorldClick);
@@ -722,25 +744,46 @@ function showInspectPanel(data) {
     const content = document.getElementById("inspect-content");
     const type = parts[1];
     let html = "";
+    let speciesId = 0;
 
     if (type === "plant") {
         const name = parts[2], stage = parts[3], health = parts[4], growth = parts[5], cuts = parts[6];
-        html = "<div style='color:#6d6; font-size:14px; margin-bottom:6px;'>" + name + "</div>";
+        html = "<div style='color:#7d7; font-size:15px; margin-bottom:6px; font-weight:bold;'>" + name + "</div>";
         html += "<div>Stage: <span style='color:#cfc'>" + stage + "</span></div>";
         html += "<div>Health: <span style='color:#cfc'>" + health + "</span></div>";
         html += "<div>Growth: <span style='color:#cfc'>" + growth + "</span></div>";
         if (parseInt(cuts) > 0) html += "<div>Cut count: <span style='color:#fa8'>" + cuts + "/3</span></div>";
+        // Find species ID from name mapping
+        const nameToId = {
+            "Chestnut": 100, "Walnut": 101, "Carob": 102, "Eucalyptus": 103,
+            "Hazelnut": 104, "Almond": 105, "Cork Oak": 106, "Redwood": 107,
+            "Macadamia": 108, "Stone Pine": 109, "Pistachio": 110, "Bamboo": 111, "Cherry": 112,
+            "Fig": 200, "Pomegranate": 201, "Citrus": 202, "Olive": 203,
+            "Plum": 204, "Avocado": 205, "Mulberry": 206, "Banana": 207, "Mango": 208, "Persimmon": 209,
+            "Rosemary": 300, "Lavender": 301, "Thyme": 302, "Sage": 303,
+            "Rooibos": 304, "Protea": 305, "Tea": 306,
+            "Comfrey": 400, "Basil": 401, "Saffron": 402, "Shiso": 403,
+            "Clover": 500, "Strawberry": 501, "Grapevine": 600,
+        };
+        speciesId = nameToId[name] || 0;
     } else if (type === "animal") {
         const name = parts[2], behavior = parts[3], hunger = parts[4], energy = parts[5];
-        html = "<div style='color:#da6; font-size:14px; margin-bottom:6px;'>" + name + "</div>";
+        html = "<div style='color:#da6; font-size:15px; margin-bottom:6px; font-weight:bold;'>" + name + "</div>";
         html += "<div>Behavior: <span style='color:#cfc'>" + behavior + "</span></div>";
         html += "<div>" + hunger + "</div>";
         html += "<div>" + energy + "</div>";
+        if (name === "Chicken") speciesId = 10;
+        else if (name === "Deer") speciesId = 21;
     } else if (type === "player") {
         const name = parts[2], stamina = parts[3], hunger = parts[4];
-        html = "<div style='color:#48f; font-size:14px; margin-bottom:6px;'>" + name + "</div>";
+        html = "<div style='color:#6af; font-size:15px; margin-bottom:6px; font-weight:bold;'>" + name + "</div>";
         html += "<div>" + stamina + "</div>";
         html += "<div>" + hunger + "</div>";
+    }
+
+    const knowledge = getKnowledge(speciesId);
+    if (knowledge) {
+        html += "<div style='margin-top:8px; padding-top:8px; border-top:1px solid #3a5a3a; color:#aac8aa; font-size:11px; line-height:1.4; font-family:system-ui,sans-serif;'>" + knowledge + "</div>";
     }
 
     content.innerHTML = html;
@@ -784,21 +827,21 @@ function classifyEntity(kind, speciesId) {
 // --- Terrain rendering ---
 
 const VOXEL_COLORS = {
-    1: 0x888888, // Stone
-    2: 0x6B4423, // Soil
-    3: 0x3a7a2a, // Grass
-    4: 0x2266aa, // Water
-    5: 0xd4b896, // Sand
-    6: 0xaa7744, // Clay
-    7: 0x554422, // Mulch
-    8: 0x226688, // Swale
-    9: 0x664422, // HugelBed
-    10: 0x1a5a1a, // Canopy
-    11: 0xeeeeff, // Snow
-    12: 0xbbddff, // Ice
-    13: 0x0a3060, // Ocean
-    14: 0x999988, // Gravel
-    15: 0x8a3a1a, // RedSoil
+    1: 0x9a9590, // Stone (warm gray)
+    2: 0x7a5533, // Soil (rich brown)
+    3: 0x5a9a3a, // Grass (lush green)
+    4: 0x3388bb, // Water (clear blue)
+    5: 0xe8d4aa, // Sand (warm beige)
+    6: 0xb58855, // Clay (terracotta)
+    7: 0x5a4422, // Mulch (dark organic)
+    8: 0x3388aa, // Swale (teal)
+    9: 0x6a4422, // HugelBed
+    10: 0x2a7a2a, // Canopy (forest green)
+    11: 0xf0f0ff, // Snow (bright white-blue)
+    12: 0xccddee, // Ice (pale blue)
+    13: 0x1a4a7a, // Ocean (deep blue)
+    14: 0xa09888, // Gravel (warm taupe)
+    15: 0x9a4a2a, // RedSoil (warm terra)
 };
 
 function renderTerrain(terrainData) {
@@ -868,7 +911,7 @@ function renderTerrain(terrainData) {
 
         const baseColor = VOXEL_COLORS[mat] || 0xff00ff;
         const matInt = parseInt(mat);
-        const useVariation = (matInt === 1 || matInt === 14);
+        const useVariation = (matInt === 1 || matInt === 3 || matInt === 14);
         const material = new THREE.MeshStandardMaterial({
             color: baseColor,
             roughness: (matInt === 4 || matInt === 13) ? 0.2 : 0.9,
@@ -995,11 +1038,55 @@ function renderTerrain(terrainData) {
     }
     scene.add(fishGroup);
 
+    // Extended ground plane beyond voxel terrain
+    const groundSize = 2400;
+    const groundGeo = new THREE.PlaneGeometry(groundSize, groundSize, 64, 64);
+    groundGeo.rotateX(-Math.PI / 2);
+    const verts = groundGeo.attributes.position.array;
+    for (let i = 0; i < verts.length; i += 3) {
+        const gx = verts[i] + width / 2;
+        const gz = verts[i + 2] + depth / 2;
+        const isInside = gx >= 0 && gx < width && gz >= 0 && gz < depth;
+        if (isInside) {
+            const tx = Math.floor(Math.min(gx, width - 1));
+            const tz = Math.floor(Math.min(gz, depth - 1));
+            verts[i + 1] = heightMap[tz * width + tx] - 0.5;
+        } else {
+            const edgeDist = Math.max(
+                Math.max(0, -gx), Math.max(0, gx - width),
+                Math.max(0, -gz), Math.max(0, gz - depth)
+            );
+            verts[i + 1] = Math.max(-2, 6 - edgeDist * 0.02);
+        }
+    }
+    groundGeo.computeVertexNormals();
+    const groundMat = new THREE.MeshStandardMaterial({
+        color: 0x5a8a3a, roughness: 0.95, metalness: 0,
+        vertexColors: false,
+    });
+    const groundMesh = new THREE.Mesh(groundGeo, groundMat);
+    groundMesh.position.set(width / 2, 0, depth / 2);
+    groundMesh.receiveShadow = true;
+    terrainGroup.add(groundMesh);
+
+    // Distant ocean plane
+    const oceanGeo = new THREE.PlaneGeometry(6000, 6000);
+    oceanGeo.rotateX(-Math.PI / 2);
+    const oceanMat = new THREE.MeshStandardMaterial({
+        color: 0x2266aa, roughness: 0.1, metalness: 0.2,
+        transparent: true, opacity: 0.85,
+    });
+    const oceanMesh = new THREE.Mesh(oceanGeo, oceanMat);
+    oceanMesh.position.set(width / 2, 2.5, depth / 2);
+    oceanMesh.receiveShadow = true;
+    terrainGroup.add(oceanMesh);
+
     scene.add(terrainGroup);
 
+    // Camera starts close to player spawn point (center of terrain)
     const cx = width / 2;
     const cz = depth / 2;
-    camera.position.set(cx + 60, 80, cz + 60);
+    camera.position.set(cx + 15, 20, cz + 15);
     controls.target.set(cx, 10, cz);
     controls.update();
 
@@ -1011,21 +1098,21 @@ function renderTerrain(terrainData) {
 }
 
 const MINIMAP_COLORS = {
-    1: [136,136,136], // Stone
-    2: [107,68,35],   // Soil
-    3: [58,122,42],   // Grass
-    4: [34,102,170],  // Water
-    5: [212,184,150], // Sand
-    6: [170,119,68],  // Clay
-    7: [85,68,34],    // Mulch
-    8: [34,102,136],  // Swale
-    9: [102,68,34],   // HugelBed
-    10: [26,90,26],   // Canopy
-    11: [230,230,245],// Snow
-    12: [180,210,240],// Ice
-    13: [10,48,96],   // Ocean
-    14: [150,150,130],// Gravel
-    15: [138,58,26],  // RedSoil
+    1: [154,149,144], // Stone
+    2: [122,85,51],   // Soil
+    3: [90,154,58],   // Grass
+    4: [51,136,187],  // Water
+    5: [232,212,170], // Sand
+    6: [181,136,85],  // Clay
+    7: [90,68,34],    // Mulch
+    8: [51,136,170],  // Swale
+    9: [106,68,34],   // HugelBed
+    10: [42,122,42],  // Canopy
+    11: [240,240,255],// Snow
+    12: [204,221,238],// Ice
+    13: [26,74,122],  // Ocean
+    14: [160,152,136],// Gravel
+    15: [154,74,42],  // RedSoil
 };
 
 const PLOT_SIZE = 80;
@@ -1158,6 +1245,36 @@ function updateMinimapPlayer() {
     ctx.strokeStyle = "rgba(255,255,255,0.4)";
     ctx.lineWidth = 1;
     ctx.strokeRect(camPx - 15, camPz - 15, 30, 30);
+
+    // Update edge direction hints
+    const hintsEl = document.getElementById("edge-hints");
+    if (hintsEl) {
+        hintsEl.style.display = "block";
+        let currentCountryForHints = null;
+        let regionInCountryForHints = 0;
+        for (const c of WORLD_COUNTRIES) {
+            if (selectedRegion >= c.start && selectedRegion < c.start + c.count) {
+                currentCountryForHints = c;
+                regionInCountryForHints = selectedRegion - c.start;
+                break;
+            }
+        }
+        if (currentCountryForHints) {
+            const prevR = regionInCountryForHints > 0
+                ? currentCountryForHints.regions[regionInCountryForHints - 1]
+                : currentCountryForHints.regions[currentCountryForHints.count - 1];
+            const nextR = regionInCountryForHints < currentCountryForHints.count - 1
+                ? currentCountryForHints.regions[regionInCountryForHints + 1]
+                : currentCountryForHints.regions[0];
+            const cIdx = WORLD_COUNTRIES.indexOf(currentCountryForHints);
+            const northC = WORLD_COUNTRIES[(cIdx - 1 + WORLD_COUNTRIES.length) % WORLD_COUNTRIES.length];
+            const southC = WORLD_COUNTRIES[(cIdx + 1) % WORLD_COUNTRIES.length];
+            document.getElementById("hint-west").textContent = prevR;
+            document.getElementById("hint-east").textContent = nextR;
+            document.getElementById("hint-north").textContent = northC.name;
+            document.getElementById("hint-south").textContent = southC.name;
+        }
+    }
 
     // Region label
     let label = "Plot " + selectedPlotSeed;
@@ -1412,25 +1529,50 @@ function createEntityMesh(category) {
             const shirtMat = new THREE.MeshStandardMaterial({ color: 0x4488ff });
             const pantsMat = new THREE.MeshStandardMaterial({ color: 0x334455 });
             const shoeMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a });
+            const hairMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a });
             // Torso
             const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.28), shirtMat);
             torso.position.y = 1.1; torso.castShadow = true; group.add(torso);
             // Head
             const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), skinMat);
             head.position.y = 1.65; head.castShadow = true; group.add(head);
-            // Eyes
+            // Hair (top and back of head)
+            const hairTop = new THREE.Mesh(
+                new THREE.SphereGeometry(0.23, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
+                hairMat
+            );
+            hairTop.position.y = 1.68; group.add(hairTop);
+            const hairBack = new THREE.Mesh(
+                new THREE.BoxGeometry(0.38, 0.18, 0.12),
+                hairMat
+            );
+            hairBack.position.set(0, 1.6, 0.14); group.add(hairBack);
+            // Eyes (face points toward -Z)
             const eyeMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
-            const eyeGeo = new THREE.SphereGeometry(0.035, 4, 4);
+            const eyeWhiteMat = new THREE.MeshStandardMaterial({ color: 0xeeeedd });
+            const eyeWhiteGeo = new THREE.SphereGeometry(0.045, 5, 4);
+            const eyeGeo = new THREE.SphereGeometry(0.025, 4, 4);
+            const lwh = new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat);
+            lwh.position.set(-0.08, 1.68, -0.18); group.add(lwh);
+            const rwh = new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat);
+            rwh.position.set(0.08, 1.68, -0.18); group.add(rwh);
             const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
-            leftEye.position.set(-0.08, 1.68, 0.18); group.add(leftEye);
+            leftEye.position.set(-0.08, 1.68, -0.2); group.add(leftEye);
             const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
-            rightEye.position.set(0.08, 1.68, 0.18); group.add(rightEye);
+            rightEye.position.set(0.08, 1.68, -0.2); group.add(rightEye);
+            // Nose
+            const nose = new THREE.Mesh(
+                new THREE.ConeGeometry(0.03, 0.06, 4),
+                skinMat
+            );
+            nose.position.set(0, 1.63, -0.22);
+            nose.rotation.x = -Math.PI / 2; group.add(nose);
             // Mouth
             const mouth = new THREE.Mesh(
-                new THREE.BoxGeometry(0.1, 0.02, 0.02),
-                new THREE.MeshStandardMaterial({ color: 0xaa6655 })
+                new THREE.BoxGeometry(0.08, 0.02, 0.02),
+                new THREE.MeshStandardMaterial({ color: 0xcc7766 })
             );
-            mouth.position.set(0, 1.58, 0.2); group.add(mouth);
+            mouth.position.set(0, 1.57, -0.2); group.add(mouth);
             // Left arm
             const armGeo = new THREE.BoxGeometry(0.14, 0.55, 0.14);
             const leftArm = new THREE.Mesh(armGeo, skinMat);
@@ -1438,6 +1580,12 @@ function createEntityMesh(category) {
             // Right arm
             const rightArm = new THREE.Mesh(armGeo, skinMat);
             rightArm.position.set(0.37, 1.0, 0); rightArm.castShadow = true; group.add(rightArm);
+            // Hands
+            const handGeo = new THREE.SphereGeometry(0.07, 4, 4);
+            const lh = new THREE.Mesh(handGeo, skinMat);
+            lh.position.set(-0.37, 0.7, 0); group.add(lh);
+            const rh = new THREE.Mesh(handGeo, skinMat);
+            rh.position.set(0.37, 0.7, 0); group.add(rh);
             // Left leg
             const legGeo = new THREE.BoxGeometry(0.16, 0.5, 0.16);
             const leftLeg = new THREE.Mesh(legGeo, pantsMat);
@@ -1448,9 +1596,9 @@ function createEntityMesh(category) {
             // Shoes
             const shoeGeo = new THREE.BoxGeometry(0.18, 0.08, 0.24);
             const leftShoe = new THREE.Mesh(shoeGeo, shoeMat);
-            leftShoe.position.set(-0.12, 0.2, 0.04); group.add(leftShoe);
+            leftShoe.position.set(-0.12, 0.2, -0.04); group.add(leftShoe);
             const rightShoe = new THREE.Mesh(shoeGeo, shoeMat);
-            rightShoe.position.set(0.12, 0.2, 0.04); group.add(rightShoe);
+            rightShoe.position.set(0.12, 0.2, -0.04); group.add(rightShoe);
             return group;
         }
         case "eucalyptus":
@@ -1601,20 +1749,83 @@ function createEntityMesh(category) {
         }
         case "deer": {
             const group = new THREE.Group();
+            const deerMat = new THREE.MeshStandardMaterial({ color: 0x8a6a3a });
+            const deerLightMat = new THREE.MeshStandardMaterial({ color: 0xb89a6a });
+            const darkMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a });
+            // Body
             const body = new THREE.Mesh(
-                new THREE.CapsuleGeometry(0.3, 0.8, 4, 6),
-                new THREE.MeshStandardMaterial({ color: 0x8a6a3a })
+                new THREE.CapsuleGeometry(0.3, 1.0, 4, 6), deerMat
             );
-            body.position.y = 0.8;
-            body.rotation.z = Math.PI / 2;
-            body.castShadow = true;
-            group.add(body);
+            body.position.y = 0.85; body.rotation.z = Math.PI / 2;
+            body.castShadow = true; group.add(body);
+            // Belly (lighter)
+            const belly = new THREE.Mesh(
+                new THREE.CapsuleGeometry(0.22, 0.6, 4, 5), deerLightMat
+            );
+            belly.position.set(0, 0.72, 0); belly.rotation.z = Math.PI / 2;
+            group.add(belly);
+            // Legs
+            const legGeo = new THREE.CylinderGeometry(0.06, 0.05, 0.6, 4);
+            const hoofGeo = new THREE.CylinderGeometry(0.055, 0.04, 0.08, 4);
+            for (const [lx, lz] of [[-0.15, -0.35], [0.15, -0.35], [-0.15, 0.35], [0.15, 0.35]]) {
+                const leg = new THREE.Mesh(legGeo, deerMat);
+                leg.position.set(lx, 0.3, lz); leg.castShadow = true; group.add(leg);
+                const hoof = new THREE.Mesh(hoofGeo, darkMat);
+                hoof.position.set(lx, 0.04, lz); group.add(hoof);
+            }
+            // Neck
+            const neck = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.1, 0.14, 0.4, 5), deerMat
+            );
+            neck.position.set(0, 1.15, 0.5); neck.rotation.x = -0.4;
+            group.add(neck);
+            // Head
             const head = new THREE.Mesh(
-                new THREE.SphereGeometry(0.18, 6, 5),
-                new THREE.MeshStandardMaterial({ color: 0x9a7a4a })
+                new THREE.SphereGeometry(0.16, 6, 5), deerMat
             );
-            head.position.set(0, 1.1, 0.5);
-            group.add(head);
+            head.position.set(0, 1.3, 0.65); group.add(head);
+            // Snout
+            const snout = new THREE.Mesh(
+                new THREE.BoxGeometry(0.12, 0.1, 0.16), deerLightMat
+            );
+            snout.position.set(0, 1.24, 0.8); group.add(snout);
+            // Nose
+            const noseDeer = new THREE.Mesh(
+                new THREE.SphereGeometry(0.035, 4, 4), darkMat
+            );
+            noseDeer.position.set(0, 1.26, 0.88); group.add(noseDeer);
+            // Eyes
+            const eyeGeoDeer = new THREE.SphereGeometry(0.03, 4, 4);
+            const leyeDeer = new THREE.Mesh(eyeGeoDeer, darkMat);
+            leyeDeer.position.set(-0.13, 1.34, 0.7); group.add(leyeDeer);
+            const reyeDeer = new THREE.Mesh(eyeGeoDeer, darkMat);
+            reyeDeer.position.set(0.13, 1.34, 0.7); group.add(reyeDeer);
+            // Ears
+            const earGeo = new THREE.ConeGeometry(0.06, 0.18, 4);
+            const leftEarDeer = new THREE.Mesh(earGeo, deerLightMat);
+            leftEarDeer.position.set(-0.12, 1.5, 0.6); leftEarDeer.rotation.z = -0.4;
+            group.add(leftEarDeer);
+            const rightEarDeer = new THREE.Mesh(earGeo, deerLightMat);
+            rightEarDeer.position.set(0.12, 1.5, 0.6); rightEarDeer.rotation.z = 0.4;
+            group.add(rightEarDeer);
+            // Antlers
+            const antlerMat = new THREE.MeshStandardMaterial({ color: 0x6a5a3a });
+            const antlerGeo = new THREE.CylinderGeometry(0.015, 0.02, 0.35, 3);
+            const la1 = new THREE.Mesh(antlerGeo, antlerMat);
+            la1.position.set(-0.08, 1.55, 0.6); la1.rotation.z = -0.5; group.add(la1);
+            const la2 = new THREE.Mesh(antlerGeo, antlerMat);
+            la2.position.set(-0.15, 1.7, 0.58); la2.rotation.z = -0.8; group.add(la2);
+            const ra1 = new THREE.Mesh(antlerGeo, antlerMat);
+            ra1.position.set(0.08, 1.55, 0.6); ra1.rotation.z = 0.5; group.add(ra1);
+            const ra2 = new THREE.Mesh(antlerGeo, antlerMat);
+            ra2.position.set(0.15, 1.7, 0.58); ra2.rotation.z = 0.8; group.add(ra2);
+            // Tail
+            const tail = new THREE.Mesh(
+                new THREE.SphereGeometry(0.06, 4, 3),
+                new THREE.MeshStandardMaterial({ color: 0xeeddcc })
+            );
+            tail.position.set(0, 1.0, -0.55); tail.scale.set(1, 0.6, 1.5);
+            group.add(tail);
             return group;
         }
         // --- New canopy trees ---
@@ -2012,7 +2223,7 @@ function sendInput() {
     const len = Math.sqrt(mx*mx + mz*mz);
     if (len > 0) { mx /= len; mz /= len; }
 
-    const yaw = Math.atan2(mx, -mz);
+    const yaw = Math.atan2(-mx, -mz);
     const msg = buildInputMessage(mx, mz, yaw, jump, sprint);
     ws.send(msg);
 }
@@ -2111,6 +2322,64 @@ function updateWater(time) {
     }
 }
 
+// --- Edge-of-world region transition ---
+
+let edgeTransitionCooldown = 0;
+
+function checkEdgeTransition() {
+    if (!terrainMeta || !connected) return;
+    if (edgeTransitionCooldown > 0) { edgeTransitionCooldown--; return; }
+
+    const obj = entityMeshes.get(myEntityId);
+    if (!obj) return;
+
+    const px = obj.position.x;
+    const pz = obj.position.z;
+    const margin = 5;
+    const w = terrainMeta.width;
+    const d = terrainMeta.depth;
+
+    let nextRegion = -1;
+
+    // Find current country to get region list
+    let currentCountry = null;
+    let regionInCountry = 0;
+    for (const c of WORLD_COUNTRIES) {
+        if (selectedRegion >= c.start && selectedRegion < c.start + c.count) {
+            currentCountry = c;
+            regionInCountry = selectedRegion - c.start;
+            break;
+        }
+    }
+    if (!currentCountry) return;
+
+    // Walking to edge transitions to next/prev region in the same country
+    if (px < margin) {
+        nextRegion = (regionInCountry > 0)
+            ? currentCountry.start + regionInCountry - 1
+            : currentCountry.start + currentCountry.count - 1;
+    } else if (px > w - margin) {
+        nextRegion = (regionInCountry < currentCountry.count - 1)
+            ? currentCountry.start + regionInCountry + 1
+            : currentCountry.start;
+    } else if (pz < margin) {
+        // North edge: go to previous country
+        const cIdx = WORLD_COUNTRIES.indexOf(currentCountry);
+        const prevC = WORLD_COUNTRIES[(cIdx - 1 + WORLD_COUNTRIES.length) % WORLD_COUNTRIES.length];
+        nextRegion = prevC.start;
+    } else if (pz > d - margin) {
+        // South edge: go to next country
+        const cIdx = WORLD_COUNTRIES.indexOf(currentCountry);
+        const nextC = WORLD_COUNTRIES[(cIdx + 1) % WORLD_COUNTRIES.length];
+        nextRegion = nextC.start;
+    }
+
+    if (nextRegion >= 0 && nextRegion !== selectedRegion) {
+        edgeTransitionCooldown = 120; // 2 seconds at 60fps
+        travelToRegion(nextRegion, selectedPlotSeed);
+    }
+}
+
 // --- Game loop ---
 
 let lastTime = performance.now();
@@ -2130,6 +2399,7 @@ function gameLoop(now) {
 
     updateFlames(now / 1000);
     updateWater(now / 1000);
+    checkEdgeTransition();
     minimapTimer += dt;
     if (minimapTimer >= 0.2) {
         minimapTimer = 0;
@@ -2142,4 +2412,144 @@ function gameLoop(now) {
 
 function updateStatus(text) {
     document.getElementById("status").textContent = text;
+}
+
+// --- Ambient music (generative) ---
+
+let audioCtx = null;
+let musicStarted = false;
+
+function startAmbientMusic() {
+    if (musicStarted) return;
+    musicStarted = true;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    function createDrone(freq, gain, detune) {
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        osc.detune.value = detune || 0;
+        g.gain.value = gain;
+        osc.connect(g);
+        g.connect(audioCtx.destination);
+        osc.start();
+
+        // Slow modulation for organic feel
+        const lfo = audioCtx.createOscillator();
+        const lfoGain = audioCtx.createGain();
+        lfo.type = "sine";
+        lfo.frequency.value = 0.05 + Math.random() * 0.08;
+        lfoGain.gain.value = gain * 0.3;
+        lfo.connect(lfoGain);
+        lfoGain.connect(g.gain);
+        lfo.start();
+
+        return { osc, gain: g };
+    }
+
+    // Peaceful pad tones (C major 7th voicing)
+    createDrone(65.41, 0.04, 0);   // C2
+    createDrone(130.81, 0.025, 3); // C3
+    createDrone(164.81, 0.02, -2); // E3
+    createDrone(196.00, 0.018, 5); // G3
+    createDrone(246.94, 0.012, -3); // B3
+
+    // Nature-like high shimmer
+    function playChime() {
+        if (!audioCtx) return;
+        const notes = [523.25, 659.25, 783.99, 987.77, 1046.5, 1318.5];
+        const freq = notes[Math.floor(Math.random() * notes.length)];
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        g.gain.setValueAtTime(0.015, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 3);
+        osc.connect(g);
+        g.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 3);
+        setTimeout(playChime, 4000 + Math.random() * 8000);
+    }
+    setTimeout(playChime, 2000);
+}
+
+// Start music on first user interaction (browser autoplay policy)
+document.addEventListener("click", () => startAmbientMusic(), { once: true });
+document.addEventListener("keydown", () => startAmbientMusic(), { once: true });
+
+// --- Periodic knowledge tips in chat ---
+
+const GENERAL_TIPS = [
+    "Food forests mimic natural woodland ecosystems to produce food, medicine, and materials sustainably.",
+    "A food forest has 7 layers: canopy, understory, shrub, herbaceous, ground cover, vine, and root.",
+    "Unlike conventional farming, food forests improve soil health over time through natural nutrient cycling.",
+    "Companion planting: nitrogen-fixing trees like carob enrich soil for neighboring fruit trees.",
+    "Mulching with leaf litter retains moisture, suppresses weeds, and feeds beneficial soil organisms.",
+    "Food forests require less maintenance as they mature. The ecosystem becomes self-regulating.",
+    "Swales capture rainwater and direct it to tree roots, reducing irrigation needs by up to 80%.",
+    "Hugel beds (hugelkultur) are raised beds built over decomposing wood, creating a slow-release nutrient source.",
+    "Mycorrhizal fungi form underground networks connecting trees, sharing water and nutrients across the forest.",
+    "Pollinator corridors: planting lavender and rosemary between fruit trees dramatically increases yields.",
+    "Food forests sequester 5-10 times more carbon per hectare than conventional agriculture.",
+    "Sheet mulching with cardboard and compost converts lawn to food forest without tilling.",
+    "Guild planting groups mutually beneficial species: a fruit tree, nitrogen fixer, mulch plant, and pest repellent.",
+    "Deep-rooted plants like comfrey act as dynamic accumulators, mining minerals from subsoil for surface plants.",
+    "A mature food forest can produce 10-20 times more food per hectare than a monoculture farm.",
+];
+
+let tipIndex = 0;
+setInterval(() => {
+    if (!connected) return;
+    const chatLog = document.getElementById("chat-log");
+    const line = document.createElement("div");
+    line.style.color = "#88bbaa";
+    line.style.fontStyle = "italic";
+    line.textContent = GENERAL_TIPS[tipIndex % GENERAL_TIPS.length];
+    chatLog.appendChild(line);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    tipIndex++;
+}, 45000);
+
+// --- Food forest knowledge system ---
+
+const FOOD_FOREST_KNOWLEDGE = {
+    100: "Chestnut trees are a canopy staple in temperate food forests. They produce protein-rich nuts and create dappled shade for understory plants. A single mature tree can yield 50-100 kg of nuts per year.",
+    101: "Walnut trees fix nitrogen through mycorrhizal partnerships. Their deep taproots bring minerals from subsoil layers, cycling nutrients for the whole ecosystem. The juglone they produce suppresses some weeds.",
+    102: "Carob trees thrive in dry Mediterranean climates without irrigation. Their pods contain a natural sweetener that can replace chocolate. They are nitrogen-fixing leguminous trees.",
+    103: "Eucalyptus is an invasive species in many Mediterranean regions. It depletes groundwater and suppresses native biodiversity. Responsible food foresters replace eucalyptus with diverse native canopy trees.",
+    104: "Hazelnut thrives as an understory or canopy edge tree. It produces nutrient-dense nuts high in vitamin E and healthy fats. Hazelnuts are among the earliest food forest yields, bearing fruit in 3-4 years.",
+    105: "Almond trees are drought-tolerant once established. They bloom early in spring, providing critical food for pollinators. A food forest with almonds supports bee populations year-round.",
+    106: "Cork oak is a keystone species of Mediterranean ecosystems. Its bark can be harvested every 9 years without harming the tree. Cork forests support more biodiversity than any other Mediterranean habitat.",
+    107: "Redwood trees create cathedral-like canopy environments. Their fog-drip irrigation waters the forest floor naturally. They can sequester more carbon per hectare than any other forest type.",
+    109: "Stone pine produces large, nutritious pine nuts. Its distinctive umbrella shape provides excellent shade while allowing filtered light through. It thrives in sandy, poor soils where other trees struggle.",
+    110: "Pistachio trees are incredibly drought-resistant, producing nuts in arid conditions. They have been cultivated for over 5000 years in Iran. Male and female trees are needed for pollination.",
+    111: "Bamboo is one of the fastest growing plants on Earth, sequestering carbon rapidly. Its shoots are edible and its culms have countless uses. It prevents soil erosion on slopes.",
+    112: "Cherry trees provide food for humans and wildlife alike. Their blossoms are among the first spring nectar sources. In food forests, they attract beneficial predatory insects.",
+    200: "Fig trees are one of the oldest cultivated fruits. They require no cross-pollination and produce two harvests per year. Their deep roots make them excellent drought-tolerant anchor plants.",
+    201: "Pomegranate is rich in antioxidants and thrives in Mediterranean climates. It requires minimal water once established and produces fruit within 2-3 years of planting.",
+    202: "Citrus trees provide year-round harvests in warm climates. Their fragrant blossoms attract pollinators. Interplanting citrus with nitrogen-fixers dramatically improves yields.",
+    203: "Olive trees can live for thousands of years. They are the backbone of Mediterranean food forests, producing fruit, oil, and supporting mycorrhizal networks that nourish the entire ecosystem.",
+    205: "Avocado trees are nutrient accumulators, drawing minerals from deep soil layers. Their leaf litter creates excellent mulch. In food forests, they pair well with nitrogen-fixers and banana plants.",
+    207: "Banana plants are not trees but giant herbs. They grow rapidly, producing fruit within a year. Their decaying pseudostems create rich compost, feeding the soil food web.",
+    208: "Mango trees can live for hundreds of years and produce fruit for generations. They create dense shade that suppresses weeds and their deep roots prevent soil erosion.",
+    300: "Rosemary is a medicinal and culinary herb that attracts pollinators. Its essential oils repel many garden pests. In food forests, it forms a fragrant, drought-tolerant ground layer.",
+    301: "Lavender attracts beneficial insects and pollinators while repelling aphids and moths. Its calming scent creates a therapeutic garden atmosphere. It thrives in poor, well-drained soils.",
+    302: "Thyme is a living mulch that suppresses weeds and retains soil moisture. Its antimicrobial properties benefit neighboring plants. Ancient Greeks burned thyme as incense in temples.",
+    304: "Rooibos is a nitrogen-fixing shrub from South Africa. It thrives in acidic, poor soils and produces caffeine-free tea rich in antioxidants.",
+    305: "Protea plants are fire-adapted and incredibly drought-resistant. They support a unique ecosystem of sugarbirds and beetles. Their deep roots access water other plants cannot reach.",
+    306: "Tea plants thrive in misty, mountainous conditions. Yunnan province is the birthplace of tea cultivation. Tea gardens with shade trees produce higher quality leaves than monoculture plantations.",
+    400: "Comfrey is called the permaculture wonder plant. Its deep taproots mine minerals from subsoil. Chop-and-drop comfrey leaves create the richest natural mulch, feeding soil microbes.",
+    401: "Basil is a companion plant that repels flies and mosquitoes. Growing basil near tomatoes improves flavor and repels pests. In food forests, basil fills the herbaceous layer with fragrance.",
+    402: "Saffron crocus produces the world's most expensive spice. Each flower yields only 3 stigmas. In food forests, saffron grows beneath deciduous trees that provide summer shade.",
+    403: "Shiso is a versatile Japanese herb used in medicine and cuisine. Its leaves are rich in omega-3 fatty acids. It self-seeds prolifically, creating a self-sustaining ground cover.",
+    500: "Clover is a living mulch and nitrogen fixer. Its roots host bacteria that convert atmospheric nitrogen into plant-available form, naturally fertilizing the soil for surrounding plants.",
+    600: "Grapevines are productive climbers in food forests. They use vertical space efficiently, growing up through canopy trees. Grapes thrive in well-drained soils with good sun exposure.",
+    10:  "Chickens provide eggs, pest control, and soil cultivation. In food forest systems, they scratch leaf litter and eat insect pests. Their manure is a rich nitrogen source for plants.",
+    21:  "Deer are part of natural forest ecosystems. While they can damage young trees, their browsing creates clearings that increase plant diversity. Their droppings spread seeds and fertilize soil.",
+};
+
+function getKnowledge(speciesId) {
+    return FOOD_FOREST_KNOWLEDGE[speciesId] || null;
 }
