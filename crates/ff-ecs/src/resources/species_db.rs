@@ -613,5 +613,26 @@ fn default_animals() -> Vec<AnimalSpecies> {
             diet: vec![400, 300],
             ecosystem_service: EcosystemService::None,
         },
+        AnimalSpecies {
+            id: 22,
+            name: "Wild Boar".into(),
+            speed: 4.5,
+            diet: vec![700, 501, 500],
+            ecosystem_service: EcosystemService::SoilAeration,
+        },
+        AnimalSpecies {
+            id: 30,
+            name: "Lamb".into(),
+            speed: 3.0,
+            diet: vec![500, 400],
+            ecosystem_service: EcosystemService::None,
+        },
+        AnimalSpecies {
+            id: 31,
+            name: "Rabbit".into(),
+            speed: 5.0,
+            diet: vec![500, 400, 300],
+            ecosystem_service: EcosystemService::None,
+        },
     ]
 }

@@ -774,6 +774,9 @@ function showInspectPanel(data) {
         html += "<div>" + energy + "</div>";
         if (name === "Chicken") speciesId = 10;
         else if (name === "Deer") speciesId = 21;
+        else if (name === "Wild Boar" || name === "Boar") speciesId = 22;
+        else if (name === "Lamb" || name === "Sheep") speciesId = 30;
+        else if (name === "Rabbit") speciesId = 31;
     } else if (type === "player") {
         const name = parts[2], stamina = parts[3], hunger = parts[4];
         html = "<div style='color:#6af; font-size:15px; margin-bottom:6px; font-weight:bold;'>" + name + "</div>";
@@ -797,6 +800,9 @@ function classifyEntity(kind, speciesId) {
     if (kind === "animal") {
         if (speciesId === 10) return "chicken";
         if (speciesId === 21) return "deer";
+        if (speciesId === 22) return "boar";
+        if (speciesId === 30) return "lamb";
+        if (speciesId === 31) return "rabbit";
         return "animal";
     }
     if (kind === "npc") return "npc";
@@ -911,16 +917,19 @@ function renderTerrain(terrainData) {
 
         const baseColor = VOXEL_COLORS[mat] || 0xff00ff;
         const matInt = parseInt(mat);
-        const useVariation = (matInt === 1 || matInt === 3 || matInt === 14);
+        const useVariation = (matInt === 1 || matInt === 2 || matInt === 3 || matInt === 5 || matInt === 6 || matInt === 14 || matInt === 15);
+
+        // Per-material roughness for natural look
+        const roughnessMap = { 1: 0.95, 2: 0.92, 3: 0.88, 4: 0.15, 5: 0.85, 6: 0.9, 7: 0.95, 8: 0.2, 9: 0.93, 10: 0.85, 11: 0.7, 12: 0.3, 13: 0.1, 14: 0.93, 15: 0.9 };
         const material = new THREE.MeshStandardMaterial({
             color: baseColor,
-            roughness: (matInt === 4 || matInt === 13) ? 0.2 : 0.9,
-            metalness: 0.0,
+            roughness: roughnessMap[matInt] || 0.85,
+            metalness: (matInt === 4 || matInt === 13 || matInt === 12) ? 0.15 : 0.0,
         });
 
         if (matInt === 4 || matInt === 8 || matInt === 13) {
             material.transparent = true;
-            material.opacity = 0.75;
+            material.opacity = 0.7;
         }
 
         const mesh = new THREE.InstancedMesh(boxGeo, material, count);
@@ -950,6 +959,55 @@ function renderTerrain(terrainData) {
         mesh.instanceMatrix.needsUpdate = true;
         if (useVariation) mesh.instanceColor.needsUpdate = true;
         terrainGroup.add(mesh);
+    }
+
+    // Grass blades on grass voxels (material 3)
+    const grassPositions = voxelsByMat[3];
+    if (grassPositions && grassPositions.length > 0) {
+        const grassBladeGeo = new THREE.PlaneGeometry(0.15, 0.45);
+        grassBladeGeo.translate(0, 0.22, 0);
+        const grassBladeMat = new THREE.MeshStandardMaterial({
+            color: 0x4a9a3a, roughness: 0.9, side: THREE.DoubleSide, alphaTest: 0.1
+        });
+        const grassBladeMat2 = new THREE.MeshStandardMaterial({
+            color: 0x5aaa4a, roughness: 0.9, side: THREE.DoubleSide, alphaTest: 0.1
+        });
+        const grassVoxelCount = grassPositions.length / 3;
+        const bladesPerVoxel = 3;
+        const maxGrassBlades = Math.min(grassVoxelCount * bladesPerVoxel, 40000);
+        const grassMesh1 = new THREE.InstancedMesh(grassBladeGeo, grassBladeMat, Math.ceil(maxGrassBlades / 2));
+        const grassMesh2 = new THREE.InstancedMesh(grassBladeGeo, grassBladeMat2, Math.floor(maxGrassBlades / 2));
+        const gm = new THREE.Matrix4();
+        const gr = new THREE.Matrix4();
+        let gi1 = 0, gi2 = 0;
+        for (let v = 0; v < grassVoxelCount && (gi1 + gi2) < maxGrassBlades; v++) {
+            const gx = grassPositions[v * 3];
+            const gy = grassPositions[v * 3 + 1];
+            const gz = grassPositions[v * 3 + 2];
+            if (!isAir(gx, gy + 1, gz)) continue;
+            const hash = (gx * 73 + gz * 37 + gy * 17) & 0xFF;
+            for (let b = 0; b < bladesPerVoxel; b++) {
+                const bx = gx + ((hash + b * 87) % 100) / 100 - 0.5;
+                const bz = gz + ((hash + b * 53) % 100) / 100 - 0.5;
+                const angle = ((hash + b * 41) % 360) * Math.PI / 180;
+                const scale = 0.7 + ((hash + b * 29) % 60) / 100;
+                gm.makeRotationY(angle);
+                gr.makeScale(scale, scale, scale);
+                gm.multiply(gr);
+                gm.setPosition(bx, gy + 0.5, bz);
+                if ((v + b) % 2 === 0 && gi1 < Math.ceil(maxGrassBlades / 2)) {
+                    grassMesh1.setMatrixAt(gi1++, gm);
+                } else if (gi2 < Math.floor(maxGrassBlades / 2)) {
+                    grassMesh2.setMatrixAt(gi2++, gm);
+                }
+            }
+        }
+        grassMesh1.count = gi1;
+        grassMesh2.count = gi2;
+        grassMesh1.instanceMatrix.needsUpdate = true;
+        grassMesh2.instanceMatrix.needsUpdate = true;
+        terrainGroup.add(grassMesh1);
+        terrainGroup.add(grassMesh2);
     }
 
     // Water surface planes for animated water
@@ -1505,136 +1563,142 @@ function travelToRegion(regionIndex, plotSeed) {
 
 // --- Entity rendering ---
 
-function makeTree(trunkColor, trunkW, trunkH, canopyColor, canopyR, canopyH, canopyY) {
+function makeTree(trunkColor, trunkW, trunkH, canopyColor, canopyR, canopyH, canopyY, fruitColor, fruitCount) {
     const group = new THREE.Group();
-    const trunkGeo = new THREE.CylinderGeometry(trunkW * 0.6, trunkW, trunkH, 6);
-    const trunk = new THREE.Mesh(trunkGeo, new THREE.MeshStandardMaterial({ color: trunkColor }));
+    const trunkGeo = new THREE.CylinderGeometry(trunkW * 0.6, trunkW, trunkH, 8);
+    const trunk = new THREE.Mesh(trunkGeo, new THREE.MeshStandardMaterial({
+        color: trunkColor, roughness: 0.95
+    }));
     trunk.position.y = trunkH / 2;
     trunk.castShadow = true;
     group.add(trunk);
-    const canopyGeo = new THREE.SphereGeometry(canopyR, 8, 6);
-    if (canopyH !== canopyR) canopyGeo.scale(1, canopyH / canopyR, 1);
-    const canopy = new THREE.Mesh(canopyGeo, new THREE.MeshStandardMaterial({ color: canopyColor }));
-    canopy.position.y = canopyY;
-    canopy.castShadow = true;
-    group.add(canopy);
+    // Multiple overlapping canopy spheres for organic look
+    const canopyMat = new THREE.MeshStandardMaterial({ color: canopyColor, roughness: 0.85 });
+    const mainCanopy = new THREE.Mesh(new THREE.SphereGeometry(canopyR, 10, 8), canopyMat);
+    if (canopyH !== canopyR) mainCanopy.scale.y = canopyH / canopyR;
+    mainCanopy.position.y = canopyY;
+    mainCanopy.castShadow = true;
+    group.add(mainCanopy);
+    // Secondary canopy blobs
+    for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2 + 0.5;
+        const r2 = canopyR * 0.65;
+        const blob = new THREE.Mesh(
+            new THREE.SphereGeometry(r2, 7, 5),
+            new THREE.MeshStandardMaterial({
+                color: new THREE.Color(canopyColor).offsetHSL(0, 0, (i - 1) * 0.04),
+                roughness: 0.85
+            })
+        );
+        blob.position.set(Math.cos(a) * canopyR * 0.5, canopyY - 0.2 + i * 0.15, Math.sin(a) * canopyR * 0.5);
+        blob.castShadow = true;
+        group.add(blob);
+    }
+    // Leaf particles scattered around canopy
+    const leafCount = Math.floor(canopyR * 12);
+    const leafGeo = new THREE.PlaneGeometry(0.18, 0.12);
+    for (let i = 0; i < leafCount; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.random() * Math.PI;
+        const rLeaf = canopyR * (0.7 + Math.random() * 0.45);
+        const lx = Math.sin(phi) * Math.cos(theta) * rLeaf;
+        const ly = canopyY + Math.cos(phi) * canopyH * 0.5 * (Math.random() - 0.3);
+        const lz = Math.sin(phi) * Math.sin(theta) * rLeaf;
+        const leafShade = new THREE.Color(canopyColor).offsetHSL(
+            (Math.random() - 0.5) * 0.06, (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.08
+        );
+        const leaf = new THREE.Mesh(leafGeo, new THREE.MeshStandardMaterial({
+            color: leafShade, roughness: 0.8, side: THREE.DoubleSide
+        }));
+        leaf.position.set(lx, ly, lz);
+        leaf.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+        group.add(leaf);
+    }
+    // Fruits
+    if (fruitColor && fruitCount) {
+        const fruitMat = new THREE.MeshStandardMaterial({ color: fruitColor, roughness: 0.4, metalness: 0.05 });
+        const fruitGeo = new THREE.SphereGeometry(0.1, 5, 4);
+        for (let i = 0; i < fruitCount; i++) {
+            const a = (i / fruitCount) * Math.PI * 2;
+            const rr = canopyR * 0.6;
+            const fruit = new THREE.Mesh(fruitGeo, fruitMat);
+            fruit.position.set(
+                Math.cos(a) * rr,
+                canopyY - canopyH * 0.3 + Math.sin(i * 2.3) * 0.3,
+                Math.sin(a) * rr
+            );
+            group.add(fruit);
+        }
+    }
     return group;
 }
 
 function createEntityMesh(category) {
     switch (category) {
         case "player": {
-            const group = new THREE.Group();
-            const skinMat = new THREE.MeshStandardMaterial({ color: 0xddbb88 });
-            const shirtMat = new THREE.MeshStandardMaterial({ color: 0x4488ff });
-            const pantsMat = new THREE.MeshStandardMaterial({ color: 0x334455 });
-            const shoeMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a });
-            const hairMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a });
+            const g = new THREE.Group();
+            const skin = new THREE.MeshStandardMaterial({ color: 0xf0d0a8, roughness: 0.75 });
+            const shirt = new THREE.MeshStandardMaterial({ color: 0x5588bb, roughness: 0.8 });
+            const pants = new THREE.MeshStandardMaterial({ color: 0x445566, roughness: 0.8 });
+            const shoe = new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.9 });
+            const hair = new THREE.MeshStandardMaterial({ color: 0x4a3020, roughness: 0.9 });
+            const dot = new THREE.MeshStandardMaterial({ color: 0x221111, roughness: 0.6 });
             // Torso
-            const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.28), shirtMat);
-            torso.position.y = 1.1; torso.castShadow = true; group.add(torso);
-            // Head
-            const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), skinMat);
-            head.position.y = 1.65; head.castShadow = true; group.add(head);
-            // Hair (top and back of head)
-            const hairTop = new THREE.Mesh(
-                new THREE.SphereGeometry(0.23, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
-                hairMat
+            const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.4, 6, 8), shirt);
+            torso.position.y = 1.05; torso.castShadow = true; g.add(torso);
+            // Neck
+            const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.1, 6), skin);
+            neck.position.y = 1.35; g.add(neck);
+            // Head (slightly wider, friendly proportion)
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), skin);
+            head.position.y = 1.56; head.castShadow = true; g.add(head);
+            // Hair cap
+            const hairCap = new THREE.Mesh(
+                new THREE.SphereGeometry(0.23, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), hair
             );
-            hairTop.position.y = 1.68; group.add(hairTop);
-            const hairBack = new THREE.Mesh(
-                new THREE.BoxGeometry(0.38, 0.18, 0.12),
-                hairMat
-            );
-            hairBack.position.set(0, 1.6, 0.14); group.add(hairBack);
-            // Eyes (face points toward -Z)
-            const eyeMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
-            const eyeWhiteMat = new THREE.MeshStandardMaterial({ color: 0xeeeedd });
-            const eyeWhiteGeo = new THREE.SphereGeometry(0.045, 5, 4);
-            const eyeGeo = new THREE.SphereGeometry(0.025, 4, 4);
-            const lwh = new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat);
-            lwh.position.set(-0.08, 1.68, -0.18); group.add(lwh);
-            const rwh = new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat);
-            rwh.position.set(0.08, 1.68, -0.18); group.add(rwh);
-            const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
-            leftEye.position.set(-0.08, 1.68, -0.2); group.add(leftEye);
-            const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
-            rightEye.position.set(0.08, 1.68, -0.2); group.add(rightEye);
-            // Nose
-            const nose = new THREE.Mesh(
-                new THREE.ConeGeometry(0.03, 0.06, 4),
-                skinMat
-            );
-            nose.position.set(0, 1.63, -0.22);
-            nose.rotation.x = -Math.PI / 2; group.add(nose);
-            // Mouth
-            const mouth = new THREE.Mesh(
-                new THREE.BoxGeometry(0.08, 0.02, 0.02),
-                new THREE.MeshStandardMaterial({ color: 0xcc7766 })
-            );
-            mouth.position.set(0, 1.57, -0.2); group.add(mouth);
-            // Left arm
-            const armGeo = new THREE.BoxGeometry(0.14, 0.55, 0.14);
-            const leftArm = new THREE.Mesh(armGeo, skinMat);
-            leftArm.position.set(-0.37, 1.0, 0); leftArm.castShadow = true; group.add(leftArm);
-            // Right arm
-            const rightArm = new THREE.Mesh(armGeo, skinMat);
-            rightArm.position.set(0.37, 1.0, 0); rightArm.castShadow = true; group.add(rightArm);
-            // Hands
-            const handGeo = new THREE.SphereGeometry(0.07, 4, 4);
-            const lh = new THREE.Mesh(handGeo, skinMat);
-            lh.position.set(-0.37, 0.7, 0); group.add(lh);
-            const rh = new THREE.Mesh(handGeo, skinMat);
-            rh.position.set(0.37, 0.7, 0); group.add(rh);
-            // Left leg
-            const legGeo = new THREE.BoxGeometry(0.16, 0.5, 0.16);
-            const leftLeg = new THREE.Mesh(legGeo, pantsMat);
-            leftLeg.position.set(-0.12, 0.5, 0); leftLeg.castShadow = true; group.add(leftLeg);
-            // Right leg
-            const rightLeg = new THREE.Mesh(legGeo, pantsMat);
-            rightLeg.position.set(0.12, 0.5, 0); rightLeg.castShadow = true; group.add(rightLeg);
-            // Shoes
-            const shoeGeo = new THREE.BoxGeometry(0.18, 0.08, 0.24);
-            const leftShoe = new THREE.Mesh(shoeGeo, shoeMat);
-            leftShoe.position.set(-0.12, 0.2, -0.04); group.add(leftShoe);
-            const rightShoe = new THREE.Mesh(shoeGeo, shoeMat);
-            rightShoe.position.set(0.12, 0.2, -0.04); group.add(rightShoe);
-            return group;
+            hairCap.position.y = 1.58; g.add(hairCap);
+            // Simple dot eyes (friendly, no uncanny valley)
+            for (const side of [-1, 1]) {
+                const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 5, 4), dot);
+                eye.position.set(side * 0.08, 1.58, -0.2); g.add(eye);
+            }
+            // Arms (connected to torso, overlapping)
+            for (const side of [-1, 1]) {
+                const upperArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.065, 0.24, 4, 6), shirt);
+                upperArm.position.set(side * 0.3, 1.1, 0); upperArm.castShadow = true; g.add(upperArm);
+                const forearm = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.22, 4, 6), skin);
+                forearm.position.set(side * 0.3, 0.8, 0); g.add(forearm);
+                const hand = new THREE.Mesh(new THREE.SphereGeometry(0.055, 5, 4), skin);
+                hand.position.set(side * 0.3, 0.62, 0); g.add(hand);
+            }
+            // Legs (overlapping with torso)
+            for (const side of [-1, 1]) {
+                const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.24, 4, 6), pants);
+                thigh.position.set(side * 0.1, 0.6, 0); thigh.castShadow = true; g.add(thigh);
+                const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.22, 4, 6), pants);
+                shin.position.set(side * 0.1, 0.32, 0); g.add(shin);
+                const shoeM = new THREE.Mesh(new THREE.CapsuleGeometry(0.065, 0.1, 4, 5), shoe);
+                shoeM.position.set(side * 0.1, 0.14, -0.02); shoeM.rotation.x = Math.PI / 2;
+                shoeM.scale.set(1, 1.3, 0.8); g.add(shoeM);
+            }
+            return g;
         }
         case "eucalyptus":
-            return makeTree(0x8a7a6a, 0.2, 6, 0x5a7a5a, 1.5, 2.1, 7.0);
+            return makeTree(0x8a7a6a, 0.2, 6, 0x6a8a6a, 1.5, 2.1, 7.0);
         case "chestnut":
-            return makeTree(0x5c3a1a, 0.3, 4, 0x1a6a1a, 2.5, 2.5, 5.5);
+            return makeTree(0x5c3a1a, 0.3, 4, 0x2a7a1a, 2.5, 2.5, 5.5, 0x8a5a1a, 6);
         case "walnut":
-            return makeTree(0x4a3018, 0.35, 5, 0x2a5a1a, 2.8, 2.8, 6.5);
+            return makeTree(0x4a3018, 0.35, 5, 0x2a6a1a, 2.8, 2.8, 6.5, 0x5a7a2a, 8);
         case "carob":
-            return makeTree(0x3a2a1a, 0.25, 3, 0x2a4a1a, 2.0, 2.0, 4.5);
-        case "fig": {
-            const g = makeTree(0x6a5a3a, 0.15, 1.5, 0x3a7a2a, 1.8, 1.2, 2.8);
-            const c2 = new THREE.Mesh(
-                new THREE.SphereGeometry(1.3, 7, 5),
-                new THREE.MeshStandardMaterial({ color: 0x4a8a3a })
-            );
-            c2.position.set(0.6, 2.4, 0.4);
-            c2.castShadow = true;
-            g.add(c2);
-            return g;
-        }
+            return makeTree(0x3a2a1a, 0.25, 3, 0x2a5a1a, 2.0, 2.0, 4.5, 0x5a3a1a, 5);
+        case "fig":
+            return makeTree(0x6a5a3a, 0.15, 1.5, 0x3a7a2a, 2.0, 1.4, 2.8, 0x6a2a5a, 7);
         case "pomegranate":
-            return makeTree(0x5a3a2a, 0.12, 1.8, 0x3a6a1a, 1.2, 1.2, 3.0);
+            return makeTree(0x5a3a2a, 0.12, 1.8, 0x3a6a1a, 1.2, 1.2, 3.0, 0xcc2233, 6);
         case "citrus":
-            return makeTree(0x5a4a2a, 0.15, 1.5, 0x2a7a1a, 1.5, 1.5, 3.0);
-        case "olive": {
-            const g = makeTree(0x7a6a4a, 0.2, 2.5, 0x6a8a5a, 1.8, 1.2, 3.8);
-            const c2 = new THREE.Mesh(
-                new THREE.SphereGeometry(1.4, 7, 5),
-                new THREE.MeshStandardMaterial({ color: 0x7a9a6a })
-            );
-            c2.position.set(-0.5, 3.5, 0.3);
-            c2.castShadow = true;
-            g.add(c2);
-            return g;
-        }
+            return makeTree(0x5a4a2a, 0.15, 1.5, 0x2a7a1a, 1.5, 1.5, 3.0, 0xffaa22, 8);
+        case "olive":
+            return makeTree(0x7a6a4a, 0.2, 2.5, 0x7a9a6a, 2.0, 1.4, 3.8, 0x3a4a1a, 10);
         case "rosemary": {
             const group = new THREE.Group();
             for (let i = 0; i < 5; i++) {
@@ -1700,28 +1764,44 @@ function createEntityMesh(category) {
             const group = new THREE.Group();
             const leaves = new THREE.Mesh(
                 new THREE.SphereGeometry(0.2, 6, 4),
-                new THREE.MeshStandardMaterial({ color: 0x3a8a2a })
+                new THREE.MeshStandardMaterial({ color: 0x3a8a2a, roughness: 0.85 })
             );
-            leaves.position.y = 0.15;
-            leaves.scale.y = 0.5;
-            group.add(leaves);
+            leaves.position.y = 0.15; leaves.scale.y = 0.5; group.add(leaves);
+            const berryMat = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.4 });
+            for (let i = 0; i < 3; i++) {
+                const a = (i / 3) * Math.PI * 2;
+                const berry = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 3), berryMat);
+                berry.position.set(Math.cos(a) * 0.15, 0.08, Math.sin(a) * 0.15);
+                berry.scale.y = 1.3; group.add(berry);
+            }
             return group;
         }
         case "grapevine": {
             const group = new THREE.Group();
             const vine = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.05, 0.08, 2.0, 4),
-                new THREE.MeshStandardMaterial({ color: 0x5a4a2a })
+                new THREE.CylinderGeometry(0.04, 0.07, 2.0, 5),
+                new THREE.MeshStandardMaterial({ color: 0x5a4a2a, roughness: 0.9 })
             );
-            vine.position.y = 1.0;
-            group.add(vine);
+            vine.position.y = 1.0; vine.castShadow = true; group.add(vine);
             const foliage = new THREE.Mesh(
-                new THREE.SphereGeometry(0.8, 6, 5),
-                new THREE.MeshStandardMaterial({ color: 0x4a7a2a })
+                new THREE.SphereGeometry(0.8, 8, 6),
+                new THREE.MeshStandardMaterial({ color: 0x4a8a2a, roughness: 0.85 })
             );
-            foliage.position.y = 2.0;
-            foliage.scale.y = 0.6;
-            group.add(foliage);
+            foliage.position.y = 2.0; foliage.scale.y = 0.6;
+            foliage.castShadow = true; group.add(foliage);
+            // Grape clusters
+            const grapeMat = new THREE.MeshStandardMaterial({ color: 0x5522aa, roughness: 0.5 });
+            for (let i = 0; i < 4; i++) {
+                const a = (i / 4) * Math.PI * 2;
+                for (let j = 0; j < 3; j++) {
+                    const grape = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 3), grapeMat);
+                    grape.position.set(
+                        Math.cos(a) * 0.5, 1.7 - j * 0.06,
+                        Math.sin(a) * 0.5 + (j - 1) * 0.03
+                    );
+                    group.add(grape);
+                }
+            }
             return group;
         }
         case "chicken": {
@@ -1748,97 +1828,79 @@ function createEntityMesh(category) {
             return group;
         }
         case "deer": {
-            const group = new THREE.Group();
-            const deerMat = new THREE.MeshStandardMaterial({ color: 0x8a6a3a });
-            const deerLightMat = new THREE.MeshStandardMaterial({ color: 0xb89a6a });
-            const darkMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a });
-            // Body
-            const body = new THREE.Mesh(
-                new THREE.CapsuleGeometry(0.3, 1.0, 4, 6), deerMat
-            );
-            body.position.y = 0.85; body.rotation.z = Math.PI / 2;
-            body.castShadow = true; group.add(body);
-            // Belly (lighter)
-            const belly = new THREE.Mesh(
-                new THREE.CapsuleGeometry(0.22, 0.6, 4, 5), deerLightMat
-            );
-            belly.position.set(0, 0.72, 0); belly.rotation.z = Math.PI / 2;
-            group.add(belly);
-            // Legs
-            const legGeo = new THREE.CylinderGeometry(0.06, 0.05, 0.6, 4);
-            const hoofGeo = new THREE.CylinderGeometry(0.055, 0.04, 0.08, 4);
-            for (const [lx, lz] of [[-0.15, -0.35], [0.15, -0.35], [-0.15, 0.35], [0.15, 0.35]]) {
-                const leg = new THREE.Mesh(legGeo, deerMat);
-                leg.position.set(lx, 0.3, lz); leg.castShadow = true; group.add(leg);
-                const hoof = new THREE.Mesh(hoofGeo, darkMat);
-                hoof.position.set(lx, 0.04, lz); group.add(hoof);
+            const g = new THREE.Group();
+            const fur = new THREE.MeshStandardMaterial({ color: 0x9a7a4a, roughness: 0.9 });
+            const furLight = new THREE.MeshStandardMaterial({ color: 0xc8aa78, roughness: 0.9 });
+            const dark = new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.8 });
+            // Body (larger radius for overlap with legs and neck)
+            const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.85, 6, 8), fur);
+            body.position.set(0, 0.88, 0); body.rotation.z = Math.PI / 2;
+            body.castShadow = true; g.add(body);
+            // Belly highlight
+            const belly = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.55, 5, 6), furLight);
+            belly.position.set(0, 0.78, 0); belly.rotation.z = Math.PI / 2; g.add(belly);
+            // Legs (positioned to sink into body)
+            for (const [lx, lz] of [[-0.12, -0.3], [0.12, -0.3], [-0.12, 0.3], [0.12, 0.3]]) {
+                const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.3, 4, 5), fur);
+                upper.position.set(lx, 0.48, lz); upper.castShadow = true; g.add(upper);
+                const lower = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.25, 4, 4), fur);
+                lower.position.set(lx, 0.2, lz); g.add(lower);
+                const hoof = new THREE.Mesh(new THREE.SphereGeometry(0.045, 4, 3), dark);
+                hoof.position.set(lx, 0.04, lz); hoof.scale.y = 0.6; g.add(hoof);
             }
-            // Neck
-            const neck = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.1, 0.14, 0.4, 5), deerMat
-            );
-            neck.position.set(0, 1.15, 0.5); neck.rotation.x = -0.4;
-            group.add(neck);
-            // Head
-            const head = new THREE.Mesh(
-                new THREE.SphereGeometry(0.16, 6, 5), deerMat
-            );
-            head.position.set(0, 1.3, 0.65); group.add(head);
-            // Snout
-            const snout = new THREE.Mesh(
-                new THREE.BoxGeometry(0.12, 0.1, 0.16), deerLightMat
-            );
-            snout.position.set(0, 1.24, 0.8); group.add(snout);
+            // Neck (overlaps deeply into body)
+            const neck = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.35, 5, 6), fur);
+            neck.position.set(0, 1.05, 0.38); neck.rotation.x = -0.45; g.add(neck);
+            // Head (overlaps neck)
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), fur);
+            head.position.set(0, 1.28, 0.58); g.add(head);
+            // Snout (embedded in head)
+            const snout = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.1, 4, 5), furLight);
+            snout.position.set(0, 1.22, 0.72); snout.rotation.x = Math.PI / 2;
+            snout.scale.set(0.8, 1, 0.7); g.add(snout);
             // Nose
-            const noseDeer = new THREE.Mesh(
-                new THREE.SphereGeometry(0.035, 4, 4), darkMat
-            );
-            noseDeer.position.set(0, 1.26, 0.88); group.add(noseDeer);
-            // Eyes
-            const eyeGeoDeer = new THREE.SphereGeometry(0.03, 4, 4);
-            const leyeDeer = new THREE.Mesh(eyeGeoDeer, darkMat);
-            leyeDeer.position.set(-0.13, 1.34, 0.7); group.add(leyeDeer);
-            const reyeDeer = new THREE.Mesh(eyeGeoDeer, darkMat);
-            reyeDeer.position.set(0.13, 1.34, 0.7); group.add(reyeDeer);
+            const nose = new THREE.Mesh(new THREE.SphereGeometry(0.03, 5, 4), dark);
+            nose.position.set(0, 1.24, 0.78); g.add(nose);
+            // Eyes (dot style)
+            for (const side of [-1, 1]) {
+                const eye = new THREE.Mesh(new THREE.SphereGeometry(0.025, 5, 4), dark);
+                eye.position.set(side * 0.12, 1.32, 0.65); g.add(eye);
+            }
             // Ears
-            const earGeo = new THREE.ConeGeometry(0.06, 0.18, 4);
-            const leftEarDeer = new THREE.Mesh(earGeo, deerLightMat);
-            leftEarDeer.position.set(-0.12, 1.5, 0.6); leftEarDeer.rotation.z = -0.4;
-            group.add(leftEarDeer);
-            const rightEarDeer = new THREE.Mesh(earGeo, deerLightMat);
-            rightEarDeer.position.set(0.12, 1.5, 0.6); rightEarDeer.rotation.z = 0.4;
-            group.add(rightEarDeer);
+            for (const side of [-1, 1]) {
+                const ear = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.13, 4, 5), furLight);
+                ear.position.set(side * 0.1, 1.46, 0.5);
+                ear.rotation.z = side * -0.35; ear.rotation.x = -0.2;
+                ear.scale.set(0.6, 1, 0.4); g.add(ear);
+            }
             // Antlers
-            const antlerMat = new THREE.MeshStandardMaterial({ color: 0x6a5a3a });
-            const antlerGeo = new THREE.CylinderGeometry(0.015, 0.02, 0.35, 3);
-            const la1 = new THREE.Mesh(antlerGeo, antlerMat);
-            la1.position.set(-0.08, 1.55, 0.6); la1.rotation.z = -0.5; group.add(la1);
-            const la2 = new THREE.Mesh(antlerGeo, antlerMat);
-            la2.position.set(-0.15, 1.7, 0.58); la2.rotation.z = -0.8; group.add(la2);
-            const ra1 = new THREE.Mesh(antlerGeo, antlerMat);
-            ra1.position.set(0.08, 1.55, 0.6); ra1.rotation.z = 0.5; group.add(ra1);
-            const ra2 = new THREE.Mesh(antlerGeo, antlerMat);
-            ra2.position.set(0.15, 1.7, 0.58); ra2.rotation.z = 0.8; group.add(ra2);
+            const antler = new THREE.MeshStandardMaterial({ color: 0x7a6a4a, roughness: 0.85 });
+            for (const side of [-1, 1]) {
+                const a1 = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.018, 0.3, 4), antler);
+                a1.position.set(side * 0.06, 1.48, 0.5); a1.rotation.z = side * -0.4; g.add(a1);
+                const a2 = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.012, 0.2, 3), antler);
+                a2.position.set(side * 0.12, 1.6, 0.47); a2.rotation.z = side * -0.7; g.add(a2);
+                const a3 = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.01, 0.15, 3), antler);
+                a3.position.set(side * 0.08, 1.62, 0.45); a3.rotation.z = side * -0.3;
+                a3.rotation.x = -0.4; g.add(a3);
+            }
             // Tail
-            const tail = new THREE.Mesh(
-                new THREE.SphereGeometry(0.06, 4, 3),
-                new THREE.MeshStandardMaterial({ color: 0xeeddcc })
-            );
-            tail.position.set(0, 1.0, -0.55); tail.scale.set(1, 0.6, 1.5);
-            group.add(tail);
-            return group;
+            const tail = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4),
+                new THREE.MeshStandardMaterial({ color: 0xf0e8dd, roughness: 0.9 }));
+            tail.position.set(0, 0.95, -0.48); tail.scale.set(0.8, 0.5, 1.2); g.add(tail);
+            return g;
         }
         // --- New canopy trees ---
         case "hazelnut":
-            return makeTree(0x5a4020, 0.2, 3.5, 0x3a6a1a, 2.0, 2.0, 4.8);
+            return makeTree(0x5a4020, 0.2, 3.5, 0x3a7a1a, 2.0, 2.0, 4.8, 0x8a6a2a, 5);
         case "almond":
-            return makeTree(0x6a5a3a, 0.15, 3, 0x4a7a3a, 1.8, 1.5, 4.2);
+            return makeTree(0x6a5a3a, 0.15, 3, 0x5a8a3a, 1.8, 1.5, 4.2, 0xeeddcc, 6);
         case "corkoak":
             return makeTree(0x4a3018, 0.35, 5, 0x2a5a1a, 3.0, 2.5, 6.5);
         case "redwood":
-            return makeTree(0x6a2a1a, 0.4, 10, 0x1a4a1a, 2.5, 4.0, 11.0);
+            return makeTree(0x6a2a1a, 0.4, 10, 0x1a5a1a, 2.5, 4.0, 11.0);
         case "macadamia":
-            return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a2a, 2.2, 2.2, 5.5);
+            return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a2a, 2.2, 2.2, 5.5, 0xddccaa, 5);
         case "stonepine": {
             const g = new THREE.Group();
             const trunk = new THREE.Mesh(
@@ -1854,7 +1916,7 @@ function createEntityMesh(category) {
             return g;
         }
         case "pistachio":
-            return makeTree(0x6a5a3a, 0.2, 3, 0x5a7a3a, 2.0, 1.5, 4.2);
+            return makeTree(0x6a5a3a, 0.2, 3, 0x5a8a3a, 2.0, 1.5, 4.2, 0xcc5544, 6);
         case "bamboo": {
             const g = new THREE.Group();
             for (let i = 0; i < 8; i++) {
@@ -1877,37 +1939,44 @@ function createEntityMesh(category) {
             return g;
         }
         case "cherry":
-            return makeTree(0x5a3a2a, 0.2, 4, 0xcc6688, 2.2, 2.0, 5.5);
+            return makeTree(0x5a3a2a, 0.2, 4, 0xdd88aa, 2.2, 2.0, 5.5, 0xcc1122, 8);
         // --- New understory ---
         case "plum":
-            return makeTree(0x5a3a2a, 0.12, 2, 0x3a6a2a, 1.5, 1.5, 3.2);
+            return makeTree(0x5a3a2a, 0.12, 2, 0x3a7a2a, 1.5, 1.5, 3.2, 0x6622aa, 7);
         case "avocado":
-            return makeTree(0x5a4a2a, 0.2, 3, 0x2a5a1a, 2.0, 2.0, 4.5);
+            return makeTree(0x5a4a2a, 0.2, 3, 0x2a6a1a, 2.0, 2.0, 4.5, 0x3a5a1a, 5);
         case "mulberry":
-            return makeTree(0x5a3a1a, 0.18, 3, 0x3a7a2a, 2.0, 1.8, 4.2);
+            return makeTree(0x5a3a1a, 0.18, 3, 0x3a7a2a, 2.0, 1.8, 4.2, 0x3a1a2a, 8);
         case "banana": {
             const g = new THREE.Group();
             const trunk = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.12, 0.18, 3, 5),
-                new THREE.MeshStandardMaterial({ color: 0x6a8a3a })
+                new THREE.CylinderGeometry(0.12, 0.18, 3, 6),
+                new THREE.MeshStandardMaterial({ color: 0x7a9a3a, roughness: 0.85 })
             );
-            trunk.position.y = 1.5; g.add(trunk);
-            for (let i = 0; i < 5; i++) {
-                const angle = (i / 5) * Math.PI * 2;
+            trunk.position.y = 1.5; trunk.castShadow = true; g.add(trunk);
+            for (let i = 0; i < 6; i++) {
+                const angle = (i / 6) * Math.PI * 2;
                 const leaf = new THREE.Mesh(
-                    new THREE.BoxGeometry(0.2, 0.05, 1.5),
-                    new THREE.MeshStandardMaterial({ color: 0x3a8a2a })
+                    new THREE.CapsuleGeometry(0.08, 1.2, 3, 5),
+                    new THREE.MeshStandardMaterial({ color: 0x3a8a2a, roughness: 0.7 })
                 );
-                leaf.position.set(Math.cos(angle) * 0.5, 3.2, Math.sin(angle) * 0.5);
+                leaf.position.set(Math.cos(angle) * 0.3, 3.1, Math.sin(angle) * 0.3);
                 leaf.rotation.y = angle;
-                leaf.rotation.x = -0.4; g.add(leaf);
+                leaf.rotation.x = -0.5; leaf.scale.set(2.5, 1, 0.15); g.add(leaf);
+            }
+            // Banana bunch
+            const bunchMat = new THREE.MeshStandardMaterial({ color: 0xddcc33, roughness: 0.5 });
+            for (let i = 0; i < 4; i++) {
+                const banana = new THREE.Mesh(new THREE.CapsuleGeometry(0.03, 0.12, 3, 4), bunchMat);
+                banana.position.set(Math.cos(i * 1.5) * 0.08, 2.6 - i * 0.06, Math.sin(i * 1.5) * 0.08);
+                banana.rotation.z = 0.3; g.add(banana);
             }
             return g;
         }
         case "mango":
-            return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a1a, 2.5, 2.0, 5.5);
+            return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a1a, 2.5, 2.0, 5.5, 0xee8822, 6);
         case "persimmon":
-            return makeTree(0x5a3a1a, 0.15, 3, 0x4a7a2a, 1.8, 1.8, 4.2);
+            return makeTree(0x5a3a1a, 0.15, 3, 0x4a7a2a, 1.8, 1.8, 4.2, 0xee6622, 5);
         // --- New shrubs ---
         case "thyme": {
             const g = new THREE.Group();
@@ -2013,6 +2082,147 @@ function createEntityMesh(category) {
                 leaf.position.set(Math.cos(a) * 0.15, 0.2 + i * 0.05, Math.sin(a) * 0.15);
                 leaf.scale.y = 0.3; g.add(leaf);
             }
+            return g;
+        }
+        case "boar": {
+            const g = new THREE.Group();
+            const boarM = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.9 });
+            const boarL = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.9 });
+            const dk = new THREE.MeshStandardMaterial({ color: 0x1a1008, roughness: 0.8 });
+            // Body (stocky)
+            const bod = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.7, 6, 8), boarM);
+            bod.position.set(0, 0.55, 0); bod.rotation.z = Math.PI / 2;
+            bod.castShadow = true; g.add(bod);
+            // Legs (short, stout)
+            for (const [lx, lz] of [[-0.15, -0.25], [0.15, -0.25], [-0.15, 0.25], [0.15, 0.25]]) {
+                const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.15, 4, 4), boarM);
+                leg.position.set(lx, 0.2, lz); leg.castShadow = true; g.add(leg);
+                const hf = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 3), dk);
+                hf.position.set(lx, 0.06, lz); hf.scale.y = 0.5; g.add(hf);
+            }
+            // Head
+            const hd = new THREE.Mesh(new THREE.SphereGeometry(0.18, 7, 5), boarM);
+            hd.position.set(0, 0.6, 0.45); g.add(hd);
+            // Snout (long)
+            const sn = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.12, 4, 5), boarL);
+            sn.position.set(0, 0.52, 0.6); sn.rotation.x = Math.PI / 2;
+            sn.scale.set(0.9, 1, 0.7); g.add(sn);
+            // Nose disc
+            const nd = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.02, 6), new THREE.MeshStandardMaterial({ color: 0xcc8877 }));
+            nd.position.set(0, 0.52, 0.68); nd.rotation.x = Math.PI / 2; g.add(nd);
+            // Eyes
+            for (const s of [-1, 1]) {
+                const e = new THREE.Mesh(new THREE.SphereGeometry(0.02, 4, 3), dk);
+                e.position.set(s * 0.12, 0.65, 0.5); g.add(e);
+            }
+            // Ears
+            for (const s of [-1, 1]) {
+                const ear = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.1, 4), boarM);
+                ear.position.set(s * 0.1, 0.78, 0.4); ear.rotation.z = s * -0.3; g.add(ear);
+            }
+            // Tusks
+            for (const s of [-1, 1]) {
+                const tusk = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.015, 0.08, 3),
+                    new THREE.MeshStandardMaterial({ color: 0xeee8dd }));
+                tusk.position.set(s * 0.06, 0.48, 0.6); tusk.rotation.x = 0.3;
+                tusk.rotation.z = s * 0.2; g.add(tusk);
+            }
+            // Bristly back
+            const bristle = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.12, 5), dk);
+            bristle.position.set(0, 0.85, -0.05); bristle.scale.set(0.3, 1, 2); g.add(bristle);
+            // Curly tail
+            const tl = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.015, 4, 6, Math.PI),
+                boarM);
+            tl.position.set(0, 0.65, -0.4); tl.rotation.y = Math.PI / 2; g.add(tl);
+            return g;
+        }
+        case "rabbit": {
+            const g = new THREE.Group();
+            const furR = new THREE.MeshStandardMaterial({ color: 0xb8a088, roughness: 0.9 });
+            const furW = new THREE.MeshStandardMaterial({ color: 0xe8ddd0, roughness: 0.9 });
+            const dkR = new THREE.MeshStandardMaterial({ color: 0x2a1a0a });
+            // Body
+            const bod = new THREE.Mesh(new THREE.SphereGeometry(0.16, 7, 6), furR);
+            bod.position.set(0, 0.22, 0); bod.scale.set(0.9, 0.8, 1.1);
+            bod.castShadow = true; g.add(bod);
+            // Head
+            const hd = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 5), furR);
+            hd.position.set(0, 0.32, 0.16); g.add(hd);
+            // Ears (long, tall)
+            for (const s of [-1, 1]) {
+                const ear = new THREE.Mesh(new THREE.CapsuleGeometry(0.025, 0.14, 4, 5), furR);
+                ear.position.set(s * 0.04, 0.48, 0.12); ear.rotation.z = s * -0.15; g.add(ear);
+                const earIn = new THREE.Mesh(new THREE.CapsuleGeometry(0.015, 0.1, 3, 4),
+                    new THREE.MeshStandardMaterial({ color: 0xddaaaa }));
+                earIn.position.set(s * 0.04, 0.47, 0.11); earIn.rotation.z = s * -0.15; g.add(earIn);
+            }
+            // Eyes
+            for (const s of [-1, 1]) {
+                const e = new THREE.Mesh(new THREE.SphereGeometry(0.015, 4, 3), dkR);
+                e.position.set(s * 0.07, 0.34, 0.22); g.add(e);
+            }
+            // Nose
+            const n = new THREE.Mesh(new THREE.SphereGeometry(0.015, 4, 3),
+                new THREE.MeshStandardMaterial({ color: 0xdd9999 }));
+            n.position.set(0, 0.31, 0.26); g.add(n);
+            // Fluffy tail
+            const tail = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4), furW);
+            tail.position.set(0, 0.22, -0.16); g.add(tail);
+            // Hind legs (bigger)
+            for (const s of [-1, 1]) {
+                const hl = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4), furR);
+                hl.position.set(s * 0.1, 0.12, -0.06); hl.scale.set(0.8, 1.2, 1); g.add(hl);
+                const fl = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 3), furR);
+                fl.position.set(s * 0.06, 0.1, 0.12); g.add(fl);
+            }
+            return g;
+        }
+        case "lamb": {
+            const g = new THREE.Group();
+            const wool = new THREE.MeshStandardMaterial({ color: 0xf0ece4, roughness: 1.0 });
+            const face = new THREE.MeshStandardMaterial({ color: 0x2a2020, roughness: 0.85 });
+            const pink = new THREE.MeshStandardMaterial({ color: 0xddaaaa });
+            // Woolly body (multiple blobs)
+            const bod = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), wool);
+            bod.position.set(0, 0.55, 0); bod.scale.set(1, 0.85, 1.2);
+            bod.castShadow = true; g.add(bod);
+            for (let i = 0; i < 5; i++) {
+                const a = (i / 5) * Math.PI * 2;
+                const fluff = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), wool);
+                fluff.position.set(Math.cos(a) * 0.18, 0.6 + Math.sin(i) * 0.05, Math.sin(a) * 0.2);
+                g.add(fluff);
+            }
+            // Legs (dark, thin)
+            for (const [lx, lz] of [[-0.12, -0.2], [0.12, -0.2], [-0.12, 0.2], [0.12, 0.2]]) {
+                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.03, 0.35, 4), face);
+                leg.position.set(lx, 0.18, lz); leg.castShadow = true; g.add(leg);
+                const hf = new THREE.Mesh(new THREE.SphereGeometry(0.035, 3, 3), face);
+                hf.position.set(lx, 0.04, lz); hf.scale.y = 0.5; g.add(hf);
+            }
+            // Head (dark face)
+            const hd = new THREE.Mesh(new THREE.SphereGeometry(0.12, 7, 5), face);
+            hd.position.set(0, 0.65, 0.32); g.add(hd);
+            // Wool on head
+            const headWool = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 5), wool);
+            headWool.position.set(0, 0.72, 0.28); g.add(headWool);
+            // Eyes
+            for (const s of [-1, 1]) {
+                const e = new THREE.Mesh(new THREE.SphereGeometry(0.018, 4, 3),
+                    new THREE.MeshStandardMaterial({ color: 0x888844 }));
+                e.position.set(s * 0.08, 0.68, 0.38); g.add(e);
+            }
+            // Ears (floppy)
+            for (const s of [-1, 1]) {
+                const ear = new THREE.Mesh(new THREE.SphereGeometry(0.04, 5, 4), face);
+                ear.position.set(s * 0.12, 0.63, 0.28);
+                ear.scale.set(0.5, 1, 0.7); ear.rotation.z = s * 0.5; g.add(ear);
+            }
+            // Nose
+            const ns = new THREE.Mesh(new THREE.SphereGeometry(0.02, 4, 3), pink);
+            ns.position.set(0, 0.62, 0.43); g.add(ns);
+            // Tail
+            const tl = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 3), wool);
+            tl.position.set(0, 0.6, -0.28); g.add(tl);
             return g;
         }
         case "animal": {
@@ -2548,6 +2758,9 @@ const FOOD_FOREST_KNOWLEDGE = {
     600: "Grapevines are productive climbers in food forests. They use vertical space efficiently, growing up through canopy trees. Grapes thrive in well-drained soils with good sun exposure.",
     10:  "Chickens provide eggs, pest control, and soil cultivation. In food forest systems, they scratch leaf litter and eat insect pests. Their manure is a rich nitrogen source for plants.",
     21:  "Deer are part of natural forest ecosystems. While they can damage young trees, their browsing creates clearings that increase plant diversity. Their droppings spread seeds and fertilize soil.",
+    22:  "Wild boar root through soil, aerating it and mixing organic matter into deeper layers. While they can damage young plantings, their disturbance creates micro-habitats for seed germination. In balanced ecosystems, they play a key role in forest regeneration.",
+    30:  "Lambs graze grass and weeds around young trees, reducing competition and fire risk. Their small hooves break up soil crust, improving water infiltration. Sheep manure is one of the best natural fertilizers for fruit trees.",
+    31:  "Rabbits are prolific breeders and their pellets are an excellent cold fertilizer, rich in nitrogen and phosphorus. Their burrows improve soil drainage. In food forests, rabbit warrens near comfrey patches create a self-sustaining fertility cycle.",
 };
 
 function getKnowledge(speciesId) {

@@ -265,9 +265,103 @@ impl Shard {
             ));
         }
 
+        // Wild boar
+        let boar_count = (4.0 * area_scale) as i32;
+        for i in 0..boar_count {
+            let x = ((i as i64 * 59 + 30) % w as i64) as i32;
+            let z = ((i as i64 * 61 + 45) % d as i64) as i32;
+            if self.terrain.is_water_surface(x, z) { continue; }
+            let y = self.terrain.spawn_height(x, z);
+
+            let eid = EntityId(self.next_entity_id);
+            self.next_entity_id += 1;
+
+            self.ecs_world.spawn((
+                NetworkId(eid),
+                Position(Vec3::new(x as f32, y, z as f32)),
+                Rotation(0.0),
+                Velocity(Vec3::ZERO),
+                Collider {
+                    half_extents: Vec3::new(0.4, 0.5, 0.4),
+                },
+                Grounded(true),
+                Animal {
+                    species_id: 22,
+                    behavior: AnimalBehavior::Wandering,
+                    hunger: 0.3,
+                    energy: 0.8,
+                },
+                ff_ecs::components::animal::WildAnimal,
+            ));
+        }
+
+        // Rabbits
+        let rabbit_count = (12.0 * area_scale) as i32;
+        for i in 0..rabbit_count {
+            let x = ((i as i64 * 43 + 15) % w as i64) as i32;
+            let z = ((i as i64 * 67 + 25) % d as i64) as i32;
+            if self.terrain.is_water_surface(x, z) { continue; }
+            let y = self.terrain.spawn_height(x, z);
+
+            let eid = EntityId(self.next_entity_id);
+            self.next_entity_id += 1;
+
+            self.ecs_world.spawn((
+                NetworkId(eid),
+                Position(Vec3::new(x as f32, y, z as f32)),
+                Rotation(0.0),
+                Velocity(Vec3::ZERO),
+                Collider {
+                    half_extents: Vec3::new(0.15, 0.2, 0.15),
+                },
+                Grounded(true),
+                Animal {
+                    species_id: 31,
+                    behavior: AnimalBehavior::Wandering,
+                    hunger: 0.2,
+                    energy: 0.9,
+                },
+                ff_ecs::components::animal::WildAnimal,
+            ));
+        }
+
+        // Lambs
+        let lamb_count = (6.0 * area_scale) as i32;
+        for i in 0..lamb_count {
+            let x = ((i as i64 * 71 + 50) % w as i64) as i32;
+            let z = ((i as i64 * 73 + 35) % d as i64) as i32;
+            if self.terrain.is_water_surface(x, z) { continue; }
+            let y = self.terrain.spawn_height(x, z);
+
+            let eid = EntityId(self.next_entity_id);
+            self.next_entity_id += 1;
+
+            self.ecs_world.spawn((
+                NetworkId(eid),
+                Position(Vec3::new(x as f32, y, z as f32)),
+                Rotation(0.0),
+                Velocity(Vec3::ZERO),
+                Collider {
+                    half_extents: Vec3::new(0.3, 0.5, 0.3),
+                },
+                Grounded(true),
+                Animal {
+                    species_id: 30,
+                    behavior: AnimalBehavior::Wandering,
+                    hunger: 0.2,
+                    energy: 0.85,
+                },
+                Domesticated {
+                    pen_center: Vec3::new(x as f32, y, z as f32),
+                    pen_radius: 40.0,
+                },
+            ));
+        }
+
         tracing::info!(
-            "Spawned ecosystem: region={} native={} herbs={} chickens={} deer={} (scale {:.1}x)",
-            self.region_index, native_count, herb_count, chicken_count, deer_count, area_scale
+            "Spawned ecosystem: region={} native={} herbs={} chickens={} deer={} boar={} rabbit={} lamb={} (scale {:.1}x)",
+            self.region_index, native_count, herb_count, chicken_count, deer_count,
+            boar_count, rabbit_count, lamb_count, area_scale
         );
     }
 
