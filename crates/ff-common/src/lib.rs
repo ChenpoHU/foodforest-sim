@@ -66,24 +66,28 @@ pub const AOI_RADIUS: f32 = 200.0;
 /// Soil depth layers per column.
 pub const SOIL_LAYERS: usize = 4;
 
-/// Wildfire deadline in Hardcore mode (ticks). 15 minutes at 20 Hz = 18000 ticks.
+/// Wildfire deadline in Survival mode (ticks). 15 minutes at 20 Hz = 18000 ticks.
 pub const WILDFIRE_DEADLINE_TICKS: u64 = 700;//18_000;
 
+/// Game mode. The numeric repr is part of the wire protocol — do not renumber.
+/// - `Peaceful` (0): no felling physics, no hunting, relaxed pace.
+/// - `Realistic` (1): full felling physics, hunting allowed, but no learning AI.
+/// - `Survival` (2): wildfire deadline + learning AI animals that adapt to the player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum GameMode {
     Peaceful = 0,
-    Survival = 1,
-    Hardcore = 2,
+    Realistic = 1,
+    Survival = 2,
 }
 
 impl From<u8> for GameMode {
     fn from(v: u8) -> Self {
         match v {
             0 => Self::Peaceful,
-            1 => Self::Survival,
-            2 => Self::Hardcore,
-            _ => Self::Survival,
+            1 => Self::Realistic,
+            2 => Self::Survival,
+            _ => Self::Realistic,
         }
     }
 }

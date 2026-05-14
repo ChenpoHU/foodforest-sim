@@ -15,6 +15,12 @@ use crate::components::transform::Position;
 use crate::resources::calendar::Season;
 use crate::Resources;
 
+/// Multiplier on per-tick growth points. Tuned so a typical fruit tree
+/// (growth_rate ~0.8, maturity ~80k) reaches Fruiting in ~1 minute of
+/// real time at 20 Hz with healthy soil/light/water. Ground covers and
+/// herbs fruit in seconds; huge canopy trees still take 2–3 minutes.
+const PLAY_GROWTH_SCALE: f32 = 100.0;
+
 /// Per-plant interaction pressure accumulated from neighbors.
 struct InteractionPressure {
     growth: f32,
@@ -133,7 +139,8 @@ pub fn run(world: &mut hecs::World, resources: &Resources, soil_grid: &SoilGrid)
         // Interaction growth modifier (allelopathy / companion bonus)
         let interaction_factor = (1.0 + pressure.growth).max(0.05);
 
-        // Combined growth
+        // Combined growth — `PLAY_GROWTH_SCALE` compresses real-world growth
+        // timescales into a playable minute.
         let growth = species.growth_rate
             * soil_factor
             * water_factor
@@ -141,7 +148,8 @@ pub fn run(world: &mut hecs::World, resources: &Resources, soil_grid: &SoilGrid)
             * temp_factor
             * myc_bonus
             * ph_factor
-            * interaction_factor;
+            * interaction_factor
+            * PLAY_GROWTH_SCALE;
 
         plant.growth_points += growth;
 

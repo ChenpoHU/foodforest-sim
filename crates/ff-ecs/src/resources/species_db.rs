@@ -60,6 +60,12 @@ impl SpeciesDb {
     pub fn get_animal(&self, id: u16) -> Option<&AnimalSpecies> {
         self.animals.iter().find(|a| a.id == id)
     }
+
+    pub fn get_plant_by_item(&self, item_id: u16) -> Option<&str> {
+        self.plants.iter()
+            .find(|p| p.harvest_item_id == item_id)
+            .map(|p| p.name.as_str())
+    }
 }
 
 fn default_plants() -> Vec<PlantSpecies> {
@@ -359,6 +365,16 @@ fn default_plants() -> Vec<PlantSpecies> {
             interactions: vec![],
             max_height_voxels: 7, root_depth_voxels: 3, canopy_radius_voxels: 4,
             harvest_item_id: 1209, harvest_amount: 20,
+        },
+        PlantSpecies {
+            id: 210, name: "Peach".into(), layer: ForestLayer::Understory,
+            growth_rate: 0.9, maturity_threshold: 35_000.0, water_need: 0.4,
+            nutrient_need: NutrientUptake { nitrogen: 0.15, phosphorus: 0.12, potassium: 0.15 },
+            preferred_ph_min: 6.0, preferred_ph_max: 7.5,
+            shade_tolerance: 0.15, frost_tolerance: 0.4,
+            interactions: vec![],
+            max_height_voxels: 5, root_depth_voxels: 2, canopy_radius_voxels: 3,
+            harvest_item_id: 1210, harvest_amount: 30,
         },
         // === SHRUB (Layer 2) ===
         PlantSpecies {

@@ -120,7 +120,7 @@ impl Shard {
     /// Seed the world with initial plants and animals, scaled to terrain size.
     fn spawn_initial_ecosystem(&mut self) {
         use ff_ecs::components::animal::{Animal, AnimalBehavior, Domesticated};
-        use ff_ecs::components::plant::Plant;
+        use ff_ecs::components::plant::{Harvestable, Plant};
         use ff_voxel::generate;
 
         let w = self.terrain.width as i32;
@@ -129,6 +129,8 @@ impl Shard {
 
         if let Some(invasive_id) = generate::invasive_species_for_region(self.region_index) {
             let count = (80.0 * area_scale) as i32;
+            let harvestable = self.resources.species_db.get_plant(invasive_id)
+                .and_then(|s| Harvestable::from_species(s.harvest_item_id, s.harvest_amount));
             for i in 0..count {
                 let x = ((i as i64 * 17 + 3) % w as i64) as i32;
                 let z = ((i as i64 * 23 + 7) % d as i64) as i32;
@@ -143,12 +145,15 @@ impl Shard {
                 plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
                 plant.growth_points = 60000.0;
 
-                self.ecs_world.spawn((
+                let entity = self.ecs_world.spawn((
                     NetworkId(eid),
                     Position(Vec3::new(x as f32, y, z as f32)),
                     Rotation(0.0),
                     plant,
                 ));
+                if let Some(h) = harvestable {
+                    let _ = self.ecs_world.insert_one(entity, h);
+                }
             }
         }
 
@@ -161,6 +166,8 @@ impl Shard {
             let y = self.terrain.spawn_height(x, z);
 
             let species_id = native_species[i as usize % native_species.len()];
+            let harvestable = self.resources.species_db.get_plant(species_id)
+                .and_then(|s| Harvestable::from_species(s.harvest_item_id, s.harvest_amount));
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
 
@@ -168,12 +175,15 @@ impl Shard {
             plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
             plant.growth_points = 50000.0;
 
-            self.ecs_world.spawn((
+            let entity = self.ecs_world.spawn((
                 NetworkId(eid),
                 Position(Vec3::new(x as f32, y, z as f32)),
                 Rotation(0.0),
                 plant,
             ));
+            if let Some(h) = harvestable {
+                let _ = self.ecs_world.insert_one(entity, h);
+            }
         }
 
         let herb_species: Vec<u16> = native_species.iter()
@@ -189,6 +199,8 @@ impl Shard {
             let y = self.terrain.spawn_height(x, z);
 
             let species_id = herb_list[i as usize % herb_list.len()];
+            let harvestable = self.resources.species_db.get_plant(species_id)
+                .and_then(|s| Harvestable::from_species(s.harvest_item_id, s.harvest_amount));
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
 
@@ -196,15 +208,48 @@ impl Shard {
             plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
             plant.growth_points = 10000.0;
 
-            self.ecs_world.spawn((
+            let entity = self.ecs_world.spawn((
                 NetworkId(eid),
                 Position(Vec3::new(x as f32, y, z as f32)),
                 Rotation(0.0),
                 plant,
             ));
+            if let Some(h) = harvestable {
+                let _ = self.ecs_world.insert_one(entity, h);
+            }
         }
 
-        let chicken_count = (10.0 * area_scale) as i32;
+        // Extra lavender fields for France (regions 7-10, especially Provence=7)
+        if self.region_index >= 7 && self.region_index <= 10 {
+            let lavender_count = if self.region_index == 7 { (300.0 * area_scale) as i32 } else { (120.0 * area_scale) as i32 };
+            let lavender_harvestable = self.resources.species_db.get_plant(301)
+                .and_then(|s| Harvestable::from_species(s.harvest_item_id, s.harvest_amount));
+            for i in 0..lavender_count {
+                let x = ((i as i64 * 11 + 7) % w as i64) as i32;
+                let z = ((i as i64 * 17 + 13) % d as i64) as i32;
+                if self.terrain.is_water_surface(x, z) { continue; }
+                let y = self.terrain.spawn_height(x, z);
+
+                let eid = EntityId(self.next_entity_id);
+                self.next_entity_id += 1;
+
+                let mut plant = Plant::new_seed(301); // Lavender
+                plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
+                plant.growth_points = 8000.0;
+
+                let entity = self.ecs_world.spawn((
+                    NetworkId(eid),
+                    Position(Vec3::new(x as f32, y, z as f32)),
+                    Rotation(0.0),
+                    plant,
+                ));
+                if let Some(h) = lavender_harvestable {
+                    let _ = self.ecs_world.insert_one(entity, h);
+                }
+            }
+        }
+
+        let chicken_count = (3.0 * area_scale) as i32;
         for i in 0..chicken_count {
             let x = ((i as i64 * 29 + 40) % w as i64) as i32;
             let z = ((i as i64 * 41 + 60) % d as i64) as i32;
@@ -236,7 +281,7 @@ impl Shard {
             ));
         }
 
-        let deer_count = (5.0 * area_scale) as i32;
+        let deer_count = (2.0 * area_scale) as i32;
         for i in 0..deer_count {
             let x = ((i as i64 * 47 + 10) % w as i64) as i32;
             let z = ((i as i64 * 53 + 20) % d as i64) as i32;
@@ -266,7 +311,7 @@ impl Shard {
         }
 
         // Wild boar
-        let boar_count = (4.0 * area_scale) as i32;
+        let boar_count = (1.0 * area_scale) as i32;
         for i in 0..boar_count {
             let x = ((i as i64 * 59 + 30) % w as i64) as i32;
             let z = ((i as i64 * 61 + 45) % d as i64) as i32;
@@ -296,7 +341,7 @@ impl Shard {
         }
 
         // Rabbits
-        let rabbit_count = (12.0 * area_scale) as i32;
+        let rabbit_count = (3.0 * area_scale) as i32;
         for i in 0..rabbit_count {
             let x = ((i as i64 * 43 + 15) % w as i64) as i32;
             let z = ((i as i64 * 67 + 25) % d as i64) as i32;
@@ -326,7 +371,7 @@ impl Shard {
         }
 
         // Lambs
-        let lamb_count = (6.0 * area_scale) as i32;
+        let lamb_count = (2.0 * area_scale) as i32;
         for i in 0..lamb_count {
             let x = ((i as i64 * 71 + 50) % w as i64) as i32;
             let z = ((i as i64 * 73 + 35) % d as i64) as i32;

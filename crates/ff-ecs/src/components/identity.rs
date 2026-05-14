@@ -12,3 +12,9 @@ pub struct Name(pub String);
 /// Ownership: which player placed / owns this entity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Owner(pub ff_common::PlayerId);
+
+/// A built structure (hochsitz, fence, etc.). kind=1 for Hochsitz.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Structure {
+    pub kind: u8,
+}

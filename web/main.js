@@ -18,6 +18,7 @@ let terrainMeta = null; // { width, height, depth, data }
 let minimapBaseImage = null;
 let waterMeshes = [];
 let fishGroup = null;
+let butterflyGroup = null;
 
 const keys = new Set();
 let inputSeq = 0;
@@ -28,6 +29,7 @@ document.getElementById("connect-btn").addEventListener("click", () => {
     const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
     selectedPlotSeed = parseInt(document.getElementById("plot-seed-input").value) || 42;
     document.getElementById("connect-screen").style.display = "none";
+    rebuildToolbar();
     init(serverUrl);
 });
 
@@ -38,7 +40,7 @@ document.getElementById("player-name").addEventListener("keydown", (e) => {
 const modeDescriptions = {
     0: "No casualties. Trees disappear when cut. Relaxed pace for all ages.",
     1: "Full felling physics. Falling trees can crush you. Real danger.",
-    2: "Clear the eucalyptus in 15 minutes or wildfire burns everything.",
+    2: "Wildfire deadline + animals with learning AI that adapt to your behavior.",
 };
 
 document.querySelectorAll(".mode-btn").forEach(btn => {
@@ -252,14 +254,397 @@ document.getElementById("plot-seed-input").addEventListener("change", (e) => {
 selectCountry(0);
 drawWorldMap();
 
-// Toolbar
-document.querySelectorAll("#toolbar button").forEach(btn => {
-    btn.addEventListener("click", () => {
-        document.querySelectorAll("#toolbar button").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        selectedAction = btn.dataset.action;
+// Country-specific plantable species
+const COUNTRY_PLANTS = {
+    "Portugal": [
+        { action: "plant-chestnut", label: "Chestnut", sid: 100 },
+        { action: "plant-walnut", label: "Walnut", sid: 101 },
+        { action: "plant-carob", label: "Carob", sid: 102 },
+        { action: "plant-olive", label: "Olive", sid: 203 },
+        { action: "plant-fig", label: "Fig", sid: 200 },
+        { action: "plant-pomegranate", label: "Pomegranate", sid: 201 },
+        { action: "plant-rosemary", label: "Rosemary", sid: 300 },
+        { action: "plant-lavender", label: "Lavender", sid: 301 },
+        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+    ],
+    "France": [
+        { action: "plant-chestnut", label: "Chestnut", sid: 100 },
+        { action: "plant-walnut", label: "Walnut", sid: 101 },
+        { action: "plant-hazelnut", label: "Hazelnut", sid: 104 },
+        { action: "plant-fig", label: "Fig", sid: 200 },
+        { action: "plant-plum", label: "Plum", sid: 204 },
+        { action: "plant-lavender", label: "Lavender", sid: 301 },
+        { action: "plant-thyme", label: "Thyme", sid: 302 },
+        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
+        { action: "plant-grapevine", label: "Grapevine", sid: 600 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+    ],
+    "Spain": [
+        { action: "plant-carob", label: "Carob", sid: 102 },
+        { action: "plant-almond", label: "Almond", sid: 105 },
+        { action: "plant-corkoak", label: "Cork Oak", sid: 106 },
+        { action: "plant-olive", label: "Olive", sid: 203 },
+        { action: "plant-citrus", label: "Citrus", sid: 202 },
+        { action: "plant-pomegranate", label: "Pomegranate", sid: 201 },
+        { action: "plant-fig", label: "Fig", sid: 200 },
+        { action: "plant-rosemary", label: "Rosemary", sid: 300 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+        { action: "plant-grapevine", label: "Grapevine", sid: 600 },
+    ],
+    "Italy": [
+        { action: "plant-chestnut", label: "Chestnut", sid: 100 },
+        { action: "plant-hazelnut", label: "Hazelnut", sid: 104 },
+        { action: "plant-stonepine", label: "Stone Pine", sid: 109 },
+        { action: "plant-olive", label: "Olive", sid: 203 },
+        { action: "plant-fig", label: "Fig", sid: 200 },
+        { action: "plant-citrus", label: "Citrus", sid: 202 },
+        { action: "plant-basil", label: "Basil", sid: 401 },
+        { action: "plant-rosemary", label: "Rosemary", sid: 300 },
+        { action: "plant-grapevine", label: "Grapevine", sid: 600 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+    ],
+    "Iran": [
+        { action: "plant-walnut", label: "Walnut", sid: 101 },
+        { action: "plant-pistachio", label: "Pistachio", sid: 110 },
+        { action: "plant-pomegranate", label: "Pomegranate", sid: 201 },
+        { action: "plant-mulberry", label: "Mulberry", sid: 206 },
+        { action: "plant-fig", label: "Fig", sid: 200 },
+        { action: "plant-saffron", label: "Saffron", sid: 402 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+    ],
+    "California": [
+        { action: "plant-redwood", label: "Redwood", sid: 107 },
+        { action: "plant-avocado", label: "Avocado", sid: 205 },
+        { action: "plant-citrus", label: "Citrus", sid: 202 },
+        { action: "plant-fig", label: "Fig", sid: 200 },
+        { action: "plant-sage", label: "Sage", sid: 303 },
+        { action: "plant-grapevine", label: "Grapevine", sid: 600 },
+        { action: "plant-strawberry", label: "Strawberry", sid: 501 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+    ],
+    "South Africa": [
+        { action: "plant-macadamia", label: "Macadamia", sid: 108 },
+        { action: "plant-citrus", label: "Citrus", sid: 202 },
+        { action: "plant-rooibos", label: "Rooibos", sid: 304 },
+        { action: "plant-protea", label: "Protea", sid: 305 },
+        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+    ],
+    "Yunnan": [
+        { action: "plant-bamboo", label: "Bamboo", sid: 111 },
+        { action: "plant-banana", label: "Banana", sid: 207 },
+        { action: "plant-mango", label: "Mango", sid: 208 },
+        { action: "plant-peach", label: "Peach", sid: 210 },
+        { action: "plant-tea", label: "Tea", sid: 306 },
+        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+    ],
+    "Japan": [
+        { action: "plant-cherry", label: "Cherry", sid: 112 },
+        { action: "plant-persimmon", label: "Persimmon", sid: 209 },
+        { action: "plant-bamboo", label: "Bamboo", sid: 111 },
+        { action: "plant-tea", label: "Tea", sid: 306 },
+        { action: "plant-shiso", label: "Shiso", sid: 403 },
+        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
+        { action: "plant-clover", label: "Clover", sid: 500 },
+    ],
+};
+
+function getCountryForRegion(regionIndex) {
+    for (const c of WORLD_COUNTRIES) {
+        if (regionIndex >= c.start && regionIndex < c.start + c.count) return c.name;
+    }
+    return "Portugal";
+}
+
+// Icon colors for toolbar items
+const TOOL_ICONS = {
+    "build-swale": { icon: "~", color: "#3388aa", bg: "#1a3a4a" },
+    "build-hugel": { icon: "=", color: "#8a5a2a", bg: "#3a2a1a" },
+    "water": { icon: "o", color: "#44aaee", bg: "#1a3a5a" },
+    "harvest": { icon: "+", color: "#eedd44", bg: "#3a3a1a" },
+    "cut-tree": { icon: "x", color: "#ee6644", bg: "#3a1a1a" },
+    "hunt": { icon: ">", color: "#cc6644", bg: "#3a2a1a" },
+    "build-hochsitz": { icon: "^", color: "#8a6a3a", bg: "#2a2a1a" },
+    "inspect": { icon: "?", color: "#88bbcc", bg: "#1a2a3a" },
+};
+
+function makeToolbarIcon(size, fillColor, symbol) {
+    const c = document.createElement("canvas");
+    c.width = size; c.height = size;
+    const ctx = c.getContext("2d");
+    ctx.beginPath();
+    ctx.arc(size/2, size/2, size/2 - 2, 0, Math.PI * 2);
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.2)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    if (symbol) {
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold " + (size * 0.45) + "px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(symbol, size/2, size/2);
+    }
+    return c.toDataURL();
+}
+
+function makeFruitIcon(size, fruitColor) {
+    const c = document.createElement("canvas");
+    c.width = size; c.height = size;
+    const ctx = c.getContext("2d");
+    // Leaf
+    ctx.beginPath();
+    ctx.ellipse(size * 0.6, size * 0.2, size * 0.12, size * 0.08, -0.5, 0, Math.PI * 2);
+    ctx.fillStyle = "#4a8a3a";
+    ctx.fill();
+    // Stem
+    ctx.beginPath();
+    ctx.moveTo(size * 0.5, size * 0.25);
+    ctx.lineTo(size * 0.5, size * 0.35);
+    ctx.strokeStyle = "#5a4a2a";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Fruit body
+    ctx.beginPath();
+    ctx.arc(size/2, size * 0.58, size * 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = fruitColor;
+    ctx.fill();
+    // Highlight
+    ctx.beginPath();
+    ctx.arc(size * 0.42, size * 0.5, size * 0.08, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.3)";
+    ctx.fill();
+    return c.toDataURL();
+}
+
+// Plant color mapping for toolbar icons
+const PLANT_ICON_COLORS = {
+    "chestnut": "#8a5a1a", "walnut": "#6a4a18", "carob": "#5a3a1a", "hazelnut": "#8a6a2a",
+    "almond": "#eeddcc", "corkoak": "#4a3018", "redwood": "#6a2a1a", "macadamia": "#ddccaa",
+    "stonepine": "#5a3a1a", "pistachio": "#7a9a4a", "bamboo": "#6a8a3a", "cherry": "#cc1122",
+    "olive": "#7a9a6a", "fig": "#6a2a5a", "pomegranate": "#cc2233", "citrus": "#ffaa22",
+    "plum": "#6622aa", "avocado": "#3a5a1a", "mulberry": "#3a1a2a", "banana": "#ddcc33",
+    "mango": "#ee8822", "persimmon": "#ee6622", "peach": "#ffaa88",
+    "rosemary": "#3a6a3a", "lavender": "#8855aa", "thyme": "#6a8a4a", "sage": "#8a9a7a",
+    "rooibos": "#aa4422", "protea": "#cc4466", "tea": "#3a7a3a",
+    "comfrey": "#3a7a2a", "basil": "#2a8a2a", "saffron": "#ee8811", "shiso": "#5a2a4a",
+    "clover": "#2a8a2a", "strawberry": "#cc2222", "grapevine": "#5522aa",
+};
+
+// Currently selected plant species (from the Plant menu). When set,
+// clicking the world plants this species. Cleared when the user switches
+// to another tool.
+let selectedPlant = null; // { action, label, sid }
+
+function rebuildToolbar() {
+    const toolbar = document.getElementById("toolbar");
+    toolbar.innerHTML = "";
+
+    // Drop the plant selection if we moved to a region that doesn't grow it,
+    // so the toolbar label never lies about what will be planted.
+    if (selectedPlant) {
+        const country = getCountryForRegion(selectedRegion);
+        const plants = COUNTRY_PLANTS[country] || COUNTRY_PLANTS["Portugal"];
+        if (!plants.some(p => p.action === selectedPlant.action)) {
+            selectedPlant = null;
+        }
+    }
+
+    // Single aggregated "Plant" button — opens the plant menu.
+    const plantBtn = document.createElement("button");
+    plantBtn.dataset.action = "plant";
+    plantBtn.id = "toolbar-plant-btn";
+    const plantKey = selectedPlant ? selectedPlant.action.replace("plant-", "") : "olive";
+    const plantColor = PLANT_ICON_COLORS[plantKey] || "#5a8a3a";
+    const plantIcon = document.createElement("img");
+    plantIcon.src = makeFruitIcon(28, plantColor);
+    plantIcon.style.cssText = "width:28px; height:28px; vertical-align:middle; margin-right:4px;";
+    plantBtn.appendChild(plantIcon);
+    const plantLabel = document.createElement("span");
+    plantLabel.id = "toolbar-plant-label";
+    plantLabel.textContent = selectedPlant ? selectedPlant.label + " ▾" : "Plant ▾";
+    plantLabel.style.fontSize = "11px";
+    plantBtn.appendChild(plantLabel);
+    plantBtn.style.display = "flex";
+    plantBtn.style.alignItems = "center";
+    plantBtn.style.padding = "6px 10px";
+    if (selectedAction && selectedAction.startsWith("plant-")) {
+        plantBtn.classList.add("active");
+    }
+    toolbar.appendChild(plantBtn);
+
+    const tools = [
+        { action: "build-swale", label: "Swale" },
+        { action: "build-hugel", label: "Hugel" },
+        { action: "water", label: "Water" },
+        { action: "harvest", label: "Harvest" },
+    ];
+
+    if (selectedGameMode !== 0) {
+        tools.push({ action: "cut-tree", label: "Cut" });
+        tools.push({ action: "hunt", label: "Hunt" });
+        tools.push({ action: "build-hochsitz", label: "Hochsitz" });
+    }
+
+    tools.push({ action: "inspect", label: "Inspect" });
+
+    for (const t of tools) {
+        const btn = document.createElement("button");
+        btn.dataset.action = t.action;
+        const ti = TOOL_ICONS[t.action] || { icon: ".", color: "#aaa", bg: "#333" };
+        const icon = document.createElement("img");
+        icon.src = makeToolbarIcon(24, ti.color, ti.icon);
+        icon.style.cssText = "width:24px; height:24px; vertical-align:middle; margin-right:3px;";
+        btn.appendChild(icon);
+        const label = document.createElement("span");
+        label.textContent = t.label;
+        label.style.fontSize = "11px";
+        btn.appendChild(label);
+        btn.style.display = "flex";
+        btn.style.alignItems = "center";
+        btn.style.padding = "6px 10px";
+        toolbar.appendChild(btn);
+    }
+
+    toolbar.querySelectorAll("button").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const action = btn.dataset.action;
+            if (action === "plant") {
+                // The Plant button always opens the menu so the user can
+                // (re)pick a species. Selection is made inside the modal.
+                openPlantMenu();
+                return;
+            }
+            toolbar.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            selectedAction = action;
+            // Switching to a non-plant tool clears the plant selection.
+            selectedPlant = null;
+            refreshPlantToolbarButton();
+        });
     });
+
+    // Preserve an existing plant selection across rebuilds (e.g. region
+    // change). Otherwise the user would silently lose what they had armed.
+    if (selectedPlant) {
+        selectedAction = selectedPlant.action;
+        plantBtn.classList.add("active");
+    } else {
+        selectedAction = null;
+    }
+}
+
+// --- Plant menu (aggregated planting UI) -----------------------------------
+
+const PLANT_LAYERS = [
+    { name: "Canopy Trees", subtitle: "Tall, long-lived. ~1–3 min to fruit.", range: [100, 199] },
+    { name: "Fruit Trees", subtitle: "Smaller fruit trees. ~10–30 sec to fruit.", range: [200, 299] },
+    { name: "Shrubs & Aromatics", subtitle: "Rosemary, lavender, sage…", range: [300, 399] },
+    { name: "Herbs", subtitle: "Comfrey, basil, saffron…", range: [400, 499] },
+    { name: "Ground Cover & Vines", subtitle: "Clover, strawberry, grape.", range: [500, 699] },
+];
+
+function openPlantMenu() {
+    const modal = document.getElementById("plant-menu");
+    const body = document.getElementById("plant-menu-body");
+    const country = getCountryForRegion(selectedRegion);
+    const plants = COUNTRY_PLANTS[country] || COUNTRY_PLANTS["Portugal"];
+
+    body.innerHTML = "";
+    for (const layer of PLANT_LAYERS) {
+        const inLayer = plants.filter(p => p.sid >= layer.range[0] && p.sid <= layer.range[1]);
+        if (inLayer.length === 0) continue;
+
+        const section = document.createElement("div");
+        section.style.cssText = "margin-bottom:14px;";
+
+        const header = document.createElement("div");
+        header.style.cssText = "color:#8f8; font-size:13px; font-weight:bold; margin-bottom:2px;";
+        header.textContent = layer.name;
+        section.appendChild(header);
+
+        const sub = document.createElement("div");
+        sub.style.cssText = "color:#888; font-size:11px; margin-bottom:8px;";
+        sub.textContent = layer.subtitle;
+        section.appendChild(sub);
+
+        const grid = document.createElement("div");
+        grid.style.cssText = "display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px;";
+
+        for (const p of inLayer) {
+            const card = document.createElement("button");
+            const key = p.action.replace("plant-", "");
+            const color = PLANT_ICON_COLORS[key] || "#5a8a3a";
+            const isCurrent = selectedPlant && selectedPlant.action === p.action;
+            card.style.cssText = "display:flex; flex-direction:column; align-items:center; gap:4px; padding:10px 6px; background:" + (isCurrent ? "rgba(60,140,60,0.85)" : "rgba(20,40,20,0.75)") + "; color:" + (isCurrent ? "#fff" : "#cfc") + "; border:1px solid " + (isCurrent ? "#b9f6ca" : "#3a5a3a") + "; border-radius:8px; cursor:pointer; font-family:system-ui, sans-serif;" + (isCurrent ? "box-shadow:0 0 8px rgba(140,255,140,0.4);" : "");
+            const img = document.createElement("img");
+            img.src = makeFruitIcon(36, color);
+            img.style.cssText = "width:36px; height:36px;";
+            card.appendChild(img);
+            const lbl = document.createElement("span");
+            lbl.textContent = p.label;
+            lbl.style.cssText = "font-size:12px; font-weight:600;";
+            card.appendChild(lbl);
+            card.addEventListener("mouseenter", () => {
+                if (!isCurrent) card.style.background = "rgba(40,80,40,0.85)";
+            });
+            card.addEventListener("mouseleave", () => {
+                if (!isCurrent) card.style.background = "rgba(20,40,20,0.75)";
+            });
+            card.addEventListener("click", () => selectPlantFromMenu(p));
+            grid.appendChild(card);
+        }
+        section.appendChild(grid);
+        body.appendChild(section);
+    }
+
+    modal.style.display = "flex";
+}
+
+function closePlantMenu() {
+    document.getElementById("plant-menu").style.display = "none";
+}
+
+function selectPlantFromMenu(p) {
+    selectedPlant = { action: p.action, label: p.label, sid: p.sid };
+    selectedAction = p.action;
+    closePlantMenu();
+    refreshPlantToolbarButton();
+}
+
+function refreshPlantToolbarButton() {
+    const label = document.getElementById("toolbar-plant-label");
+    const btn = document.getElementById("toolbar-plant-btn");
+    if (!label || !btn) return;
+    if (selectedPlant) {
+        label.textContent = selectedPlant.label + " ▾";
+        const key = selectedPlant.action.replace("plant-", "");
+        const color = PLANT_ICON_COLORS[key] || "#5a8a3a";
+        btn.querySelector("img").src = makeFruitIcon(28, color);
+        const isActivePlanting = selectedAction && selectedAction.startsWith("plant-");
+        btn.classList.toggle("active", isActivePlanting);
+    } else {
+        label.textContent = "Plant ▾";
+        btn.classList.remove("active");
+    }
+}
+
+// Wire up modal close handlers (once at startup).
+document.getElementById("plant-menu-close").addEventListener("click", closePlantMenu);
+document.getElementById("plant-menu").addEventListener("click", (e) => {
+    if (e.target.id === "plant-menu") closePlantMenu();
 });
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+        const modal = document.getElementById("plant-menu");
+        if (modal && modal.style.display === "flex") closePlantMenu();
+    }
+});
+
+rebuildToolbar();
 
 async function init(serverUrl) {
     updateStatus("Loading...");
@@ -271,21 +656,37 @@ async function init(serverUrl) {
 function initRenderer() {
     scene = new THREE.Scene();
 
-    // Warm golden-hour sky gradient
+    // Painterly sky: inspired by Claude Lorrain golden landscapes and Turner atmospherics
     const skyCanvas = document.createElement("canvas");
-    skyCanvas.width = 1; skyCanvas.height = 256;
+    skyCanvas.width = 512; skyCanvas.height = 256;
     const skyCtx = skyCanvas.getContext("2d");
     const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 256);
-    skyGrad.addColorStop(0, "#4a7ab5");
-    skyGrad.addColorStop(0.3, "#7db8d8");
-    skyGrad.addColorStop(0.55, "#b8dce8");
-    skyGrad.addColorStop(0.75, "#e8d8c0");
-    skyGrad.addColorStop(1.0, "#d4b896");
+    skyGrad.addColorStop(0, "#2a4a78");
+    skyGrad.addColorStop(0.15, "#4a78b0");
+    skyGrad.addColorStop(0.35, "#7aaccf");
+    skyGrad.addColorStop(0.5, "#a8cce0");
+    skyGrad.addColorStop(0.65, "#d4c8b0");
+    skyGrad.addColorStop(0.78, "#e8c8a0");
+    skyGrad.addColorStop(0.88, "#e0b888");
+    skyGrad.addColorStop(1.0, "#c8a070");
     skyCtx.fillStyle = skyGrad;
-    skyCtx.fillRect(0, 0, 1, 256);
+    skyCtx.fillRect(0, 0, 512, 256);
+    // Soft clouds as translucent ovals
+    skyCtx.globalAlpha = 0.08;
+    for (let i = 0; i < 20; i++) {
+        const cx = Math.random() * 512;
+        const cy = 30 + Math.random() * 100;
+        const rx = 40 + Math.random() * 80;
+        const ry = 8 + Math.random() * 15;
+        skyCtx.beginPath();
+        skyCtx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        skyCtx.fillStyle = "#ffffff";
+        skyCtx.fill();
+    }
+    skyCtx.globalAlpha = 1.0;
     const skyTexture = new THREE.CanvasTexture(skyCanvas);
     scene.background = skyTexture;
-    scene.fog = new THREE.FogExp2(0xb8dce8, 0.0015);
+    scene.fog = new THREE.FogExp2(0xc8d8e0, 0.0012);
 
     camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 3000);
     camera.position.set(160, 80, 160);
@@ -306,9 +707,9 @@ function initRenderer() {
     controls.minDistance = 3;
     controls.maxDistance = 600;
 
-    // Warm sun with golden light
-    const sun = new THREE.DirectionalLight(0xffeedd, 1.8);
-    sun.position.set(200, 300, 150);
+    // Golden hour sun
+    const sun = new THREE.DirectionalLight(0xffeacc, 2.0);
+    sun.position.set(200, 250, 150);
     sun.castShadow = true;
     sun.shadow.mapSize.width = 4096;
     sun.shadow.mapSize.height = 4096;
@@ -319,13 +720,18 @@ function initRenderer() {
     sun.shadow.camera.top = 200;
     sun.shadow.camera.bottom = -200;
     scene.add(sun);
-    scene.add(new THREE.AmbientLight(0x606878, 0.5));
-    scene.add(new THREE.HemisphereLight(0x88bbdd, 0x556633, 0.6));
+    scene.add(new THREE.AmbientLight(0x708090, 0.6));
+    scene.add(new THREE.HemisphereLight(0x99ccee, 0x667744, 0.7));
 
-    // Secondary fill light from opposite side
-    const fill = new THREE.DirectionalLight(0xaabbcc, 0.3);
-    fill.position.set(-100, 150, -100);
+    // Warm fill from the side for depth
+    const fill = new THREE.DirectionalLight(0xffddbb, 0.4);
+    fill.position.set(-100, 120, -80);
     scene.add(fill);
+
+    // Subtle backlight rim for atmosphere
+    const rim = new THREE.DirectionalLight(0xccddff, 0.25);
+    rim.position.set(-50, 200, -200);
+    scene.add(rim);
 
     // Raycaster for click interactions
     renderer.domElement.addEventListener("click", onWorldClick);
@@ -530,6 +936,7 @@ function handleServerMessage(data) {
         case 0x0104: handleEntityDespawn(payload); break;
         case 0x010B: break; // pong
         case 0x010C: handleActionResult(payload); break;
+        case 0x0106: handlePlayerState(payload); break;
         default:
             console.log("Unknown msg 0x" + msgType.toString(16), payloadLen, "bytes");
     }
@@ -593,6 +1000,9 @@ function handleWorldState(payload) {
         } else if (kindTag === 4) {
             r.readU16(); // item_id
             kind = "item";
+        } else if (kindTag === 5) {
+            speciesId = r.readU8(); // structure kind
+            kind = "structure";
         }
 
         const px = r.readF32();
@@ -793,6 +1203,150 @@ function showInspectPanel(data) {
     panel.style.display = "block";
 }
 
+// --- Item database ---
+
+const ITEM_DB = {
+    1100: { name: "Chestnuts", color: "#8a5a1a" },
+    1101: { name: "Walnuts", color: "#6a4a18" },
+    1102: { name: "Carob Pods", color: "#5a3a1a" },
+    1104: { name: "Hazelnuts", color: "#8a6a2a" },
+    1105: { name: "Almonds", color: "#eeddcc" },
+    1107: { name: "Redwood Cones", color: "#6a2a1a" },
+    1108: { name: "Macadamia", color: "#ddccaa" },
+    1110: { name: "Pistachios", color: "#cc5544" },
+    1112: { name: "Cherries", color: "#cc1122" },
+    1200: { name: "Figs", color: "#6a2a5a" },
+    1201: { name: "Pomegranates", color: "#cc2233" },
+    1202: { name: "Citrus", color: "#ffaa22" },
+    1203: { name: "Olives", color: "#3a4a1a" },
+    1204: { name: "Plums", color: "#6622aa" },
+    1205: { name: "Avocados", color: "#3a5a1a" },
+    1206: { name: "Mulberries", color: "#3a1a2a" },
+    1207: { name: "Bananas", color: "#ddcc33" },
+    1208: { name: "Mangoes", color: "#ee8822" },
+    1209: { name: "Persimmons", color: "#ee6622" },
+    1210: { name: "Peaches", color: "#ffaa88" },
+    1300: { name: "Rosemary", color: "#3a6a3a" },
+    1301: { name: "Lavender", color: "#8855aa" },
+    1302: { name: "Thyme", color: "#6a8a4a" },
+    1303: { name: "Sage", color: "#8a9a7a" },
+    1304: { name: "Rooibos", color: "#aa4422" },
+    1305: { name: "Protea", color: "#cc4466" },
+    1306: { name: "Tea Leaves", color: "#3a7a3a" },
+    1400: { name: "Comfrey", color: "#3a7a2a" },
+    1401: { name: "Basil", color: "#2a8a2a" },
+    1402: { name: "Saffron", color: "#ee8811" },
+    1403: { name: "Shiso", color: "#5a2a4a" },
+    1500: { name: "Clover", color: "#2a8a2a" },
+    1501: { name: "Strawberries", color: "#cc2222" },
+    1600: { name: "Grapes", color: "#5522aa" },
+    2000: { name: "Game Meat", color: "#8a3a2a" },
+};
+
+let playerInventory = [];
+let playerStamina = 100;
+let playerHunger = 0;
+
+function handlePlayerState(payload) {
+    const r = new BincodeReader(payload);
+    playerStamina = r.readF32();
+    playerHunger = r.readF32();
+    const itemCount = r.readVarint();
+    playerInventory = [];
+    for (let i = 0; i < itemCount; i++) {
+        const itemId = r.readU16();
+        const count = r.readU16();
+        playerInventory.push({ itemId, count });
+    }
+    r.readU32(); // last_acked_seq
+    updateInventoryHUD();
+    updatePlayerHUD();
+}
+
+function updatePlayerHUD() {
+    document.getElementById("hud-stamina").textContent = "Stamina: " + playerStamina.toFixed(0) + "%";
+    document.getElementById("hud-hunger").textContent = "Hunger: " + playerHunger.toFixed(0) + "%";
+}
+
+// Map each harvested item to a top-level category so the player can see
+// owned produce at a glance instead of scrolling a flat list.
+const NUT_ITEMS = new Set([1100, 1101, 1102, 1104, 1105, 1107, 1108, 1110]);
+const ANIMAL_ITEMS = new Set([2000]);
+function categorizeItem(itemId) {
+    if (NUT_ITEMS.has(itemId)) return "nuts";
+    if (ANIMAL_ITEMS.has(itemId)) return "animal";
+    if (itemId >= 1300 && itemId <= 1499) return "herbs";
+    if (itemId === 1500) return "herbs"; // clover ground cover
+    return "fruits";
+}
+
+const STATUS_CATEGORIES = [
+    { key: "fruits", title: "Fruits & Berries", color: "#ee8844" },
+    { key: "nuts",   title: "Nuts & Seeds",     color: "#c9a45a" },
+    { key: "herbs",  title: "Herbs & Spices",   color: "#7ec97e" },
+    { key: "animal", title: "Animal Products",  color: "#cc7a4a" },
+];
+
+function updateInventoryHUD() {
+    let panel = document.getElementById("inventory-panel");
+    if (!panel) {
+        panel = document.createElement("div");
+        panel.id = "inventory-panel";
+        panel.style.cssText = "position:fixed; bottom:70px; right:12px; width:240px; background:rgba(0,15,0,0.9); border:1px solid #3a5a3a; border-radius:10px; padding:12px; font-family:system-ui, sans-serif; font-size:12px; color:#cfc; pointer-events:none; z-index:101; max-height:340px; overflow-y:auto; box-shadow:0 4px 16px rgba(0,0,0,0.4);";
+        document.body.appendChild(panel);
+    }
+
+    // Bucket items by category and compute totals.
+    const buckets = { fruits: [], nuts: [], herbs: [], animal: [] };
+    let totalItems = 0;
+    let totalKinds = 0;
+    for (const item of playerInventory) {
+        if (item.count <= 0) continue;
+        buckets[categorizeItem(item.itemId)].push(item);
+        totalItems += item.count;
+        totalKinds += 1;
+    }
+
+    if (totalKinds === 0) {
+        // Empty-state hint so the player knows where to look once they harvest.
+        panel.style.display = "block";
+        panel.innerHTML =
+            "<div style='color:#8f8; font-size:13px; font-weight:bold; margin-bottom:6px;'>Owned produce</div>" +
+            "<div style='color:#777; font-size:11px; line-height:1.5;'>Nothing harvested yet. Pick a plant from the <b style='color:#8f8;'>Plant ▾</b> button, place a seed, wait ~1 min, then use <b style='color:#eedd44;'>Harvest</b> on it.</div>";
+        return;
+    }
+
+    panel.style.display = "block";
+    let html = "";
+    html += "<div style='display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; border-bottom:1px solid #2a4a2a; padding-bottom:6px;'>";
+    html += "<span style='color:#8f8; font-size:13px; font-weight:bold;'>Owned produce</span>";
+    html += "<span style='color:#aaa; font-size:10px;'>" + totalKinds + " kinds · " + totalItems + " items</span>";
+    html += "</div>";
+
+    for (const cat of STATUS_CATEGORIES) {
+        const items = buckets[cat.key];
+        if (items.length === 0) continue;
+        const catTotal = items.reduce((s, it) => s + it.count, 0);
+        html += "<div style='margin-top:8px;'>";
+        html += "<div style='display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px;'>";
+        html += "<span style='color:" + cat.color + "; font-size:11px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px;'>" + cat.title + "</span>";
+        html += "<span style='color:#666; font-size:10px;'>" + catTotal + "</span>";
+        html += "</div>";
+        // Items, biggest stack first.
+        items.sort((a, b) => b.count - a.count);
+        for (const item of items) {
+            const info = ITEM_DB[item.itemId] || { name: "Item #" + item.itemId, color: "#aaa" };
+            html += "<div style='display:flex; align-items:center; gap:6px; padding:2px 0; font-family:monospace;'>";
+            html += "<span style='display:inline-block; width:10px; height:10px; border-radius:50%; background:" + info.color + "; flex-shrink:0;'></span>";
+            html += "<span style='flex:1; color:#cfc;'>" + info.name + "</span>";
+            html += "<span style='color:#888;'>×" + item.count + "</span>";
+            html += "</div>";
+        }
+        html += "</div>";
+    }
+    panel.innerHTML = html;
+}
+
 // --- Entity classification ---
 
 function classifyEntity(kind, speciesId) {
@@ -806,6 +1360,10 @@ function classifyEntity(kind, speciesId) {
         return "animal";
     }
     if (kind === "npc") return "npc";
+    if (kind === "structure") {
+        if (speciesId === 1) return "hochsitz";
+        return "hochsitz";
+    }
     if (kind === "plant") {
         const PLANT_MAP = {
             100: "chestnut", 101: "walnut", 102: "carob", 103: "eucalyptus",
@@ -814,7 +1372,7 @@ function classifyEntity(kind, speciesId) {
             112: "cherry",
             200: "fig", 201: "pomegranate", 202: "citrus", 203: "olive",
             204: "plum", 205: "avocado", 206: "mulberry", 207: "banana",
-            208: "mango", 209: "persimmon",
+            208: "mango", 209: "persimmon", 210: "peach",
             300: "rosemary", 301: "lavender", 302: "thyme", 303: "sage",
             304: "rooibos", 305: "protea", 306: "tea",
             400: "comfrey", 401: "basil", 402: "saffron", 403: "shiso",
@@ -961,54 +1519,60 @@ function renderTerrain(terrainData) {
         terrainGroup.add(mesh);
     }
 
-    // Grass blades on grass voxels (material 3)
+    // Wildflowers scattered on grass
     const grassPositions = voxelsByMat[3];
     if (grassPositions && grassPositions.length > 0) {
-        const grassBladeGeo = new THREE.PlaneGeometry(0.15, 0.45);
-        grassBladeGeo.translate(0, 0.22, 0);
-        const grassBladeMat = new THREE.MeshStandardMaterial({
-            color: 0x4a9a3a, roughness: 0.9, side: THREE.DoubleSide, alphaTest: 0.1
-        });
-        const grassBladeMat2 = new THREE.MeshStandardMaterial({
-            color: 0x5aaa4a, roughness: 0.9, side: THREE.DoubleSide, alphaTest: 0.1
-        });
-        const grassVoxelCount = grassPositions.length / 3;
-        const bladesPerVoxel = 3;
-        const maxGrassBlades = Math.min(grassVoxelCount * bladesPerVoxel, 40000);
-        const grassMesh1 = new THREE.InstancedMesh(grassBladeGeo, grassBladeMat, Math.ceil(maxGrassBlades / 2));
-        const grassMesh2 = new THREE.InstancedMesh(grassBladeGeo, grassBladeMat2, Math.floor(maxGrassBlades / 2));
-        const gm = new THREE.Matrix4();
-        const gr = new THREE.Matrix4();
-        let gi1 = 0, gi2 = 0;
-        for (let v = 0; v < grassVoxelCount && (gi1 + gi2) < maxGrassBlades; v++) {
-            const gx = grassPositions[v * 3];
-            const gy = grassPositions[v * 3 + 1];
-            const gz = grassPositions[v * 3 + 2];
-            if (!isAir(gx, gy + 1, gz)) continue;
-            const hash = (gx * 73 + gz * 37 + gy * 17) & 0xFF;
-            for (let b = 0; b < bladesPerVoxel; b++) {
-                const bx = gx + ((hash + b * 87) % 100) / 100 - 0.5;
-                const bz = gz + ((hash + b * 53) % 100) / 100 - 0.5;
-                const angle = ((hash + b * 41) % 360) * Math.PI / 180;
-                const scale = 0.7 + ((hash + b * 29) % 60) / 100;
-                gm.makeRotationY(angle);
-                gr.makeScale(scale, scale, scale);
-                gm.multiply(gr);
-                gm.setPosition(bx, gy + 0.5, bz);
-                if ((v + b) % 2 === 0 && gi1 < Math.ceil(maxGrassBlades / 2)) {
-                    grassMesh1.setMatrixAt(gi1++, gm);
-                } else if (gi2 < Math.floor(maxGrassBlades / 2)) {
-                    grassMesh2.setMatrixAt(gi2++, gm);
-                }
-            }
+        const flowerColors = [0xff6688, 0xffaa44, 0xeedd55, 0xffffff, 0xcc88ee, 0xff4466, 0x88ccff];
+        const flowerGeo = new THREE.SphereGeometry(0.06, 4, 3);
+        const stemGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.25, 3);
+        const stemMat = new THREE.MeshStandardMaterial({ color: 0x4a8a3a, roughness: 0.9 });
+        const grassCount = grassPositions.length / 3;
+        let flowerIdx = 0;
+        const maxFlowers = Math.min(800, Math.floor(grassCount * 0.03));
+        const flowerGroup = new THREE.Group();
+        for (let v = 0; v < grassCount && flowerIdx < maxFlowers; v++) {
+            const fx = grassPositions[v * 3];
+            const fy = grassPositions[v * 3 + 1];
+            const fz = grassPositions[v * 3 + 2];
+            if (!isAir(fx, fy + 1, fz)) continue;
+            const h = (fx * 97 + fz * 53 + fy * 31) & 0xFF;
+            if (h > 12) continue;
+            const fc = flowerColors[h % flowerColors.length];
+            const stem = new THREE.Mesh(stemGeo, stemMat);
+            stem.position.set(fx + (h % 10) / 10 - 0.5, fy + 0.62, fz + ((h * 3) % 10) / 10 - 0.5);
+            flowerGroup.add(stem);
+            const petal = new THREE.Mesh(flowerGeo, new THREE.MeshStandardMaterial({ color: fc, roughness: 0.6 }));
+            petal.position.set(stem.position.x, stem.position.y + 0.15, stem.position.z);
+            flowerGroup.add(petal);
+            flowerIdx++;
         }
-        grassMesh1.count = gi1;
-        grassMesh2.count = gi2;
-        grassMesh1.instanceMatrix.needsUpdate = true;
-        grassMesh2.instanceMatrix.needsUpdate = true;
-        terrainGroup.add(grassMesh1);
-        terrainGroup.add(grassMesh2);
+        terrainGroup.add(flowerGroup);
     }
+
+    // Butterflies (animated in render loop)
+    if (typeof butterflyGroup !== "undefined" && butterflyGroup) scene.remove(butterflyGroup);
+    butterflyGroup = new THREE.Group();
+    const butterflyColors = [0xffaa44, 0xff6688, 0xeeff66, 0xffffff, 0x88bbff, 0xee88cc];
+    for (let i = 0; i < 30; i++) {
+        const bx = Math.random() * width;
+        const bz = Math.random() * depth;
+        const by = (heightMap[Math.floor(bz) * width + Math.floor(bx)] || 10) + 1.5 + Math.random() * 2;
+        const bc = butterflyColors[i % butterflyColors.length];
+        const wingGeo = new THREE.PlaneGeometry(0.2, 0.15);
+        const wingMat = new THREE.MeshStandardMaterial({ color: bc, side: THREE.DoubleSide, roughness: 0.5 });
+        const bfly = new THREE.Group();
+        const wingL = new THREE.Mesh(wingGeo, wingMat);
+        wingL.position.x = -0.08; wingL.rotation.y = 0.3; bfly.add(wingL);
+        const wingR = new THREE.Mesh(wingGeo, wingMat);
+        wingR.position.x = 0.08; wingR.rotation.y = -0.3; bfly.add(wingR);
+        bfly.position.set(bx, by, bz);
+        bfly.userData.baseY = by;
+        bfly.userData.phase = Math.random() * Math.PI * 2;
+        bfly.userData.speed = 0.5 + Math.random() * 0.8;
+        bfly.userData.radius = 2 + Math.random() * 5;
+        butterflyGroup.add(bfly);
+    }
+    scene.add(butterflyGroup);
 
     // Water surface planes for animated water
     waterMeshes = [];
@@ -1529,6 +2093,7 @@ function travelToRegion(regionIndex, plotSeed) {
             break;
         }
     }
+    rebuildToolbar();
 
     // Clear current world state
     for (const [eid, obj] of entityMeshes) {
@@ -1537,6 +2102,7 @@ function travelToRegion(regionIndex, plotSeed) {
     entityMeshes.clear();
     entityKinds.clear();
     if (fishGroup) { scene.remove(fishGroup); fishGroup = null; }
+    if (butterflyGroup) { scene.remove(butterflyGroup); butterflyGroup = null; }
     waterMeshes = [];
 
     // Reconnect with new region
@@ -1832,62 +2398,81 @@ function createEntityMesh(category) {
             const fur = new THREE.MeshStandardMaterial({ color: 0x9a7a4a, roughness: 0.9 });
             const furLight = new THREE.MeshStandardMaterial({ color: 0xc8aa78, roughness: 0.9 });
             const dark = new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.8 });
-            // Body (larger radius for overlap with legs and neck)
-            const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.85, 6, 8), fur);
-            body.position.set(0, 0.88, 0); body.rotation.z = Math.PI / 2;
-            body.castShadow = true; g.add(body);
-            // Belly highlight
-            const belly = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.55, 5, 6), furLight);
-            belly.position.set(0, 0.78, 0); belly.rotation.z = Math.PI / 2; g.add(belly);
-            // Legs (positioned to sink into body)
-            for (const [lx, lz] of [[-0.12, -0.3], [0.12, -0.3], [-0.12, 0.3], [0.12, 0.3]]) {
-                const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.3, 4, 5), fur);
-                upper.position.set(lx, 0.48, lz); upper.castShadow = true; g.add(upper);
-                const lower = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.25, 4, 4), fur);
-                lower.position.set(lx, 0.2, lz); g.add(lower);
-                const hoof = new THREE.Mesh(new THREE.SphereGeometry(0.045, 4, 3), dark);
-                hoof.position.set(lx, 0.04, lz); hoof.scale.y = 0.6; g.add(hoof);
+            // Main body: overlapping spheres for smooth form
+            const bodyFront = new THREE.Mesh(new THREE.SphereGeometry(0.34, 8, 7), fur);
+            bodyFront.position.set(0, 0.88, 0.15); bodyFront.scale.set(0.85, 0.9, 1.1);
+            bodyFront.castShadow = true; g.add(bodyFront);
+            const bodyRear = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 7), fur);
+            bodyRear.position.set(0, 0.86, -0.18); bodyRear.scale.set(0.9, 0.88, 1.0);
+            bodyRear.castShadow = true; g.add(bodyRear);
+            const bodyMid = new THREE.Mesh(new THREE.SphereGeometry(0.3, 7, 6), fur);
+            bodyMid.position.set(0, 0.87, 0); bodyMid.scale.set(0.8, 0.85, 1.05);
+            g.add(bodyMid);
+            // Belly
+            const belly = new THREE.Mesh(new THREE.SphereGeometry(0.26, 6, 5), furLight);
+            belly.position.set(0, 0.76, 0); belly.scale.set(0.7, 0.6, 1.0); g.add(belly);
+            // Legs (upper starts inside body sphere)
+            for (const [lx, lz] of [[-0.11, -0.28], [0.11, -0.28], [-0.11, 0.28], [0.11, 0.28]]) {
+                const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.28, 4, 5), fur);
+                upper.position.set(lx, 0.52, lz); upper.castShadow = true; g.add(upper);
+                const lower = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.26, 4, 4), fur);
+                lower.position.set(lx, 0.22, lz); g.add(lower);
+                const hoof = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.035, 0.06, 5), dark);
+                hoof.position.set(lx, 0.04, lz); g.add(hoof);
             }
-            // Neck (overlaps deeply into body)
-            const neck = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.35, 5, 6), fur);
-            neck.position.set(0, 1.05, 0.38); neck.rotation.x = -0.45; g.add(neck);
-            // Head (overlaps neck)
-            const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), fur);
-            head.position.set(0, 1.28, 0.58); g.add(head);
-            // Snout (embedded in head)
-            const snout = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.1, 4, 5), furLight);
-            snout.position.set(0, 1.22, 0.72); snout.rotation.x = Math.PI / 2;
-            snout.scale.set(0.8, 1, 0.7); g.add(snout);
+            // Shoulder bump (hides leg-body junction)
+            const shoulderL = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), fur);
+            shoulderL.position.set(-0.12, 0.82, 0.25); g.add(shoulderL);
+            const shoulderR = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), fur);
+            shoulderR.position.set(0.12, 0.82, 0.25); g.add(shoulderR);
+            const hipL = new THREE.Mesh(new THREE.SphereGeometry(0.1, 5, 4), fur);
+            hipL.position.set(-0.12, 0.8, -0.25); g.add(hipL);
+            const hipR = new THREE.Mesh(new THREE.SphereGeometry(0.1, 5, 4), fur);
+            hipR.position.set(0.12, 0.8, -0.25); g.add(hipR);
+            // Neck: multiple overlapping spheres for smooth curve
+            const neckBase = new THREE.Mesh(new THREE.SphereGeometry(0.16, 6, 5), fur);
+            neckBase.position.set(0, 0.98, 0.35); g.add(neckBase);
+            const neckMid = new THREE.Mesh(new THREE.SphereGeometry(0.13, 6, 5), fur);
+            neckMid.position.set(0, 1.1, 0.42); g.add(neckMid);
+            const neckTop = new THREE.Mesh(new THREE.SphereGeometry(0.11, 6, 5), fur);
+            neckTop.position.set(0, 1.2, 0.46); g.add(neckTop);
+            // Head (overlaps neckTop)
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 6), fur);
+            head.position.set(0, 1.28, 0.52); g.add(head);
+            // Snout
+            const snout = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), furLight);
+            snout.position.set(0, 1.24, 0.65); snout.scale.set(0.7, 0.65, 1.0); g.add(snout);
             // Nose
             const nose = new THREE.Mesh(new THREE.SphereGeometry(0.03, 5, 4), dark);
-            nose.position.set(0, 1.24, 0.78); g.add(nose);
-            // Eyes (dot style)
+            nose.position.set(0, 1.25, 0.73); g.add(nose);
+            // Eyes
             for (const side of [-1, 1]) {
                 const eye = new THREE.Mesh(new THREE.SphereGeometry(0.025, 5, 4), dark);
-                eye.position.set(side * 0.12, 1.32, 0.65); g.add(eye);
+                eye.position.set(side * 0.11, 1.32, 0.58); g.add(eye);
             }
             // Ears
             for (const side of [-1, 1]) {
-                const ear = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.13, 4, 5), furLight);
-                ear.position.set(side * 0.1, 1.46, 0.5);
-                ear.rotation.z = side * -0.35; ear.rotation.x = -0.2;
-                ear.scale.set(0.6, 1, 0.4); g.add(ear);
+                const ear = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4), furLight);
+                ear.position.set(side * 0.1, 1.42, 0.46);
+                ear.scale.set(0.35, 1.0, 0.5);
+                ear.rotation.z = side * -0.3; ear.rotation.x = -0.15;
+                g.add(ear);
             }
             // Antlers
             const antler = new THREE.MeshStandardMaterial({ color: 0x7a6a4a, roughness: 0.85 });
             for (const side of [-1, 1]) {
                 const a1 = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.018, 0.3, 4), antler);
-                a1.position.set(side * 0.06, 1.48, 0.5); a1.rotation.z = side * -0.4; g.add(a1);
+                a1.position.set(side * 0.06, 1.46, 0.48); a1.rotation.z = side * -0.4; g.add(a1);
                 const a2 = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.012, 0.2, 3), antler);
-                a2.position.set(side * 0.12, 1.6, 0.47); a2.rotation.z = side * -0.7; g.add(a2);
+                a2.position.set(side * 0.12, 1.58, 0.45); a2.rotation.z = side * -0.7; g.add(a2);
                 const a3 = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.01, 0.15, 3), antler);
-                a3.position.set(side * 0.08, 1.62, 0.45); a3.rotation.z = side * -0.3;
+                a3.position.set(side * 0.08, 1.6, 0.43); a3.rotation.z = side * -0.3;
                 a3.rotation.x = -0.4; g.add(a3);
             }
-            // Tail
+            // White tail
             const tail = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4),
                 new THREE.MeshStandardMaterial({ color: 0xf0e8dd, roughness: 0.9 }));
-            tail.position.set(0, 0.95, -0.48); tail.scale.set(0.8, 0.5, 1.2); g.add(tail);
+            tail.position.set(0, 0.92, -0.45); tail.scale.set(0.8, 0.6, 1.0); g.add(tail);
             return g;
         }
         // --- New canopy trees ---
@@ -1977,6 +2562,8 @@ function createEntityMesh(category) {
             return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a1a, 2.5, 2.0, 5.5, 0xee8822, 6);
         case "persimmon":
             return makeTree(0x5a3a1a, 0.15, 3, 0x4a7a2a, 1.8, 1.8, 4.2, 0xee6622, 5);
+        case "peach":
+            return makeTree(0x5a3a2a, 0.14, 2.5, 0x5aaa5a, 1.8, 1.6, 3.8, 0xffaa88, 8);
         // --- New shrubs ---
         case "thyme": {
             const g = new THREE.Group();
@@ -2234,6 +2821,106 @@ function createEntityMesh(category) {
             mesh.castShadow = true;
             return mesh;
         }
+        case "hochsitz": {
+            // Closed Kanzel (German hunting stand) — larch wood, ~3.5m stilts, 1.2x1.2m cabin
+            const g = new THREE.Group();
+            const larch = new THREE.MeshStandardMaterial({ color: 0x7a5a30, roughness: 0.92 });
+            const larchDark = new THREE.MeshStandardMaterial({ color: 0x5a3a18, roughness: 0.95 });
+            const plank = new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.9 });
+            const roofMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 });
+            const windowMat = new THREE.MeshStandardMaterial({ color: 0x1a3a4a, roughness: 0.3, metalness: 0.1 });
+            const platformH = 3.5;
+            // Four larch log stilts
+            for (const [lx, lz] of [[-0.55, -0.55], [0.55, -0.55], [-0.55, 0.55], [0.55, 0.55]]) {
+                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, platformH, 6), larch);
+                leg.position.set(lx, platformH / 2, lz); leg.castShadow = true; g.add(leg);
+            }
+            // Diagonal cross braces on two sides
+            for (const side of [-1, 1]) {
+                const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 2.5, 4), larchDark);
+                brace.position.set(side * 0.55, 1.8, 0);
+                brace.rotation.z = side * 0.55; brace.rotation.x = 0.3;
+                g.add(brace);
+                const brace2 = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 2.5, 4), larchDark);
+                brace2.position.set(0, 1.8, side * 0.55);
+                brace2.rotation.x = side * -0.55; brace2.rotation.z = 0.3;
+                g.add(brace2);
+            }
+            // Horizontal cross beams at mid-height
+            for (const lz of [-0.55, 0.55]) {
+                const beam = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.06, 0.06), larchDark);
+                beam.position.set(0, platformH * 0.5, lz); g.add(beam);
+            }
+            for (const lx of [-0.55, 0.55]) {
+                const beam = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 1.1), larchDark);
+                beam.position.set(lx, platformH * 0.5, 0); g.add(beam);
+            }
+            // Platform floor (thick planks)
+            const floor = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.1, 1.3), plank);
+            floor.position.y = platformH; floor.castShadow = true; g.add(floor);
+            // Cabin walls — closed on all four sides, 1.2m x 1.2m x 1.9m tall
+            const cabinH = 1.9;
+            const cabinY = platformH + cabinH / 2 + 0.05;
+            const wallThick = 0.06;
+            // Back wall (solid)
+            const backWall = new THREE.Mesh(new THREE.BoxGeometry(1.2, cabinH, wallThick), plank);
+            backWall.position.set(0, cabinY, -0.57); backWall.castShadow = true; g.add(backWall);
+            // Front wall (solid, with door opening indicated by darker panel)
+            const frontWall = new THREE.Mesh(new THREE.BoxGeometry(1.2, cabinH, wallThick), plank);
+            frontWall.position.set(0, cabinY, 0.57); frontWall.castShadow = true; g.add(frontWall);
+            // Side walls
+            const leftWall = new THREE.Mesh(new THREE.BoxGeometry(wallThick, cabinH, 1.2), plank);
+            leftWall.position.set(-0.57, cabinY, 0); leftWall.castShadow = true; g.add(leftWall);
+            const rightWall = new THREE.Mesh(new THREE.BoxGeometry(wallThick, cabinH, 1.2), plank);
+            rightWall.position.set(0.57, cabinY, 0); rightWall.castShadow = true; g.add(rightWall);
+            // Observation windows (100cm x 40cm) — dark glass on all four sides
+            const winW = 0.8, winH = 0.35;
+            const winY = platformH + cabinH * 0.65;
+            for (const [wx, wz, ry] of [[0, -0.58, 0], [0, 0.58, 0], [-0.58, 0, Math.PI/2], [0.58, 0, Math.PI/2]]) {
+                const win = new THREE.Mesh(new THREE.PlaneGeometry(winW, winH), windowMat);
+                win.position.set(wx, winY, wz);
+                win.rotation.y = ry;
+                if (wz < 0) win.rotation.y = Math.PI;
+                g.add(win);
+            }
+            // Pitched roof (two sloping sides meeting at ridge)
+            const roofOverhang = 0.2;
+            const roofW = 1.2 + roofOverhang * 2;
+            const roofD = (1.2 + roofOverhang * 2) / 2;
+            const roofAngle = 0.35;
+            const roofY = platformH + cabinH + 0.1;
+            const roofLeft = new THREE.Mesh(new THREE.BoxGeometry(roofW, 0.05, roofD + 0.1), roofMat);
+            roofLeft.position.set(0, roofY + 0.2, -roofD / 2 + 0.05);
+            roofLeft.rotation.x = roofAngle; roofLeft.castShadow = true; g.add(roofLeft);
+            const roofRight = new THREE.Mesh(new THREE.BoxGeometry(roofW, 0.05, roofD + 0.1), roofMat);
+            roofRight.position.set(0, roofY + 0.2, roofD / 2 - 0.05);
+            roofRight.rotation.x = -roofAngle; roofRight.castShadow = true; g.add(roofRight);
+            // Roof ridge beam
+            const ridge = new THREE.Mesh(new THREE.BoxGeometry(roofW, 0.06, 0.06), larchDark);
+            ridge.position.set(0, roofY + 0.42, 0); g.add(ridge);
+            // Gable triangles (front and back)
+            const gableGeo = new THREE.BufferGeometry();
+            const gableVerts = new Float32Array([
+                -0.6, 0, 0,  0.6, 0, 0,  0, 0.35, 0
+            ]);
+            gableGeo.setAttribute("position", new THREE.BufferAttribute(gableVerts, 3));
+            gableGeo.computeVertexNormals();
+            for (const gz of [-0.58, 0.58]) {
+                const gable = new THREE.Mesh(gableGeo, plank);
+                gable.position.set(0, roofY, gz); g.add(gable);
+            }
+            // Internal ladder (leaning against front, goes through floor hatch)
+            const ladderMat = larchDark;
+            for (let ly = 0; ly < platformH; ly += 0.4) {
+                const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.4, 4), ladderMat);
+                rung.position.set(0, ly + 0.2, 0.65); rung.rotation.z = Math.PI / 2; g.add(rung);
+            }
+            const ladderL = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, platformH + 0.5, 5), larch);
+            ladderL.position.set(-0.15, platformH / 2, 0.65); ladderL.rotation.x = 0.08; g.add(ladderL);
+            const ladderR = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, platformH + 0.5, 5), larch);
+            ladderR.position.set(0.15, platformH / 2, 0.65); ladderR.rotation.x = 0.08; g.add(ladderR);
+            return g;
+        }
         default: {
             const mesh = new THREE.Mesh(
                 new THREE.SphereGeometry(0.3, 6, 5),
@@ -2244,6 +2931,9 @@ function createEntityMesh(category) {
         }
     }
 }
+
+// Growth stage scale factors: Seed=0, Germinating=1, Seedling=2, Juvenile=3, Mature=4, Fruiting=5
+const GROWTH_SCALES = [0.1, 0.15, 0.3, 0.55, 1.0, 1.0, 0.9, 0.0];
 
 function createOrUpdateEntity(eid, x, y, z, rot, category) {
     let obj = entityMeshes.get(eid);
@@ -2258,6 +2948,13 @@ function createOrUpdateEntity(eid, x, y, z, rot, category) {
 
     obj.position.set(x, y, z);
     if (obj.rotation) obj.rotation.y = rot;
+
+    // Scale plants by growth stage
+    const info = entityKinds.get(eid);
+    if (info && info.kind === "plant" && info.growthStage !== undefined) {
+        const s = GROWTH_SCALES[info.growthStage] || 1.0;
+        obj.scale.set(s, s, s);
+    }
 
     // Track own player for camera
     if (eid === myEntityId) {
@@ -2305,6 +3002,10 @@ function onWorldClick(event) {
             ws.send(buildActionMessage(encodeCutTreeAction(eid)));
             return;
         }
+        if (eid && selectedAction === "hunt") {
+            ws.send(buildActionMessage(encodeHuntAction(eid)));
+            return;
+        }
         if (eid && selectedAction === "inspect") {
             ws.send(buildActionMessage(encodeInspectAction(eid)));
             return;
@@ -2321,16 +3022,10 @@ function onWorldClick(event) {
             const iz = Math.round(point.z);
 
             if (selectedAction.startsWith("plant-")) {
-                const speciesMap = {
-                    "plant-chestnut": 100,
-                    "plant-olive": 203,
-                    "plant-fig": 200,
-                    "plant-lavender": 301,
-                    "plant-rosemary": 300,
-                    "plant-comfrey": 400,
-                    "plant-clover": 500,
-                };
-                const sid = speciesMap[selectedAction] || 100;
+                const country = getCountryForRegion(selectedRegion);
+                const plants = COUNTRY_PLANTS[country] || COUNTRY_PLANTS["Portugal"];
+                const found = plants.find(p => p.action === selectedAction);
+                const sid = found ? found.sid : 100;
                 const actionPayload = encodePlantAction(sid);
                 ws.send(buildActionMessage(actionPayload));
             } else if (selectedAction === "water") {
@@ -2341,6 +3036,9 @@ function onWorldClick(event) {
                 ws.send(buildActionMessage(actionPayload));
             } else if (selectedAction === "build-hugel") {
                 const actionPayload = encodeHugelAction(ix, iy, iz);
+                ws.send(buildActionMessage(actionPayload));
+            } else if (selectedAction === "build-hochsitz") {
+                const actionPayload = encodeHochsitzAction(ix, iy, iz);
                 ws.send(buildActionMessage(actionPayload));
             }
         }
@@ -2386,6 +3084,17 @@ function encodeCutTreeAction(entityId) {
 
 function encodeInspectAction(entityId) {
     return [...encodeVarint(11), ...encodeVarint(entityId)];
+}
+
+function encodeHuntAction(entityId) {
+    return [...encodeVarint(12), ...encodeVarint(entityId)];
+}
+
+function encodeHochsitzAction(x, y, z) {
+    return [
+        ...encodeVarint(13),
+        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
+    ];
 }
 
 // --- Input ---
@@ -2530,6 +3239,22 @@ function updateWater(time) {
             fish.rotation.y = t + Math.PI / 2;
         }
     }
+
+    if (butterflyGroup) {
+        for (const bfly of butterflyGroup.children) {
+            if (!bfly.userData.speed) continue;
+            const t = time * bfly.userData.speed + bfly.userData.phase;
+            bfly.position.x += Math.sin(t * 1.3) * 0.02;
+            bfly.position.z += Math.cos(t * 0.9) * 0.02;
+            bfly.position.y = bfly.userData.baseY + Math.sin(t * 2) * 0.4;
+            bfly.rotation.y = t;
+            if (bfly.children.length >= 2) {
+                const wingFlap = Math.sin(time * 12 + bfly.userData.phase) * 0.8;
+                bfly.children[0].rotation.y = 0.3 + wingFlap;
+                bfly.children[1].rotation.y = -0.3 - wingFlap;
+            }
+        }
+    }
 }
 
 // --- Edge-of-world region transition ---
@@ -2624,65 +3349,112 @@ function updateStatus(text) {
     document.getElementById("status").textContent = text;
 }
 
-// --- Ambient music (generative) ---
+// --- Ambient music (relaxing piano) ---
 
 let audioCtx = null;
 let musicStarted = false;
+let pianoBus = null;
+
+// Synthesize a single piano-like note using a stack of harmonics with an
+// ADSR envelope (fast attack, exponential decay) — no samples, no drones.
+function playPianoNote(freq, when, duration, velocity) {
+    if (!audioCtx) return;
+    const t0 = audioCtx.currentTime + when;
+    const peak = velocity;
+
+    const noteGain = audioCtx.createGain();
+    noteGain.gain.setValueAtTime(0.0001, t0);
+    noteGain.gain.exponentialRampToValueAtTime(peak, t0 + 0.008);
+    noteGain.gain.exponentialRampToValueAtTime(peak * 0.35, t0 + 0.25);
+    noteGain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+    noteGain.connect(pianoBus);
+
+    // Loose approximation of a piano's first few partials.
+    const partials = [
+        { mult: 1.0, amp: 1.00, type: "triangle" },
+        { mult: 2.0, amp: 0.42, type: "sine" },
+        { mult: 3.0, amp: 0.18, type: "sine" },
+        { mult: 4.0, amp: 0.09, type: "sine" },
+        { mult: 5.0, amp: 0.04, type: "sine" },
+    ];
+    for (const p of partials) {
+        const osc = audioCtx.createOscillator();
+        osc.type = p.type;
+        osc.frequency.value = freq * p.mult;
+        const g = audioCtx.createGain();
+        g.gain.value = p.amp;
+        osc.connect(g);
+        g.connect(noteGain);
+        osc.start(t0);
+        osc.stop(t0 + duration + 0.05);
+    }
+}
 
 function startAmbientMusic() {
     if (musicStarted) return;
     musicStarted = true;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-    function createDrone(freq, gain, detune) {
-        const osc = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
-        osc.type = "sine";
-        osc.frequency.value = freq;
-        osc.detune.value = detune || 0;
-        g.gain.value = gain;
-        osc.connect(g);
-        g.connect(audioCtx.destination);
-        osc.start();
+    // Shared bus with a gentle low-pass + soft delay tail for warmth —
+    // no oscillators on it directly, just shaping for the piano notes.
+    pianoBus = audioCtx.createGain();
+    pianoBus.gain.value = 0.85;
 
-        // Slow modulation for organic feel
-        const lfo = audioCtx.createOscillator();
-        const lfoGain = audioCtx.createGain();
-        lfo.type = "sine";
-        lfo.frequency.value = 0.05 + Math.random() * 0.08;
-        lfoGain.gain.value = gain * 0.3;
-        lfo.connect(lfoGain);
-        lfoGain.connect(g.gain);
-        lfo.start();
+    const tone = audioCtx.createBiquadFilter();
+    tone.type = "lowpass";
+    tone.frequency.value = 3200;
+    tone.Q.value = 0.6;
 
-        return { osc, gain: g };
-    }
+    const delay = audioCtx.createDelay(1.0);
+    delay.delayTime.value = 0.42;
+    const feedback = audioCtx.createGain();
+    feedback.gain.value = 0.22;
+    const wet = audioCtx.createGain();
+    wet.gain.value = 0.18;
 
-    // Peaceful pad tones (C major 7th voicing)
-    createDrone(65.41, 0.04, 0);   // C2
-    createDrone(130.81, 0.025, 3); // C3
-    createDrone(164.81, 0.02, -2); // E3
-    createDrone(196.00, 0.018, 5); // G3
-    createDrone(246.94, 0.012, -3); // B3
+    pianoBus.connect(tone);
+    tone.connect(audioCtx.destination);
+    tone.connect(delay);
+    delay.connect(feedback);
+    feedback.connect(delay);
+    delay.connect(wet);
+    wet.connect(audioCtx.destination);
 
-    // Nature-like high shimmer
-    function playChime() {
+    // Slow, peaceful four-chord progression (vi - IV - I - V in C major).
+    // Each entry: [root chord notes, melody pool drawn from the chord scale].
+    const progression = [
+        { chord: [220.00, 261.63, 329.63], melody: [440.00, 523.25, 659.25, 783.99] }, // A minor
+        { chord: [174.61, 220.00, 261.63], melody: [349.23, 440.00, 523.25, 698.46] }, // F major
+        { chord: [196.00, 261.63, 329.63], melody: [392.00, 523.25, 587.33, 659.25] }, // C major
+        { chord: [196.00, 246.94, 293.66], melody: [392.00, 493.88, 587.33, 783.99] }, // G major
+    ];
+
+    const CHORD_SECONDS = 5.5;
+    let step = 0;
+
+    function scheduleNext() {
         if (!audioCtx) return;
-        const notes = [523.25, 659.25, 783.99, 987.77, 1046.5, 1318.5];
-        const freq = notes[Math.floor(Math.random() * notes.length)];
-        const osc = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
-        osc.type = "sine";
-        osc.frequency.value = freq;
-        g.gain.setValueAtTime(0.015, audioCtx.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 3);
-        osc.connect(g);
-        g.connect(audioCtx.destination);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 3);
-        setTimeout(playChime, 4000 + Math.random() * 8000);
+        const slot = progression[step % progression.length];
+
+        // Soft sustained chord underneath.
+        for (const f of slot.chord) {
+            playPianoNote(f, 0, CHORD_SECONDS, 0.08);
+        }
+
+        // Sparse melody on top: 2–3 notes drifting through the chord.
+        const notes = 2 + Math.floor(Math.random() * 2);
+        for (let i = 0; i < notes; i++) {
+            const f = slot.melody[Math.floor(Math.random() * slot.melody.length)];
+            const offset = 0.8 + i * (1.2 + Math.random() * 0.6);
+            const vel = 0.10 + Math.random() * 0.05;
+            playPianoNote(f, offset, 2.5, vel);
+        }
+
+        step += 1;
+        setTimeout(scheduleNext, CHORD_SECONDS * 1000);
     }
-    setTimeout(playChime, 2000);
+
+    scheduleNext();
 }
 
 // Start music on first user interaction (browser autoplay policy)
@@ -2709,18 +3481,34 @@ const GENERAL_TIPS = [
     "A mature food forest can produce 10-20 times more food per hectare than a monoculture farm.",
 ];
 
+const PEACEFUL_TIPS = [
+    "Take a moment to look around. The butterflies dancing over the meadow are enjoying the same sun you are.",
+    "Every tree you plant today is a gift to the future. In a few seasons it will bear fruit for you.",
+    "Notice the wildflowers among the grass. Nature fills every space with beauty when we let it.",
+    "Your food forest grows while you rest. Come back tomorrow and see how much has changed.",
+    "Lavender attracts bees and calms the mind. Plant some near your favorite resting spot.",
+    "The gentle sound of wind through leaves is one of nature's oldest lullabies.",
+    "A food forest is a garden that takes care of itself. You are its gentle guide, not its master.",
+    "Walking through your forest, notice how the light filters through the canopy. Each tree tells a story.",
+    "Harvest when the fruit is ripe. There is no rush. Nature has its own perfect timing.",
+    "Comfrey leaves make the richest mulch. Chop them and let them nourish the soil around your trees.",
+    "Sit by the water and watch the fish. Even a moment of stillness restores the spirit.",
+    "Every season brings something new. Spring blossoms, summer fruit, autumn color, winter rest.",
+];
+
 let tipIndex = 0;
 setInterval(() => {
     if (!connected) return;
+    const tips = selectedGameMode === 0 ? PEACEFUL_TIPS : GENERAL_TIPS;
     const chatLog = document.getElementById("chat-log");
     const line = document.createElement("div");
-    line.style.color = "#88bbaa";
+    line.style.color = selectedGameMode === 0 ? "#aaccbb" : "#88bbaa";
     line.style.fontStyle = "italic";
-    line.textContent = GENERAL_TIPS[tipIndex % GENERAL_TIPS.length];
+    line.textContent = tips[tipIndex % tips.length];
     chatLog.appendChild(line);
     chatLog.scrollTop = chatLog.scrollHeight;
     tipIndex++;
-}, 45000);
+}, selectedGameMode === 0 ? 60000 : 45000);
 
 // --- Food forest knowledge system ---
 
@@ -2744,6 +3532,7 @@ const FOOD_FOREST_KNOWLEDGE = {
     205: "Avocado trees are nutrient accumulators, drawing minerals from deep soil layers. Their leaf litter creates excellent mulch. In food forests, they pair well with nitrogen-fixers and banana plants.",
     207: "Banana plants are not trees but giant herbs. They grow rapidly, producing fruit within a year. Their decaying pseudostems create rich compost, feeding the soil food web.",
     208: "Mango trees can live for hundreds of years and produce fruit for generations. They create dense shade that suppresses weeds and their deep roots prevent soil erosion.",
+    210: "Peach trees originated in Yunnan, China and were cultivated for over 4000 years. They produce fragrant blossoms in spring that attract pollinators. In food forests, peach trees thrive in the understory with well-drained soil and full sun.",
     300: "Rosemary is a medicinal and culinary herb that attracts pollinators. Its essential oils repel many garden pests. In food forests, it forms a fragrant, drought-tolerant ground layer.",
     301: "Lavender attracts beneficial insects and pollinators while repelling aphids and moths. Its calming scent creates a therapeutic garden atmosphere. It thrives in poor, well-drained soils.",
     302: "Thyme is a living mulch that suppresses weeds and retains soil moisture. Its antimicrobial properties benefit neighboring plants. Ancient Greeks burned thyme as incense in temples.",

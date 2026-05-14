@@ -8,7 +8,7 @@ pub mod resources;
 pub mod systems;
 
 use ff_common::GameMode;
-use resources::{GameCalendar, SpeciesDb, Weather};
+use resources::{GameCalendar, SpeciesBrains, SpeciesDb, Weather};
 
 /// All global resources available to systems during a tick.
 pub struct Resources {
@@ -16,6 +16,10 @@ pub struct Resources {
     pub weather: Weather,
     pub species_db: SpeciesDb,
     pub game_mode: GameMode,
+    /// Per-world Q-learning brains for animal movement. Each species owns
+    /// one shared table that all individuals of that species learn into.
+    /// Knowledge does NOT cross world boundaries — each shard starts naive.
+    pub species_brains: SpeciesBrains,
 }
 
 impl Resources {
@@ -24,7 +28,8 @@ impl Resources {
             calendar: GameCalendar::new(),
             weather: Weather::default(),
             species_db: SpeciesDb::new_default(),
-            game_mode: GameMode::Survival,
+            game_mode: GameMode::Realistic,
+            species_brains: SpeciesBrains::new(),
         }
     }
 }

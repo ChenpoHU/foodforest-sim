@@ -36,7 +36,7 @@ async fn main() {
         .ok()
         .and_then(|s| s.parse::<u8>().ok())
         .map(ff_common::GameMode::from)
-        .unwrap_or(ff_common::GameMode::Survival);
+        .unwrap_or(ff_common::GameMode::Realistic);
 
     info!("Game mode: {:?}", game_mode);
 

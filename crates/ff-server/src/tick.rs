@@ -148,4 +148,36 @@ fn broadcast_updates(shard: &Shard) {
             session.send(buf.clone());
         }
     }
+
+    // Send per-player state (inventory, stamina, hunger) every 10 ticks (~0.5s)
+    if tick.0 % 10 == 0 {
+        for (player_id, session) in &shard.sessions {
+            // Find this player's entity
+            for (_entity, (player, stamina, hunger, inv)) in shard
+                .ecs_world
+                .query::<(
+                    &ff_ecs::components::player::Player,
+                    &ff_ecs::components::player::Stamina,
+                    &ff_ecs::components::player::Hunger,
+                    &ff_ecs::components::player::Inventory,
+                )>()
+                .iter()
+            {
+                if player.player_id != *player_id { continue; }
+                let state = ServerPlayerState {
+                    stamina: stamina.0,
+                    hunger: hunger.0,
+                    inventory: inv.slots.iter().map(|s| ItemStackMsg {
+                        item_id: s.item_id,
+                        count: s.count,
+                    }).collect(),
+                    last_acked_seq: player.last_input_seq,
+                };
+                if let Ok(buf) = encode(MessageType::ServerPlayerState, &state) {
+                    session.send(buf);
+                }
+                break;
+            }
+        }
+    }
 }

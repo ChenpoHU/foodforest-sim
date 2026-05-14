@@ -149,6 +149,8 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
                 EntityKind::Plant { species_id: plant.species_id }
             } else if let Ok(animal) = shard.ecs_world.get::<&ff_ecs::components::animal::Animal>(_e) {
                 EntityKind::Animal { species_id: animal.species_id }
+            } else if let Ok(structure) = shard.ecs_world.get::<&ff_ecs::components::identity::Structure>(_e) {
+                EntityKind::Structure { kind: structure.kind }
             } else if shard.ecs_world.get::<&ff_ecs::components::player::Player>(_e).is_ok() {
                 EntityKind::Player
             } else {

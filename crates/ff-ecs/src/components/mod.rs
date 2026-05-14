@@ -2,6 +2,7 @@
 
 pub mod ai_agent;
 pub mod animal;
+pub mod animal_brain;
 pub mod identity;
 pub mod physics;
 pub mod plant;
@@ -11,6 +12,7 @@ pub mod transform;
 
 pub use ai_agent::*;
 pub use animal::*;
+pub use animal_brain::*;
 pub use identity::*;
 pub use physics::*;
 pub use plant::*;

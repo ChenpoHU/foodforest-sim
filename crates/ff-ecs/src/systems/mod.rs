@@ -49,7 +49,7 @@ pub fn run_tick(
         fell_messages = tree_felling::run(world, resources);
     }
 
-    if resources.game_mode == GameMode::Hardcore {
+    if resources.game_mode == GameMode::Survival {
         let fire_result = wildfire::run(world, resources);
         fell_messages.extend(fire_result.messages);
         despawned.extend(fire_result.despawned);

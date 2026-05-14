@@ -145,7 +145,13 @@
             transition: all 0.2s;
         }
         .country-btn:hover { background: #2a3a2a; border-color: #4a4; }
-        .country-btn.active { background: #2a5a2a; color: #cfc; border-color: #8f8; }
+        .country-btn.active {
+            background: #4caf50;
+            color: #fff;
+            border-color: #b9f6ca;
+            box-shadow: 0 0 10px rgba(140, 255, 140, 0.5);
+            font-weight: bold;
+        }
         #region-list {
             display: flex;
             gap: 6px;
@@ -165,7 +171,13 @@
             transition: all 0.2s;
         }
         .region-btn:hover { background: #2a3a2a; border-color: #4a4; }
-        .region-btn.active { background: #2a5a2a; color: #cfc; border-color: #8f8; }
+        .region-btn.active {
+            background: #4caf50;
+            color: #fff;
+            border-color: #b9f6ca;
+            box-shadow: 0 0 10px rgba(140, 255, 140, 0.5);
+            font-weight: bold;
+        }
         #plot-selector {
             display: none;
             align-items: center;
@@ -211,8 +223,8 @@
         </div>
         <div style="display:flex; gap:8px; margin: 6px 0;">
             <button class="mode-btn active" data-mode="0" style="background:#2a5a2a; color:#cfc; border:1px solid #4a4; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;">Peaceful</button>
-            <button class="mode-btn" data-mode="1" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;">Survival</button>
-            <button class="mode-btn" data-mode="2" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;">Hardcore</button>
+            <button class="mode-btn" data-mode="1" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;">Realistic</button>
+            <button class="mode-btn" data-mode="2" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;">Survival</button>
         </div>
         <p id="mode-desc" style="color:#888; font-size:11px; margin-bottom:4px; max-width:420px; text-align:center;">No casualties. Trees disappear when cut. Relaxed pace for all ages.</p>
 
@@ -273,22 +285,22 @@
         <button onclick="document.getElementById('inspect-panel').style.display='none'" style="margin-top:8px; background:#333; color:#aaa; border:1px solid #555; border-radius:4px; padding:3px 10px; cursor:pointer; font-size:11px;">Close</button>
     </div>
 
-    <!-- Toolbar -->
-    <div id="toolbar">
-        <button data-action="plant-chestnut">Chestnut</button>
-        <button data-action="plant-olive">Olive</button>
-        <button data-action="plant-fig">Fig</button>
-        <button data-action="plant-lavender">Lavender</button>
-        <button data-action="plant-rosemary">Rosemary</button>
-        <button data-action="plant-comfrey">Comfrey</button>
-        <button data-action="plant-clover">Clover</button>
-        <button data-action="build-swale">Swale</button>
-        <button data-action="build-hugel">Hugel Bed</button>
-        <button data-action="water">Water</button>
-        <button data-action="harvest">Harvest</button>
-        <button data-action="cut-tree">Cut Tree</button>
-        <button data-action="inspect">Inspect</button>
+    <!-- Plant menu modal -->
+    <div id="plant-menu" style="position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); z-index:400; pointer-events:all;">
+        <div style="background:rgba(8,18,8,0.97); border:1px solid #4a4; border-radius:12px; padding:20px 24px; min-width:540px; max-width:760px; max-height:80vh; overflow-y:auto; box-shadow:0 8px 32px rgba(0,0,0,0.6);">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #2a4a2a; padding-bottom:10px; margin-bottom:14px;">
+                <div>
+                    <h2 style="color:#8f8; margin:0; font-size:18px;">Choose a plant</h2>
+                    <p style="color:#888; font-size:11px; margin:4px 0 0 0;">Click a species, then click anywhere on the ground to plant it.</p>
+                </div>
+                <button id="plant-menu-close" style="background:#333; color:#aaa; border:1px solid #555; border-radius:6px; padding:4px 12px; cursor:pointer; font-size:14px;">Close</button>
+            </div>
+            <div id="plant-menu-body"></div>
+        </div>
     </div>
+
+    <!-- Toolbar -->
+    <div id="toolbar"></div>
 
     <!-- Chat -->
     <div id="chat">

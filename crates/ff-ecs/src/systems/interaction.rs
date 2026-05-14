@@ -50,13 +50,20 @@ pub fn process_action(
             let id = *next_entity_id;
             *next_entity_id += 1;
 
-            world.spawn((
+            let harvestable =
+                Harvestable::from_species(species.harvest_item_id, species.harvest_amount);
+
+            let entity = world.spawn((
                 NetworkId(EntityId(id)),
                 Owner(player_id),
                 Position(Vec3::new(plant_x as f32, plant_y, plant_z as f32)),
                 Rotation(0.0),
                 Plant::new_seed(*species_id),
             ));
+
+            if let Some(h) = harvestable {
+                let _ = world.insert_one(entity, h);
+            }
 
             ActionResult::Success(format!("Planted {} seed", species.name))
         }
@@ -93,9 +100,13 @@ pub fn process_action(
             }
 
             match found {
-                Some((_item_id, _amount)) => {
-                    // TODO: add items to player inventory
-                    ActionResult::Success("Harvested!".into())
+                Some((item_id, amount)) => {
+                    if let Ok(mut inv) = world.get::<&mut crate::components::player::Inventory>(player_entity) {
+                        inv.add(item_id, amount);
+                    }
+                    let name = resources.species_db.get_plant_by_item(item_id)
+                        .unwrap_or("produce");
+                    ActionResult::Success(format!("Harvested {} x{}", name, amount))
                 }
                 None => ActionResult::Failure("Nothing to harvest".into()),
             }
@@ -309,6 +320,100 @@ pub fn process_action(
             ActionResult::Failure("Entity not found".into())
         }
 
+        ActionKind::HuntAnimal { entity_id } => {
+            if resources.game_mode == GameMode::Peaceful {
+                return ActionResult::Failure("Hunting is not allowed in peaceful mode".into());
+            }
+
+            let mut target_entity = None;
+            let mut animal_name = String::new();
+            let mut hunt_pos = Vec3::ZERO;
+
+            for (entity, (net_id, pos, animal)) in
+                world.query_mut::<(&NetworkId, &Position, &crate::components::animal::Animal)>()
+            {
+                if net_id.0 == *entity_id {
+                    let dist = (pos.0 - player_pos).length();
+                    if dist > 8.0 {
+                        return ActionResult::Failure("Too far away".into());
+                    }
+                    animal_name = resources.species_db.get_animal(animal.species_id)
+                        .map(|s| s.name.clone()).unwrap_or_else(|| "animal".into());
+                    target_entity = Some(entity);
+                    hunt_pos = pos.0;
+                    break;
+                }
+            }
+
+            let Some(te) = target_entity else {
+                return ActionResult::Failure("No wild animal found".into());
+            };
+
+            if world.get::<&crate::components::animal::Domesticated>(te).is_ok() {
+                return ActionResult::Failure("Cannot hunt a domesticated animal".into());
+            }
+
+            let _ = world.despawn(te);
+            // Add meat to inventory (item_id 2000 = game meat)
+            if let Ok(mut inv) = world.get::<&mut crate::components::player::Inventory>(player_entity) {
+                inv.add(2000, 3);
+            }
+
+            // Witnessing a hunt teaches nearby wild animals to fear this area.
+            // The brain's next update will credit `prev_action` with this
+            // negative reward — so they learn which moves led to a player
+            // being close. Domestic animals are spared the fear shock.
+            if resources.game_mode == GameMode::Survival {
+                broadcast_hunt_fear(world, hunt_pos);
+            }
+
+            ActionResult::SuccessWithDespawn(format!("Hunted {} (+3 meat)", animal_name), *entity_id)
+        }
+
+        ActionKind::BuildHochsitz { position } => {
+            let [x, y, z] = *position;
+            let dist = Vec3::new(x as f32, y as f32, z as f32) - player_pos;
+            if dist.length() > 6.0 {
+                return ActionResult::Failure("Too far away".into());
+            }
+            // Place the hochsitz as a structure entity
+            let eid = EntityId(*next_entity_id);
+            *next_entity_id += 1;
+            world.spawn((
+                NetworkId(eid),
+                Position(Vec3::new(x as f32, y as f32 + 0.5, z as f32)),
+                Rotation(0.0),
+                crate::components::identity::Structure { kind: 1 },
+            ));
+            ActionResult::Success(format!("Built hunting stand (Hochsitz)"))
+        }
+
         _ => ActionResult::Failure("Action not implemented yet".into()),
+    }
+}
+
+/// Tell every nearby wild animal: "something just got killed here."
+/// Bumps their `fear` and queues a negative reward so the brain's next
+/// Q-update credits whatever action led them close to a hunting player.
+fn broadcast_hunt_fear(world: &mut hecs::World, hunt_pos: Vec3) {
+    const FEAR_RADIUS: f32 = 20.0;
+    let radius_sq = FEAR_RADIUS * FEAR_RADIUS;
+    for (_, (apos, memory, dom)) in world.query_mut::<(
+        &Position,
+        Option<&mut crate::components::animal_brain::AnimalMemory>,
+        Option<&crate::components::animal::Domesticated>,
+    )>() {
+        if dom.is_some() {
+            continue;
+        }
+        let dx = apos.0.x - hunt_pos.x;
+        let dz = apos.0.z - hunt_pos.z;
+        if dx * dx + dz * dz > radius_sq {
+            continue;
+        }
+        if let Some(mem) = memory {
+            mem.fear = (mem.fear + 0.8).min(1.0);
+            mem.reward -= 0.5;
+        }
     }
 }

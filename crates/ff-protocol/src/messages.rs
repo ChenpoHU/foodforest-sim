@@ -87,6 +87,8 @@ pub enum ActionKind {
     PickUp { entity_id: EntityId },
     CutTree { entity_id: EntityId },
     Inspect { entity_id: EntityId },
+    HuntAnimal { entity_id: EntityId },
+    BuildHochsitz { position: [i32; 3] },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +137,7 @@ pub enum EntityKind {
     Animal { species_id: u16 },
     NpcAgent { role: u8 },
     DroppedItem { item_id: u16 },
+    Structure { kind: u8 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
