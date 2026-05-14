@@ -126,78 +126,53 @@
         }
         #connect-screen button:hover { background: #3a7a3a; }
 
-        #region-selector {
+        #country-bar {
             display: flex;
-            gap: 16px;
-            margin: 16px 0;
-            align-items: flex-start;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 8px 0;
+            max-width: 700px;
         }
-        #portugal-map {
-            width: 200px;
-            height: 340px;
-            flex-shrink: 0;
-        }
-        #portugal-map path {
-            fill: #1a3a1a;
-            stroke: #4a4;
-            stroke-width: 1;
-            cursor: pointer;
-            transition: fill 0.2s;
-        }
-        #portugal-map path:hover {
-            fill: #2a5a2a;
-        }
-        #portugal-map path.selected {
-            fill: #3a8a3a;
-            stroke: #8f8;
-            stroke-width: 2;
-        }
-        #region-list {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            width: 220px;
-        }
-        .region-item {
+        .country-btn {
             background: #1a2a1a;
             color: #aaa;
             border: 1px solid #333;
             border-radius: 6px;
-            padding: 8px 12px;
+            padding: 6px 14px;
             cursor: pointer;
             font-size: 13px;
             transition: all 0.2s;
-            text-align: left;
         }
-        .region-item:hover {
-            background: #2a3a2a;
-            border-color: #4a4;
+        .country-btn:hover { background: #2a3a2a; border-color: #4a4; }
+        .country-btn.active { background: #2a5a2a; color: #cfc; border-color: #8f8; }
+        #region-list {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 6px 0;
+            max-width: 600px;
         }
-        .region-item.selected {
-            background: #2a5a2a;
-            color: #cfc;
-            border-color: #8f8;
-        }
-        .region-item .region-name {
-            font-weight: bold;
-            font-size: 14px;
-        }
-        .region-item .region-desc {
-            font-size: 11px;
-            color: #888;
-            margin-top: 2px;
-        }
-        .region-item.selected .region-desc {
-            color: #aca;
-        }
-        #plot-selector {
-            margin: 8px 0;
-            display: none;
-        }
-        #plot-selector label {
-            color: #888;
+        .region-btn {
+            background: #1a2a1a;
+            color: #aaa;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 5px 12px;
+            cursor: pointer;
             font-size: 12px;
+            transition: all 0.2s;
         }
+        .region-btn:hover { background: #2a3a2a; border-color: #4a4; }
+        .region-btn.active { background: #2a5a2a; color: #cfc; border-color: #8f8; }
+        #plot-selector {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            margin: 6px 0;
+        }
+        #plot-selector label { color: #888; font-size: 12px; }
         #plot-seed-input {
             background: #1a2a1a;
             color: #cfc;
@@ -205,10 +180,15 @@
             border-radius: 6px;
             padding: 6px 10px;
             font-size: 13px;
-            width: 100px;
+            width: 80px;
             text-align: center;
             outline: none;
-            margin-left: 8px;
+        }
+        #world-canvas {
+            border: 1px solid rgba(100,200,100,0.3);
+            border-radius: 8px;
+            cursor: crosshair;
+            margin: 8px 0;
         }
     </style>
     <script type="importmap">
@@ -224,74 +204,52 @@
     <!-- Connect screen -->
     <div id="connect-screen">
         <h1>Food Forest</h1>
-        <p>Multiplayer ecosystem simulation</p>
-        <div style="display:flex; gap:12px; align-items:center; margin-bottom:8px;">
+        <p>Global ecosystem simulation</p>
+        <div style="display:flex; gap:12px; align-items:center; margin-bottom:4px;">
             <input id="player-name" type="text" placeholder="Your name" value="Farmer" />
             <input id="server-url" type="text" placeholder="Server URL" value="ws://localhost:9000" />
         </div>
-        <div style="display:flex; gap:8px; margin: 8px 0;">
-            <button class="mode-btn active" data-mode="0" style="background:#2a5a2a; color:#cfc; border:1px solid #4a4; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer;">Peaceful</button>
-            <button class="mode-btn" data-mode="1" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer;">Survival</button>
-            <button class="mode-btn" data-mode="2" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer;">Hardcore</button>
+        <div style="display:flex; gap:8px; margin: 6px 0;">
+            <button class="mode-btn active" data-mode="0" style="background:#2a5a2a; color:#cfc; border:1px solid #4a4; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;">Peaceful</button>
+            <button class="mode-btn" data-mode="1" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;">Survival</button>
+            <button class="mode-btn" data-mode="2" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;">Hardcore</button>
         </div>
-        <p id="mode-desc" style="color:#888; font-size:12px; margin-bottom:8px; max-width:420px; text-align:center;">No casualties. Trees disappear when cut. Relaxed pace for all ages.</p>
+        <p id="mode-desc" style="color:#888; font-size:11px; margin-bottom:4px; max-width:420px; text-align:center;">No casualties. Trees disappear when cut. Relaxed pace for all ages.</p>
 
-        <p style="color:#6d6; font-size:14px; margin:8px 0 4px;">Select your region in Portugal</p>
-        <div id="region-selector">
-            <svg id="portugal-map" viewBox="0 0 200 380" xmlns="http://www.w3.org/2000/svg">
-                <path data-region="0" d="M60,10 L110,8 L120,25 L130,50 L125,70 L100,75 L80,65 L55,55 L50,30 Z" />
-                <path data-region="1" d="M130,50 L165,40 L180,55 L185,80 L175,105 L150,110 L125,100 L120,80 L125,70 Z" />
-                <path data-region="2" d="M55,55 L80,65 L100,75 L125,100 L150,110 L145,140 L130,160 L100,170 L70,155 L50,130 L40,100 L45,75 Z" />
-                <path data-region="3" d="M70,155 L100,170 L130,160 L135,185 L120,210 L95,215 L70,200 L60,175 Z" />
-                <path data-region="4" d="M60,175 L70,200 L95,215 L120,210 L140,220 L155,250 L145,290 L120,310 L80,305 L55,275 L40,240 L45,200 Z" />
-                <path data-region="5" d="M55,275 L80,305 L120,310 L145,320 L140,345 L115,360 L80,355 L55,335 L45,310 Z" />
-                <path data-region="6" d="M40,100 L50,130 L70,155 L60,175 L45,200 L30,185 L20,150 L25,120 Z" />
-            </svg>
-            <div id="region-list">
-                <div class="region-item selected" data-region="0">
-                    <div class="region-name">Minho</div>
-                    <div class="region-desc">Lush hills, high rainfall, river valleys</div>
-                </div>
-                <div class="region-item" data-region="1">
-                    <div class="region-name">Tras-os-Montes</div>
-                    <div class="region-desc">Rugged highlands, dry summers, rocky terrain</div>
-                </div>
-                <div class="region-item" data-region="2">
-                    <div class="region-name">Beira</div>
-                    <div class="region-desc">Central mountains, mixed terrain, river corridors</div>
-                </div>
-                <div class="region-item" data-region="3">
-                    <div class="region-name">Ribatejo</div>
-                    <div class="region-desc">Flat river plains, fertile soil, gentle landscape</div>
-                </div>
-                <div class="region-item" data-region="4">
-                    <div class="region-name">Alentejo</div>
-                    <div class="region-desc">Rolling plains, dry climate, cork oak country</div>
-                </div>
-                <div class="region-item" data-region="5">
-                    <div class="region-name">Algarve</div>
-                    <div class="region-desc">Coastal hills, mild winters, Mediterranean flora</div>
-                </div>
-                <div class="region-item" data-region="6">
-                    <div class="region-name">Lisboa</div>
-                    <div class="region-desc">Coastal hills, moderate climate, river Tagus</div>
-                </div>
-            </div>
-        </div>
+        <canvas id="world-canvas" width="700" height="320"></canvas>
 
-        <div id="plot-selector" style="display:flex; align-items:center; gap:8px;">
+        <div id="country-bar"></div>
+        <div id="region-list"></div>
+
+        <div id="plot-selector">
             <label for="plot-seed-input">Plot parcel (5 ha):</label>
             <input id="plot-seed-input" type="number" value="42" min="1" max="9999" />
             <span style="color:#666; font-size:11px;">Each number generates a unique parcel</span>
         </div>
 
-        <button id="connect-btn" style="margin-top:12px;">Enter World</button>
+        <button id="connect-btn" style="margin-top:8px;">Enter World</button>
     </div>
 
     <!-- HUD -->
     <div id="hud">
         <div id="status">Connecting...</div>
         <canvas id="minimap"></canvas>
+        <button id="world-nav-btn" style="position:fixed; top:218px; right:12px; width:200px; background:rgba(30,60,30,0.85); color:#cfc; border:1px solid #4a4; border-radius:0 0 8px 8px; padding:4px; font-size:11px; cursor:pointer; pointer-events:all; z-index:101;">Travel to Region</button>
+    </div>
+
+    <!-- World navigation overlay -->
+    <div id="world-nav-overlay" style="position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.8); z-index:300; pointer-events:all;">
+        <div style="text-align:center;">
+            <h2 style="color:#6d6; margin-bottom:8px;">Travel to Region</h2>
+            <p style="color:#888; font-size:12px; margin-bottom:12px;">Select a country and region to explore</p>
+            <canvas id="nav-world-canvas" width="700" height="320" style="border:1px solid rgba(100,200,100,0.3); border-radius:8px; cursor:crosshair; margin-bottom:8px;"></canvas>
+            <div id="nav-country-bar" style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin:8px 0; max-width:700px;"></div>
+            <div id="nav-region-list" style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin:6px 0; max-width:600px;"></div>
+            <div style="margin-top:10px; display:flex; gap:10px; justify-content:center;">
+                <button id="nav-travel-btn" style="background:#2a5a2a; color:#cfc; border:none; border-radius:8px; padding:10px 28px; font-size:15px; cursor:pointer;">Travel</button>
+                <button id="nav-cancel-btn" style="background:#333; color:#aaa; border:1px solid #555; border-radius:8px; padding:10px 28px; font-size:15px; cursor:pointer;">Cancel</button>
+            </div>
+        </div>
     </div>
 
     <!-- Player status -->
@@ -302,9 +260,9 @@
     </div>
 
     <!-- Inspect panel -->
-    <div id="inspect-panel" style="position:fixed; top:50px; right:12px; width:200px; color:#eee; font-size:12px; font-family:monospace; background:rgba(0,20,0,0.8); padding:10px; border-radius:8px; border:1px solid #4a4; display:none; pointer-events:all; z-index:150;">
+    <div id="inspect-panel" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:240px; color:#eee; font-size:13px; font-family:monospace; background:rgba(0,20,0,0.9); padding:14px; border-radius:10px; border:1px solid #4a4; display:none; pointer-events:all; z-index:150; box-shadow:0 4px 24px rgba(0,0,0,0.5);">
         <div id="inspect-content"></div>
-        <button onclick="document.getElementById('inspect-panel').style.display='none'" style="margin-top:6px; background:#333; color:#aaa; border:1px solid #555; border-radius:4px; padding:2px 8px; cursor:pointer; font-size:11px;">Close</button>
+        <button onclick="document.getElementById('inspect-panel').style.display='none'" style="margin-top:8px; background:#333; color:#aaa; border:1px solid #555; border-radius:4px; padding:3px 10px; cursor:pointer; font-size:11px;">Close</button>
     </div>
 
     <!-- Toolbar -->

@@ -98,7 +98,7 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
                 "Regenerated terrain for region {} plot_seed {}",
                 hello.region_index, hello.plot_seed
             );
-            shard.replace_terrain(terrain, tb);
+            shard.replace_terrain(terrain, tb, hello.region_index);
         }
         let session = PlayerSession::new(
             player_id,

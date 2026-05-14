@@ -56,7 +56,7 @@ async fn main() {
         terrain.width, terrain.height, terrain.depth, region_index, plot_seed
     );
 
-    let shard = shard::Shard::new(ff_common::ShardId(shard_id), terrain, terrain_bytes, game_mode);
+    let shard = shard::Shard::new(ff_common::ShardId(shard_id), terrain, terrain_bytes, game_mode, region_index);
 
     net::ws::run_server(addr, shard).await;
 }

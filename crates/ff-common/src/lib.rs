@@ -102,7 +102,12 @@ pub enum VoxelMaterial {
     Mulch = 7,
     Swale = 8,         // player-built water retention
     HugelBed = 9,      // raised bed with buried wood
-    Canopy = 10,        // tree canopy visual (from land-cover)
+    Canopy = 10,
+    Snow = 11,
+    Ice = 12,
+    Ocean = 13,
+    Gravel = 14,
+    RedSoil = 15,
 }
 
 impl From<u8> for VoxelMaterial {
@@ -119,6 +124,11 @@ impl From<u8> for VoxelMaterial {
             8 => Self::Swale,
             9 => Self::HugelBed,
             10 => Self::Canopy,
+            11 => Self::Snow,
+            12 => Self::Ice,
+            13 => Self::Ocean,
+            14 => Self::Gravel,
+            15 => Self::RedSoil,
             _ => Self::Air,
         }
     }

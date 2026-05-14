@@ -25,10 +25,11 @@ pub struct Shard {
     pub soil_grid: SoilGrid,
     pub sessions: HashMap<PlayerId, PlayerSession>,
     pub next_entity_id: u64,
+    pub region_index: u8,
 }
 
 impl Shard {
-    pub fn new(id: ShardId, terrain: VoxelWorld, terrain_bytes: Vec<u8>, game_mode: GameMode) -> Arc<Mutex<Self>> {
+    pub fn new(id: ShardId, terrain: VoxelWorld, terrain_bytes: Vec<u8>, game_mode: GameMode, region_index: u8) -> Arc<Mutex<Self>> {
         let w = terrain.width as usize;
         let d = terrain.depth as usize;
 
@@ -46,6 +47,7 @@ impl Shard {
             soil_grid,
             sessions: HashMap::new(),
             next_entity_id: 1000,
+            region_index,
         };
 
         // Spawn some initial plants and animals
@@ -119,40 +121,44 @@ impl Shard {
     fn spawn_initial_ecosystem(&mut self) {
         use ff_ecs::components::animal::{Animal, AnimalBehavior, Domesticated};
         use ff_ecs::components::plant::Plant;
+        use ff_voxel::generate;
 
         let w = self.terrain.width as i32;
         let d = self.terrain.depth as i32;
         let area_scale = (w as f32 * d as f32) / (80.0 * 80.0);
 
-        let euc_count = (80.0 * area_scale) as i32;
-        for i in 0..euc_count {
-            let x = ((i as i64 * 17 + 3) % w as i64) as i32;
-            let z = ((i as i64 * 23 + 7) % d as i64) as i32;
-            let y = self.terrain.spawn_height(x, z);
+        if let Some(invasive_id) = generate::invasive_species_for_region(self.region_index) {
+            let count = (80.0 * area_scale) as i32;
+            for i in 0..count {
+                let x = ((i as i64 * 17 + 3) % w as i64) as i32;
+                let z = ((i as i64 * 23 + 7) % d as i64) as i32;
+                let y = self.terrain.spawn_height(x, z);
+                if !self.terrain.is_solid(x, y as i32 - 1, z) { continue; }
 
-            let eid = EntityId(self.next_entity_id);
-            self.next_entity_id += 1;
+                let eid = EntityId(self.next_entity_id);
+                self.next_entity_id += 1;
 
-            let mut plant = Plant::new_seed(103);
-            plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
-            plant.growth_points = 60000.0;
+                let mut plant = Plant::new_seed(invasive_id);
+                plant.growth_stage = ff_ecs::components::plant::GrowthStage::Mature;
+                plant.growth_points = 60000.0;
 
-            self.ecs_world.spawn((
-                NetworkId(eid),
-                Position(Vec3::new(x as f32, y, z as f32)),
-                Rotation(0.0),
-                plant,
-            ));
+                self.ecs_world.spawn((
+                    NetworkId(eid),
+                    Position(Vec3::new(x as f32, y, z as f32)),
+                    Rotation(0.0),
+                    plant,
+                ));
+            }
         }
 
-        let native_species = [100u16, 101, 102, 200, 201, 202, 203];
+        let native_species = generate::native_species_for_region(self.region_index);
         let native_count = (21.0 * area_scale) as i32;
         for i in 0..native_count {
             let x = ((i as i64 * 31 + 17) % w as i64) as i32;
             let z = ((i as i64 * 37 + 11) % d as i64) as i32;
             let y = self.terrain.spawn_height(x, z);
 
-            let species_id = native_species[(i as usize) % native_species.len()];
+            let species_id = native_species[i as usize % native_species.len()];
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
 
@@ -168,14 +174,18 @@ impl Shard {
             ));
         }
 
-        let herb_species = [300u16, 301, 400, 500, 501];
+        let herb_species: Vec<u16> = native_species.iter()
+            .filter(|&&s| s >= 300)
+            .copied()
+            .collect();
+        let herb_list = if herb_species.is_empty() { vec![500u16] } else { herb_species };
         let herb_count = (100.0 * area_scale) as i32;
         for i in 0..herb_count {
             let x = ((i as i64 * 13 + 5) % w as i64) as i32;
             let z = ((i as i64 * 19 + 3) % d as i64) as i32;
             let y = self.terrain.spawn_height(x, z);
 
-            let species_id = herb_species[(i as usize) % herb_species.len()];
+            let species_id = herb_list[i as usize % herb_list.len()];
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
 
@@ -251,12 +261,13 @@ impl Shard {
         }
 
         tracing::info!(
-            "Spawned ecosystem: {} eucalyptus, {} native trees, {} herbs, {} chickens, {} deer (scale {:.1}x)",
-            euc_count, native_count, herb_count, chicken_count, deer_count, area_scale
+            "Spawned ecosystem: region={} native={} herbs={} chickens={} deer={} (scale {:.1}x)",
+            self.region_index, native_count, herb_count, chicken_count, deer_count, area_scale
         );
     }
 
-    pub fn replace_terrain(&mut self, terrain: VoxelWorld, terrain_bytes: Vec<u8>) {
+    pub fn replace_terrain(&mut self, terrain: VoxelWorld, terrain_bytes: Vec<u8>, region_index: u8) {
+        self.region_index = region_index;
         let w = terrain.width as usize;
         let d = terrain.depth as usize;
         self.soil_grid = SoilGrid::new(w, d, SOIL_LAYERS);

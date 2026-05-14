@@ -16,6 +16,8 @@ let entityKinds = new Map();
 let terrainGroup = null;
 let terrainMeta = null; // { width, height, depth, data }
 let minimapBaseImage = null;
+let waterMeshes = [];
+let fishGroup = null;
 
 const keys = new Set();
 let inputSeq = 0;
@@ -56,32 +58,199 @@ document.querySelectorAll(".mode-btn").forEach(btn => {
     });
 });
 
-// Region selection (map + list)
-function selectRegion(index) {
-    selectedRegion = index;
-    document.querySelectorAll("#portugal-map path").forEach(p => p.classList.remove("selected"));
-    document.querySelectorAll(".region-item").forEach(r => r.classList.remove("selected"));
-    const mapPath = document.querySelector('#portugal-map path[data-region="' + index + '"]');
-    const listItem = document.querySelector('.region-item[data-region="' + index + '"]');
-    if (mapPath) mapPath.classList.add("selected");
-    if (listItem) listItem.classList.add("selected");
-    document.getElementById("plot-selector").style.display = "flex";
+// === World data ===
+const WORLD_COUNTRIES = [
+    { name: "Portugal", start: 0, count: 7, color: "#4a8a3a",
+      cx: 90, cy: 155, regions: [
+        "Minho", "Tras-os-Montes", "Beira", "Ribatejo", "Alentejo", "Algarve", "Lisboa"
+    ]},
+    { name: "France", start: 7, count: 4, color: "#3a6a8a",
+      cx: 130, cy: 125, regions: [
+        "Provence", "Dordogne", "Loire Valley", "Normandy"
+    ]},
+    { name: "Spain", start: 11, count: 4, color: "#8a6a3a",
+      cx: 105, cy: 150, regions: [
+        "Andalusia", "Catalonia", "Galicia", "Basque Country"
+    ]},
+    { name: "Italy", start: 15, count: 4, color: "#6a8a3a",
+      cx: 165, cy: 140, regions: [
+        "Tuscany", "Sicily", "Amalfi Coast", "Piedmont"
+    ]},
+    { name: "Iran", start: 19, count: 4, color: "#8a5a3a",
+      cx: 290, cy: 145, regions: [
+        "Isfahan", "Shiraz", "Gilan", "Alborz"
+    ]},
+    { name: "California", start: 23, count: 4, color: "#3a8a6a",
+      cx: 625, cy: 140, regions: [
+        "Central Valley", "Napa Valley", "Coastal Range", "Sierra Nevada"
+    ]},
+    { name: "South Africa", start: 27, count: 4, color: "#8a3a5a",
+      cx: 215, cy: 260, regions: [
+        "Cape Winelands", "Fynbos Coast", "Karoo", "Garden Route"
+    ]},
+    { name: "Yunnan", start: 31, count: 4, color: "#5a8a3a",
+      cx: 430, cy: 155, regions: [
+        "Kunming Plateau", "Xishuangbanna", "Dali", "Tiger Leaping Gorge"
+    ]},
+    { name: "Japan", start: 35, count: 4, color: "#3a5a8a",
+      cx: 500, cy: 130, regions: [
+        "Hokkaido", "Kanto", "Kansai", "Kyushu"
+    ]},
+];
+
+let selectedCountryIdx = 0;
+
+function drawWorldMap() {
+    const canvas = document.getElementById("world-canvas");
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height;
+
+    // Ocean
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, "#0a1a3a");
+    grad.addColorStop(0.5, "#0a2a4a");
+    grad.addColorStop(1, "#0a1a3a");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    // Simplified continent outlines (filled)
+    ctx.fillStyle = "#1a2a1a";
+    // Europe
+    ctx.beginPath();
+    ctx.moveTo(80,80); ctx.lineTo(190,75); ctx.lineTo(200,90); ctx.lineTo(185,120);
+    ctx.lineTo(175,115); ctx.lineTo(170,130); ctx.lineTo(180,145); ctx.lineTo(165,160);
+    ctx.lineTo(155,150); ctx.lineTo(145,155); ctx.lineTo(140,148);
+    ctx.lineTo(130,155); ctx.lineTo(120,150); ctx.lineTo(110,160);
+    ctx.lineTo(100,165); ctx.lineTo(88,155); ctx.lineTo(85,165);
+    ctx.lineTo(95,170); ctx.lineTo(90,175); ctx.lineTo(80,168);
+    ctx.lineTo(75,155); ctx.lineTo(80,130); ctx.lineTo(75,110); ctx.lineTo(80,95);
+    ctx.closePath(); ctx.fill();
+    // Africa
+    ctx.beginPath();
+    ctx.moveTo(80,175); ctx.lineTo(110,172); ctx.lineTo(140,175); ctx.lineTo(170,170);
+    ctx.lineTo(210,180); ctx.lineTo(240,175); ctx.lineTo(260,190);
+    ctx.lineTo(255,220); ctx.lineTo(245,250); ctx.lineTo(230,270);
+    ctx.lineTo(215,280); ctx.lineTo(205,275); ctx.lineTo(210,265);
+    ctx.lineTo(220,260); ctx.lineTo(210,240);
+    ctx.lineTo(195,230); ctx.lineTo(175,245); ctx.lineTo(155,240);
+    ctx.lineTo(140,220); ctx.lineTo(120,210); ctx.lineTo(100,200);
+    ctx.lineTo(85,185); ctx.closePath(); ctx.fill();
+    // Middle East / Iran area
+    ctx.beginPath();
+    ctx.moveTo(240,120); ctx.lineTo(310,110); ctx.lineTo(330,130);
+    ctx.lineTo(320,155); ctx.lineTo(300,165); ctx.lineTo(270,160);
+    ctx.lineTo(250,170); ctx.lineTo(240,155); ctx.lineTo(235,140);
+    ctx.closePath(); ctx.fill();
+    // Asia / China / Japan area
+    ctx.beginPath();
+    ctx.moveTo(310,70); ctx.lineTo(380,50); ctx.lineTo(460,55); ctx.lineTo(510,80);
+    ctx.lineTo(520,100); ctx.lineTo(510,130); ctx.lineTo(490,145);
+    ctx.lineTo(460,155); ctx.lineTo(440,165); ctx.lineTo(420,170);
+    ctx.lineTo(400,165); ctx.lineTo(380,155); ctx.lineTo(360,150);
+    ctx.lineTo(340,140); ctx.lineTo(330,130); ctx.lineTo(320,110);
+    ctx.lineTo(310,100); ctx.closePath(); ctx.fill();
+    // Japan islands
+    ctx.beginPath();
+    ctx.moveTo(500,100); ctx.lineTo(515,95); ctx.lineTo(520,110);
+    ctx.lineTo(510,130); ctx.lineTo(500,125); ctx.lineTo(505,110);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(495,130); ctx.lineTo(505,135); ctx.lineTo(500,145);
+    ctx.lineTo(490,140); ctx.closePath(); ctx.fill();
+    // North America (western edge for California)
+    ctx.beginPath();
+    ctx.moveTo(570,50); ctx.lineTo(690,40); ctx.lineTo(700,80);
+    ctx.lineTo(680,100); ctx.lineTo(660,120); ctx.lineTo(640,140);
+    ctx.lineTo(620,160); ctx.lineTo(610,170); ctx.lineTo(600,165);
+    ctx.lineTo(610,150); ctx.lineTo(620,130); ctx.lineTo(630,110);
+    ctx.lineTo(620,90); ctx.lineTo(600,70); ctx.lineTo(580,60);
+    ctx.closePath(); ctx.fill();
+
+    // Draw country markers
+    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
+        const c = WORLD_COUNTRIES[i];
+        const isSelected = (i === selectedCountryIdx);
+        ctx.fillStyle = isSelected ? "#fff" : c.color;
+        ctx.beginPath();
+        ctx.arc(c.cx, c.cy, isSelected ? 8 : 5, 0, Math.PI * 2);
+        ctx.fill();
+        if (isSelected) {
+            ctx.strokeStyle = c.color;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        ctx.fillStyle = isSelected ? "#fff" : "#aaa";
+        ctx.font = isSelected ? "bold 11px system-ui" : "10px system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText(c.name, c.cx, c.cy - 10);
+    }
 }
 
-document.querySelectorAll("#portugal-map path").forEach(path => {
-    path.addEventListener("click", () => selectRegion(parseInt(path.dataset.region)));
-});
+function selectCountry(idx) {
+    selectedCountryIdx = idx;
+    const country = WORLD_COUNTRIES[idx];
+    selectedRegion = country.start;
 
-document.querySelectorAll(".region-item").forEach(item => {
-    item.addEventListener("click", () => selectRegion(parseInt(item.dataset.region)));
+    // Update country buttons
+    document.querySelectorAll(".country-btn").forEach((b, i) => {
+        b.classList.toggle("active", i === idx);
+    });
+
+    // Rebuild region buttons
+    const regionList = document.getElementById("region-list");
+    regionList.innerHTML = "";
+    for (let r = 0; r < country.count; r++) {
+        const btn = document.createElement("button");
+        btn.className = "region-btn" + (r === 0 ? " active" : "");
+        btn.textContent = country.regions[r];
+        btn.dataset.region = country.start + r;
+        btn.addEventListener("click", () => {
+            selectedRegion = country.start + r;
+            document.querySelectorAll(".region-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+        });
+        regionList.appendChild(btn);
+    }
+
+    document.getElementById("plot-selector").style.display = "flex";
+    drawWorldMap();
+}
+
+// Build country buttons
+{
+    const bar = document.getElementById("country-bar");
+    WORLD_COUNTRIES.forEach((c, i) => {
+        const btn = document.createElement("button");
+        btn.className = "country-btn" + (i === 0 ? " active" : "");
+        btn.textContent = c.name;
+        btn.addEventListener("click", () => selectCountry(i));
+        bar.appendChild(btn);
+    });
+}
+
+// World canvas click
+document.getElementById("world-canvas").addEventListener("click", (e) => {
+    const canvas = document.getElementById("world-canvas");
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+    let bestDist = 40;
+    let bestIdx = -1;
+    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
+        const c = WORLD_COUNTRIES[i];
+        const dist = Math.sqrt((mx - c.cx) ** 2 + (my - c.cy) ** 2);
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+    }
+    if (bestIdx >= 0) selectCountry(bestIdx);
 });
 
 document.getElementById("plot-seed-input").addEventListener("change", (e) => {
     selectedPlotSeed = parseInt(e.target.value) || 42;
 });
 
-// Show plot selector on load since region 0 is pre-selected
-document.getElementById("plot-selector").style.display = "flex";
+// Initialize
+selectCountry(0);
+drawWorldMap();
 
 // Toolbar
 document.querySelectorAll("#toolbar button").forEach(btn => {
@@ -442,7 +611,15 @@ function handleWorldState(payload) {
         renderTerrain(terrainData);
     }
 
-    updateStatus("Portugal Food Forest — Day " + calDay + " | " +
+    let regionLabel = "Food Forest";
+    for (const c of WORLD_COUNTRIES) {
+        if (selectedRegion >= c.start && selectedRegion < c.start + c.count) {
+            const rIdx = selectedRegion - c.start;
+            regionLabel = c.name + " / " + c.regions[rIdx];
+            break;
+        }
+    }
+    updateStatus(regionLabel + " — Day " + calDay + " | " +
         ["Spring", "Summer", "Autumn", "Winter"][calSeason] +
         " | " + temp.toFixed(1) + "C | " + entityCount + " entities");
 }
@@ -581,20 +758,21 @@ function classifyEntity(kind, speciesId) {
     }
     if (kind === "npc") return "npc";
     if (kind === "plant") {
-        if (speciesId === 100) return "chestnut";
-        if (speciesId === 101) return "walnut";
-        if (speciesId === 102) return "carob";
-        if (speciesId === 103) return "eucalyptus";
-        if (speciesId === 200) return "fig";
-        if (speciesId === 201) return "pomegranate";
-        if (speciesId === 202) return "citrus";
-        if (speciesId === 203) return "olive";
-        if (speciesId === 300) return "rosemary";
-        if (speciesId === 301) return "lavender";
-        if (speciesId === 400) return "comfrey";
-        if (speciesId === 500) return "clover";
-        if (speciesId === 501) return "strawberry";
-        if (speciesId === 600) return "grapevine";
+        const PLANT_MAP = {
+            100: "chestnut", 101: "walnut", 102: "carob", 103: "eucalyptus",
+            104: "hazelnut", 105: "almond", 106: "corkoak", 107: "redwood",
+            108: "macadamia", 109: "stonepine", 110: "pistachio", 111: "bamboo",
+            112: "cherry",
+            200: "fig", 201: "pomegranate", 202: "citrus", 203: "olive",
+            204: "plum", 205: "avocado", 206: "mulberry", 207: "banana",
+            208: "mango", 209: "persimmon",
+            300: "rosemary", 301: "lavender", 302: "thyme", 303: "sage",
+            304: "rooibos", 305: "protea", 306: "tea",
+            400: "comfrey", 401: "basil", 402: "saffron", 403: "shiso",
+            500: "clover", 501: "strawberry",
+            600: "grapevine",
+        };
+        if (PLANT_MAP[speciesId]) return PLANT_MAP[speciesId];
         if (speciesId >= 100 && speciesId < 300) return "tree";
         if (speciesId >= 300 && speciesId < 400) return "shrub";
         if (speciesId >= 400 && speciesId < 600) return "herb";
@@ -616,6 +794,11 @@ const VOXEL_COLORS = {
     8: 0x226688, // Swale
     9: 0x664422, // HugelBed
     10: 0x1a5a1a, // Canopy
+    11: 0xeeeeff, // Snow
+    12: 0xbbddff, // Ice
+    13: 0x0a3060, // Ocean
+    14: 0x999988, // Gravel
+    15: 0x8a3a1a, // RedSoil
 };
 
 function renderTerrain(terrainData) {
@@ -683,25 +866,134 @@ function renderTerrain(terrainData) {
         const count = positions.length / 3;
         if (count === 0) continue;
 
-        const color = VOXEL_COLORS[mat] || 0xff00ff;
+        const baseColor = VOXEL_COLORS[mat] || 0xff00ff;
+        const matInt = parseInt(mat);
+        const useVariation = (matInt === 1 || matInt === 14);
         const material = new THREE.MeshStandardMaterial({
-            color,
-            roughness: 0.9,
+            color: baseColor,
+            roughness: (matInt === 4 || matInt === 13) ? 0.2 : 0.9,
             metalness: 0.0,
         });
+
+        if (matInt === 4 || matInt === 8 || matInt === 13) {
+            material.transparent = true;
+            material.opacity = 0.75;
+        }
 
         const mesh = new THREE.InstancedMesh(boxGeo, material, count);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
 
         const matrix = new THREE.Matrix4();
+        const color = new THREE.Color();
         for (let i = 0; i < count; i++) {
             matrix.setPosition(positions[i*3], positions[i*3+1], positions[i*3+2]);
             mesh.setMatrixAt(i, matrix);
+            if (useVariation) {
+                const hash = (positions[i*3] * 73 + positions[i*3+2] * 37 + positions[i*3+1] * 17) & 0xFF;
+                const variation = 0.85 + (hash / 255) * 0.3;
+                const r = ((baseColor >> 16) & 0xFF) / 255;
+                const g = ((baseColor >> 8) & 0xFF) / 255;
+                const b = (baseColor & 0xFF) / 255;
+                const tint = (hash % 3);
+                color.setRGB(
+                    Math.min(1, r * variation * (tint === 0 ? 1.1 : 0.95)),
+                    Math.min(1, g * variation * (tint === 1 ? 1.1 : 0.95)),
+                    Math.min(1, b * variation * (tint === 2 ? 1.1 : 0.95))
+                );
+                mesh.setColorAt(i, color);
+            }
         }
         mesh.instanceMatrix.needsUpdate = true;
+        if (useVariation) mesh.instanceColor.needsUpdate = true;
         terrainGroup.add(mesh);
     }
+
+    // Water surface planes for animated water
+    waterMeshes = [];
+    const waterPositions = [];
+    for (let z = 0; z < depth; z++) {
+        for (let x = 0; x < width; x++) {
+            const si = z * width + x;
+            const mat = surfaceMap[si];
+            if (mat === 4 || mat === 13) {
+                waterPositions.push(x, heightMap[si], z, mat);
+            }
+        }
+    }
+    if (waterPositions.length > 0) {
+        const waterGeo = new THREE.PlaneGeometry(1, 1);
+        waterGeo.rotateX(-Math.PI / 2);
+        const shallowMat = new THREE.MeshStandardMaterial({
+            color: 0x3388bb, transparent: true, opacity: 0.6,
+            roughness: 0.1, metalness: 0.3,
+        });
+        const deepMat = new THREE.MeshStandardMaterial({
+            color: 0x0a3060, transparent: true, opacity: 0.7,
+            roughness: 0.1, metalness: 0.3,
+        });
+        const shallowCount = waterPositions.filter((_, i) => i % 4 === 3 && waterPositions[i] === 4).length / 1;
+        let sc = 0, dc = 0;
+        for (let i = 3; i < waterPositions.length; i += 4) {
+            if (waterPositions[i] === 4) sc++; else dc++;
+        }
+        if (sc > 0) {
+            const mesh = new THREE.InstancedMesh(waterGeo, shallowMat, sc);
+            mesh.receiveShadow = true;
+            const m = new THREE.Matrix4();
+            let idx = 0;
+            for (let i = 0; i < waterPositions.length; i += 4) {
+                if (waterPositions[i + 3] !== 4) continue;
+                m.setPosition(waterPositions[i], waterPositions[i+1] + 0.55, waterPositions[i+2]);
+                mesh.setMatrixAt(idx++, m);
+            }
+            mesh.instanceMatrix.needsUpdate = true;
+            mesh.userData.isWater = true;
+            terrainGroup.add(mesh);
+            waterMeshes.push(mesh);
+        }
+        if (dc > 0) {
+            const mesh = new THREE.InstancedMesh(waterGeo, deepMat, dc);
+            mesh.receiveShadow = true;
+            const m = new THREE.Matrix4();
+            let idx = 0;
+            for (let i = 0; i < waterPositions.length; i += 4) {
+                if (waterPositions[i + 3] !== 13) continue;
+                m.setPosition(waterPositions[i], waterPositions[i+1] + 0.55, waterPositions[i+2]);
+                mesh.setMatrixAt(idx++, m);
+            }
+            mesh.instanceMatrix.needsUpdate = true;
+            mesh.userData.isWater = true;
+            terrainGroup.add(mesh);
+            waterMeshes.push(mesh);
+        }
+    }
+
+    // Spawn fish in water areas
+    if (fishGroup) scene.remove(fishGroup);
+    fishGroup = new THREE.Group();
+    const fishMat = new THREE.MeshStandardMaterial({ color: 0xcc8844 });
+    const fishMat2 = new THREE.MeshStandardMaterial({ color: 0x88aacc });
+    const fishBody = new THREE.ConeGeometry(0.08, 0.4, 4);
+    let fishCount = 0;
+    for (let i = 0; i < waterPositions.length && fishCount < 200; i += 4) {
+        if (waterPositions[i + 3] !== 4) continue;
+        if (((waterPositions[i] * 7 + waterPositions[i+2] * 13) & 0x1F) !== 0) continue;
+        const fx = waterPositions[i] + (Math.random() - 0.5) * 0.8;
+        const fy = waterPositions[i+1] + 0.2;
+        const fz = waterPositions[i+2] + (Math.random() - 0.5) * 0.8;
+        const fish = new THREE.Mesh(fishBody, fishCount % 2 === 0 ? fishMat : fishMat2);
+        fish.position.set(fx, fy, fz);
+        fish.rotation.z = Math.PI / 2;
+        fish.userData.baseX = fx;
+        fish.userData.baseZ = fz;
+        fish.userData.phase = Math.random() * Math.PI * 2;
+        fish.userData.speed = 0.3 + Math.random() * 0.5;
+        fish.userData.radius = 0.5 + Math.random() * 1.5;
+        fishGroup.add(fish);
+        fishCount++;
+    }
+    scene.add(fishGroup);
 
     scene.add(terrainGroup);
 
@@ -729,6 +1021,11 @@ const MINIMAP_COLORS = {
     8: [34,102,136],  // Swale
     9: [102,68,34],   // HugelBed
     10: [26,90,26],   // Canopy
+    11: [230,230,245],// Snow
+    12: [180,210,240],// Ice
+    13: [10,48,96],   // Ocean
+    14: [150,150,130],// Gravel
+    15: [138,58,26],  // RedSoil
 };
 
 const PLOT_SIZE = 80;
@@ -863,14 +1160,20 @@ function updateMinimapPlayer() {
     ctx.strokeRect(camPx - 15, camPz - 15, 30, 30);
 
     // Region label
-    const regionNames = ["Minho", "Tras-os-Montes", "Beira", "Ribatejo", "Alentejo", "Algarve", "Lisboa"];
-    const name = regionNames[selectedRegion] || "Portugal";
+    let label = "Plot " + selectedPlotSeed;
+    for (const c of WORLD_COUNTRIES) {
+        if (selectedRegion >= c.start && selectedRegion < c.start + c.count) {
+            const rIdx = selectedRegion - c.start;
+            label = c.name + " / " + c.regions[rIdx];
+            break;
+        }
+    }
     ctx.fillStyle = "rgba(0,0,0,0.5)";
     ctx.fillRect(0, size - 16, size, 16);
     ctx.fillStyle = "#8f8";
-    ctx.font = "11px monospace";
+    ctx.font = "10px monospace";
     ctx.textAlign = "center";
-    ctx.fillText(name + " - Plot " + selectedPlotSeed, size / 2, size - 4);
+    ctx.fillText(label, size / 2, size - 4);
 }
 
 // Minimap click to navigate
@@ -889,6 +1192,199 @@ document.getElementById("minimap").addEventListener("click", (e) => {
 });
 document.getElementById("minimap").style.cursor = "pointer";
 document.getElementById("minimap").style.pointerEvents = "all";
+
+// --- World navigation overlay ---
+
+let navSelectedCountry = 0;
+let navSelectedRegion = 0;
+
+function openWorldNav() {
+    navSelectedCountry = selectedCountryIdx;
+    navSelectedRegion = selectedRegion;
+    document.getElementById("world-nav-overlay").style.display = "flex";
+    buildNavUI();
+    drawNavMap();
+}
+
+function closeWorldNav() {
+    document.getElementById("world-nav-overlay").style.display = "none";
+}
+
+function buildNavUI() {
+    const bar = document.getElementById("nav-country-bar");
+    bar.innerHTML = "";
+    WORLD_COUNTRIES.forEach((c, i) => {
+        const btn = document.createElement("button");
+        btn.className = "country-btn" + (i === navSelectedCountry ? " active" : "");
+        btn.textContent = c.name;
+        btn.addEventListener("click", () => {
+            navSelectedCountry = i;
+            navSelectedRegion = c.start;
+            buildNavUI();
+            drawNavMap();
+        });
+        bar.appendChild(btn);
+    });
+
+    const regionList = document.getElementById("nav-region-list");
+    regionList.innerHTML = "";
+    const country = WORLD_COUNTRIES[navSelectedCountry];
+    for (let r = 0; r < country.count; r++) {
+        const btn = document.createElement("button");
+        const rIdx = country.start + r;
+        btn.className = "region-btn" + (rIdx === navSelectedRegion ? " active" : "");
+        btn.textContent = country.regions[r];
+        btn.addEventListener("click", () => {
+            navSelectedRegion = rIdx;
+            buildNavUI();
+        });
+        regionList.appendChild(btn);
+    }
+}
+
+function drawNavMap() {
+    const canvas = document.getElementById("nav-world-canvas");
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height;
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, "#0a1a3a");
+    grad.addColorStop(0.5, "#0a2a4a");
+    grad.addColorStop(1, "#0a1a3a");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.fillStyle = "#1a2a1a";
+    ctx.beginPath();
+    ctx.moveTo(80,80); ctx.lineTo(190,75); ctx.lineTo(200,90); ctx.lineTo(185,120);
+    ctx.lineTo(175,115); ctx.lineTo(170,130); ctx.lineTo(180,145); ctx.lineTo(165,160);
+    ctx.lineTo(155,150); ctx.lineTo(145,155); ctx.lineTo(140,148);
+    ctx.lineTo(130,155); ctx.lineTo(120,150); ctx.lineTo(110,160);
+    ctx.lineTo(100,165); ctx.lineTo(88,155); ctx.lineTo(85,165);
+    ctx.lineTo(95,170); ctx.lineTo(90,175); ctx.lineTo(80,168);
+    ctx.lineTo(75,155); ctx.lineTo(80,130); ctx.lineTo(75,110); ctx.lineTo(80,95);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(80,175); ctx.lineTo(110,172); ctx.lineTo(140,175); ctx.lineTo(170,170);
+    ctx.lineTo(210,180); ctx.lineTo(240,175); ctx.lineTo(260,190);
+    ctx.lineTo(255,220); ctx.lineTo(245,250); ctx.lineTo(230,270);
+    ctx.lineTo(215,280); ctx.lineTo(205,275); ctx.lineTo(210,265);
+    ctx.lineTo(220,260); ctx.lineTo(210,240);
+    ctx.lineTo(195,230); ctx.lineTo(175,245); ctx.lineTo(155,240);
+    ctx.lineTo(140,220); ctx.lineTo(120,210); ctx.lineTo(100,200);
+    ctx.lineTo(85,185); ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(240,120); ctx.lineTo(310,110); ctx.lineTo(330,130);
+    ctx.lineTo(320,155); ctx.lineTo(300,165); ctx.lineTo(270,160);
+    ctx.lineTo(250,170); ctx.lineTo(240,155); ctx.lineTo(235,140);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(310,70); ctx.lineTo(380,50); ctx.lineTo(460,55); ctx.lineTo(510,80);
+    ctx.lineTo(520,100); ctx.lineTo(510,130); ctx.lineTo(490,145);
+    ctx.lineTo(460,155); ctx.lineTo(440,165); ctx.lineTo(420,170);
+    ctx.lineTo(400,165); ctx.lineTo(380,155); ctx.lineTo(360,150);
+    ctx.lineTo(340,140); ctx.lineTo(330,130); ctx.lineTo(320,110);
+    ctx.lineTo(310,100); ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(500,100); ctx.lineTo(515,95); ctx.lineTo(520,110);
+    ctx.lineTo(510,130); ctx.lineTo(500,125); ctx.lineTo(505,110);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(495,130); ctx.lineTo(505,135); ctx.lineTo(500,145);
+    ctx.lineTo(490,140); ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(570,50); ctx.lineTo(690,40); ctx.lineTo(700,80);
+    ctx.lineTo(680,100); ctx.lineTo(660,120); ctx.lineTo(640,140);
+    ctx.lineTo(620,160); ctx.lineTo(610,170); ctx.lineTo(600,165);
+    ctx.lineTo(610,150); ctx.lineTo(620,130); ctx.lineTo(630,110);
+    ctx.lineTo(620,90); ctx.lineTo(600,70); ctx.lineTo(580,60);
+    ctx.closePath(); ctx.fill();
+
+    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
+        const c = WORLD_COUNTRIES[i];
+        const isSel = (i === navSelectedCountry);
+        ctx.fillStyle = isSel ? "#fff" : c.color;
+        ctx.beginPath();
+        ctx.arc(c.cx, c.cy, isSel ? 8 : 5, 0, Math.PI * 2);
+        ctx.fill();
+        if (isSel) {
+            ctx.strokeStyle = c.color;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        ctx.fillStyle = isSel ? "#fff" : "#aaa";
+        ctx.font = isSel ? "bold 11px system-ui" : "10px system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText(c.name, c.cx, c.cy - 10);
+    }
+}
+
+document.getElementById("nav-world-canvas").addEventListener("click", (e) => {
+    const canvas = document.getElementById("nav-world-canvas");
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+    let bestDist = 40, bestIdx = -1;
+    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
+        const c = WORLD_COUNTRIES[i];
+        const dist = Math.sqrt((mx - c.cx) ** 2 + (my - c.cy) ** 2);
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+    }
+    if (bestIdx >= 0) {
+        navSelectedCountry = bestIdx;
+        navSelectedRegion = WORLD_COUNTRIES[bestIdx].start;
+        buildNavUI();
+        drawNavMap();
+    }
+});
+
+document.getElementById("world-nav-btn").addEventListener("click", openWorldNav);
+document.getElementById("nav-cancel-btn").addEventListener("click", closeWorldNav);
+document.getElementById("nav-travel-btn").addEventListener("click", () => {
+    closeWorldNav();
+    travelToRegion(navSelectedRegion, selectedPlotSeed);
+});
+
+function travelToRegion(regionIndex, plotSeed) {
+    if (!connected) return;
+    selectedRegion = regionIndex;
+    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
+        const c = WORLD_COUNTRIES[i];
+        if (regionIndex >= c.start && regionIndex < c.start + c.count) {
+            selectedCountryIdx = i;
+            break;
+        }
+    }
+
+    // Clear current world state
+    for (const [eid, obj] of entityMeshes) {
+        scene.remove(obj);
+    }
+    entityMeshes.clear();
+    entityKinds.clear();
+    if (fishGroup) { scene.remove(fishGroup); fishGroup = null; }
+    waterMeshes = [];
+
+    // Reconnect with new region
+    ws.close();
+    const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
+    ws = new WebSocket(serverUrl);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => {
+        connected = true;
+        ws.send(buildHelloMessage(playerName, selectedGameMode, regionIndex, plotSeed));
+    };
+    ws.onmessage = (event) => {
+        handleServerMessage(new Uint8Array(event.data));
+    };
+    ws.onclose = () => {
+        updateStatus("Disconnected. Refresh to reconnect.");
+        connected = false;
+    };
+    ws.onerror = () => {
+        updateStatus("Connection failed.");
+    };
+    updateStatus("Traveling...");
+}
 
 // --- Entity rendering ---
 
@@ -912,19 +1408,49 @@ function createEntityMesh(category) {
     switch (category) {
         case "player": {
             const group = new THREE.Group();
-            const body = new THREE.Mesh(
-                new THREE.CapsuleGeometry(0.3, 0.8, 4, 8),
-                new THREE.MeshStandardMaterial({ color: 0x4488ff })
+            const skinMat = new THREE.MeshStandardMaterial({ color: 0xddbb88 });
+            const shirtMat = new THREE.MeshStandardMaterial({ color: 0x4488ff });
+            const pantsMat = new THREE.MeshStandardMaterial({ color: 0x334455 });
+            const shoeMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a });
+            // Torso
+            const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.28), shirtMat);
+            torso.position.y = 1.1; torso.castShadow = true; group.add(torso);
+            // Head
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), skinMat);
+            head.position.y = 1.65; head.castShadow = true; group.add(head);
+            // Eyes
+            const eyeMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+            const eyeGeo = new THREE.SphereGeometry(0.035, 4, 4);
+            const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+            leftEye.position.set(-0.08, 1.68, 0.18); group.add(leftEye);
+            const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+            rightEye.position.set(0.08, 1.68, 0.18); group.add(rightEye);
+            // Mouth
+            const mouth = new THREE.Mesh(
+                new THREE.BoxGeometry(0.1, 0.02, 0.02),
+                new THREE.MeshStandardMaterial({ color: 0xaa6655 })
             );
-            body.position.y = 0.9;
-            body.castShadow = true;
-            group.add(body);
-            const head = new THREE.Mesh(
-                new THREE.SphereGeometry(0.25, 8, 6),
-                new THREE.MeshStandardMaterial({ color: 0xddbb88 })
-            );
-            head.position.y = 1.65;
-            group.add(head);
+            mouth.position.set(0, 1.58, 0.2); group.add(mouth);
+            // Left arm
+            const armGeo = new THREE.BoxGeometry(0.14, 0.55, 0.14);
+            const leftArm = new THREE.Mesh(armGeo, skinMat);
+            leftArm.position.set(-0.37, 1.0, 0); leftArm.castShadow = true; group.add(leftArm);
+            // Right arm
+            const rightArm = new THREE.Mesh(armGeo, skinMat);
+            rightArm.position.set(0.37, 1.0, 0); rightArm.castShadow = true; group.add(rightArm);
+            // Left leg
+            const legGeo = new THREE.BoxGeometry(0.16, 0.5, 0.16);
+            const leftLeg = new THREE.Mesh(legGeo, pantsMat);
+            leftLeg.position.set(-0.12, 0.5, 0); leftLeg.castShadow = true; group.add(leftLeg);
+            // Right leg
+            const rightLeg = new THREE.Mesh(legGeo, pantsMat);
+            rightLeg.position.set(0.12, 0.5, 0); rightLeg.castShadow = true; group.add(rightLeg);
+            // Shoes
+            const shoeGeo = new THREE.BoxGeometry(0.18, 0.08, 0.24);
+            const leftShoe = new THREE.Mesh(shoeGeo, shoeMat);
+            leftShoe.position.set(-0.12, 0.2, 0.04); group.add(leftShoe);
+            const rightShoe = new THREE.Mesh(shoeGeo, shoeMat);
+            rightShoe.position.set(0.12, 0.2, 0.04); group.add(rightShoe);
             return group;
         }
         case "eucalyptus":
@@ -1090,6 +1616,193 @@ function createEntityMesh(category) {
             head.position.set(0, 1.1, 0.5);
             group.add(head);
             return group;
+        }
+        // --- New canopy trees ---
+        case "hazelnut":
+            return makeTree(0x5a4020, 0.2, 3.5, 0x3a6a1a, 2.0, 2.0, 4.8);
+        case "almond":
+            return makeTree(0x6a5a3a, 0.15, 3, 0x4a7a3a, 1.8, 1.5, 4.2);
+        case "corkoak":
+            return makeTree(0x4a3018, 0.35, 5, 0x2a5a1a, 3.0, 2.5, 6.5);
+        case "redwood":
+            return makeTree(0x6a2a1a, 0.4, 10, 0x1a4a1a, 2.5, 4.0, 11.0);
+        case "macadamia":
+            return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a2a, 2.2, 2.2, 5.5);
+        case "stonepine": {
+            const g = new THREE.Group();
+            const trunk = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.15, 0.25, 7, 6),
+                new THREE.MeshStandardMaterial({ color: 0x5a3a1a })
+            );
+            trunk.position.y = 3.5; trunk.castShadow = true; g.add(trunk);
+            const canopy = new THREE.Mesh(
+                new THREE.SphereGeometry(3.0, 8, 6),
+                new THREE.MeshStandardMaterial({ color: 0x2a5a2a })
+            );
+            canopy.position.y = 8; canopy.scale.y = 0.4; canopy.castShadow = true; g.add(canopy);
+            return g;
+        }
+        case "pistachio":
+            return makeTree(0x6a5a3a, 0.2, 3, 0x5a7a3a, 2.0, 1.5, 4.2);
+        case "bamboo": {
+            const g = new THREE.Group();
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2;
+                const r = 0.3 + Math.random() * 0.3;
+                const h = 4 + Math.random() * 4;
+                const stalk = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.05, 0.06, h, 4),
+                    new THREE.MeshStandardMaterial({ color: 0x6a8a3a })
+                );
+                stalk.position.set(Math.cos(angle) * r, h / 2, Math.sin(angle) * r);
+                stalk.castShadow = true; g.add(stalk);
+                const leaves = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.4, 5, 4),
+                    new THREE.MeshStandardMaterial({ color: 0x4a7a2a })
+                );
+                leaves.position.set(Math.cos(angle) * r, h - 0.3, Math.sin(angle) * r);
+                leaves.scale.y = 0.5; g.add(leaves);
+            }
+            return g;
+        }
+        case "cherry":
+            return makeTree(0x5a3a2a, 0.2, 4, 0xcc6688, 2.2, 2.0, 5.5);
+        // --- New understory ---
+        case "plum":
+            return makeTree(0x5a3a2a, 0.12, 2, 0x3a6a2a, 1.5, 1.5, 3.2);
+        case "avocado":
+            return makeTree(0x5a4a2a, 0.2, 3, 0x2a5a1a, 2.0, 2.0, 4.5);
+        case "mulberry":
+            return makeTree(0x5a3a1a, 0.18, 3, 0x3a7a2a, 2.0, 1.8, 4.2);
+        case "banana": {
+            const g = new THREE.Group();
+            const trunk = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.12, 0.18, 3, 5),
+                new THREE.MeshStandardMaterial({ color: 0x6a8a3a })
+            );
+            trunk.position.y = 1.5; g.add(trunk);
+            for (let i = 0; i < 5; i++) {
+                const angle = (i / 5) * Math.PI * 2;
+                const leaf = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.2, 0.05, 1.5),
+                    new THREE.MeshStandardMaterial({ color: 0x3a8a2a })
+                );
+                leaf.position.set(Math.cos(angle) * 0.5, 3.2, Math.sin(angle) * 0.5);
+                leaf.rotation.y = angle;
+                leaf.rotation.x = -0.4; g.add(leaf);
+            }
+            return g;
+        }
+        case "mango":
+            return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a1a, 2.5, 2.0, 5.5);
+        case "persimmon":
+            return makeTree(0x5a3a1a, 0.15, 3, 0x4a7a2a, 1.8, 1.8, 4.2);
+        // --- New shrubs ---
+        case "thyme": {
+            const g = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: 0x4a6a4a });
+            for (let i = 0; i < 6; i++) {
+                const a = (i / 6) * Math.PI * 2;
+                const s = new THREE.Mesh(new THREE.SphereGeometry(0.15, 4, 3), mat);
+                s.position.set(Math.cos(a) * 0.2, 0.12, Math.sin(a) * 0.2);
+                s.scale.y = 0.5; g.add(s);
+            }
+            return g;
+        }
+        case "sage": {
+            const g = new THREE.Group();
+            for (let i = 0; i < 5; i++) {
+                const a = (i / 5) * Math.PI * 2;
+                const leaf = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.18, 0.8, 4),
+                    new THREE.MeshStandardMaterial({ color: 0x6a7a6a })
+                );
+                leaf.position.set(Math.cos(a) * 0.25, 0.4, Math.sin(a) * 0.25);
+                g.add(leaf);
+            }
+            return g;
+        }
+        case "rooibos": {
+            const g = new THREE.Group();
+            for (let i = 0; i < 7; i++) {
+                const a = (i / 7) * Math.PI * 2;
+                const stem = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.02, 0.03, 1.0, 3),
+                    new THREE.MeshStandardMaterial({ color: 0x8a4a2a })
+                );
+                stem.position.set(Math.cos(a) * 0.2, 0.5, Math.sin(a) * 0.2);
+                g.add(stem);
+            }
+            return g;
+        }
+        case "protea": {
+            const g = new THREE.Group();
+            const stem = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.04, 0.06, 1.0, 4),
+                new THREE.MeshStandardMaterial({ color: 0x4a5a3a })
+            );
+            stem.position.y = 0.5; g.add(stem);
+            const flower = new THREE.Mesh(
+                new THREE.ConeGeometry(0.3, 0.4, 8),
+                new THREE.MeshStandardMaterial({ color: 0xcc4466 })
+            );
+            flower.position.y = 1.2; flower.rotation.x = Math.PI; g.add(flower);
+            return g;
+        }
+        case "tea": {
+            const g = new THREE.Group();
+            const bush = new THREE.Mesh(
+                new THREE.SphereGeometry(0.5, 6, 5),
+                new THREE.MeshStandardMaterial({ color: 0x3a6a2a })
+            );
+            bush.position.y = 0.4; bush.scale.y = 0.6; g.add(bush);
+            return g;
+        }
+        // --- New herbs ---
+        case "basil": {
+            const g = new THREE.Group();
+            for (let i = 0; i < 4; i++) {
+                const a = (i / 4) * Math.PI * 2;
+                const leaf = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.12, 4, 3),
+                    new THREE.MeshStandardMaterial({ color: 0x2a8a2a })
+                );
+                leaf.position.set(Math.cos(a) * 0.15, 0.25, Math.sin(a) * 0.15);
+                leaf.scale.y = 0.3; g.add(leaf);
+            }
+            return g;
+        }
+        case "saffron": {
+            const g = new THREE.Group();
+            for (let i = 0; i < 3; i++) {
+                const a = (i / 3) * Math.PI * 2;
+                const stem = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.01, 0.01, 0.5, 3),
+                    new THREE.MeshStandardMaterial({ color: 0x5a7a3a })
+                );
+                stem.position.set(Math.cos(a) * 0.08, 0.25, Math.sin(a) * 0.08);
+                g.add(stem);
+                const tip = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.05, 4, 3),
+                    new THREE.MeshStandardMaterial({ color: 0xaa44aa })
+                );
+                tip.position.set(Math.cos(a) * 0.08, 0.55, Math.sin(a) * 0.08);
+                g.add(tip);
+            }
+            return g;
+        }
+        case "shiso": {
+            const g = new THREE.Group();
+            for (let i = 0; i < 5; i++) {
+                const a = (i / 5) * Math.PI * 2;
+                const leaf = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.1, 4, 3),
+                    new THREE.MeshStandardMaterial({ color: 0x6a2a4a })
+                );
+                leaf.position.set(Math.cos(a) * 0.15, 0.2 + i * 0.05, Math.sin(a) * 0.15);
+                leaf.scale.y = 0.3; g.add(leaf);
+            }
+            return g;
         }
         case "animal": {
             const mesh = new THREE.Mesh(
@@ -1380,6 +2093,24 @@ function updateFlames(time) {
     }
 }
 
+// --- Water and fish animation ---
+
+function updateWater(time) {
+    for (const mesh of waterMeshes) {
+        if (mesh.material) {
+            mesh.material.opacity = 0.55 + Math.sin(time * 1.5) * 0.1;
+        }
+    }
+    if (fishGroup) {
+        for (const fish of fishGroup.children) {
+            const t = time * fish.userData.speed + fish.userData.phase;
+            fish.position.x = fish.userData.baseX + Math.sin(t) * fish.userData.radius;
+            fish.position.z = fish.userData.baseZ + Math.cos(t) * fish.userData.radius;
+            fish.rotation.y = t + Math.PI / 2;
+        }
+    }
+}
+
 // --- Game loop ---
 
 let lastTime = performance.now();
@@ -1398,6 +2129,7 @@ function gameLoop(now) {
     }
 
     updateFlames(now / 1000);
+    updateWater(now / 1000);
     minimapTimer += dt;
     if (minimapTimer >= 0.2) {
         minimapTimer = 0;
