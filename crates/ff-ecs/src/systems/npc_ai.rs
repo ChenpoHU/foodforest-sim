@@ -36,7 +36,7 @@ pub fn run(world: &mut hecs::World, terrain: &VoxelWorld, resources: &Resources)
                 } else {
                     vel.0 = dir.normalize_or_zero() * NPC_SPEED;
                     // Keep on ground
-                    let gy = terrain.spawn_height(pos.0.x as i32, pos.0.z as i32) as f32;
+                    let gy = terrain.spawn_height(pos.0.x as i32, pos.0.z as i32);
                     pos.0.y = gy;
                     false
                 }

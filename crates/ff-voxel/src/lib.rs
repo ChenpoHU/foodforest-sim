@@ -3,6 +3,7 @@
 //! Preserves the original VoxelWorld from the prototype and adds terrain
 //! query helpers used by the ECS (height_at, material_at, is_solid).
 
+pub mod generate;
 pub mod terrain;
 
 #[cfg(feature = "wasm")]

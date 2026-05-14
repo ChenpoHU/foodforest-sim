@@ -19,7 +19,7 @@ pub fn run(world: &mut hecs::World, terrain: &VoxelWorld, dt: f32) {
         // Resolve collision against voxel terrain (simple Y-axis resolution)
         let feet_x = new_pos.x as i32;
         let feet_z = new_pos.z as i32;
-        let ground_y = terrain.height_at(feet_x, feet_z) as f32 + 1.0;
+        let ground_y = terrain.height_at(feet_x, feet_z) as f32 + 0.5;
 
         let half_h = collider.half_extents.y;
 

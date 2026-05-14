@@ -119,7 +119,7 @@ pub fn run(
         }
 
         // Keep Y on ground
-        let ground_y = terrain.spawn_height(pos.0.x as i32, pos.0.z as i32) as f32;
+        let ground_y = terrain.spawn_height(pos.0.x as i32, pos.0.z as i32);
         pos.0.y = ground_y;
     }
 

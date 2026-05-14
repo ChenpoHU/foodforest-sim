@@ -45,7 +45,7 @@ pub fn process_action(
             // Plant at player's feet position
             let plant_x = player_pos.x as i32;
             let plant_z = player_pos.z as i32;
-            let plant_y = terrain.spawn_height(plant_x, plant_z) as f32;
+            let plant_y = terrain.spawn_height(plant_x, plant_z);
 
             let id = *next_entity_id;
             *next_entity_id += 1;
@@ -248,10 +248,6 @@ pub fn process_action(
                 world.query_mut::<(&NetworkId, &Position)>()
             {
                 if net_id.0 != *entity_id { continue; }
-                let dist = (pos.0 - player_pos).length();
-                if dist > 20.0 {
-                    return ActionResult::Failure("Too far away".into());
-                }
 
                 if let Ok(plant) = world.get::<&Plant>(entity) {
                     let name = resources.species_db.get_plant(plant.species_id)

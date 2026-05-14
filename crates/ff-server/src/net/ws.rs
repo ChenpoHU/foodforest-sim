@@ -76,7 +76,10 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
         }
     };
 
-    info!("Player '{}' connected from {peer_addr} (mode={})", hello.player_name, hello.game_mode);
+    info!(
+        "Player '{}' connected from {peer_addr} (mode={} region={} plot={})",
+        hello.player_name, hello.game_mode, hello.region_index, hello.plot_seed
+    );
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let player_id = PlayerId(hash_name(&hello.player_name));
@@ -88,6 +91,14 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
             let mode = ff_common::GameMode::from(hello.game_mode);
             shard.resources.game_mode = mode;
             info!("Game mode set to {:?} by first player", mode);
+
+            let terrain = ff_voxel::generate::generate_terrain(hello.region_index, hello.plot_seed);
+            let tb = terrain.to_bytes();
+            info!(
+                "Regenerated terrain for region {} plot_seed {}",
+                hello.region_index, hello.plot_seed
+            );
+            shard.replace_terrain(terrain, tb);
         }
         let session = PlayerSession::new(
             player_id,

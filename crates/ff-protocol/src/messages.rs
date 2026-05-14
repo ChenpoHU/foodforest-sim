@@ -41,6 +41,8 @@ pub struct ClientHello {
     pub token: String,
     pub protocol_version: u16,
     pub game_mode: u8,
+    pub region_index: u8,
+    pub plot_seed: u32,
 }
 
 /// Sent every tick (50ms) with the player's movement input.

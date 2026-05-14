@@ -7,11 +7,15 @@ let playerName = "Farmer";
 let selectedAction = null;
 let myEntityId = 0;
 let selectedGameMode = 0;
+let selectedRegion = 0;
+let selectedPlotSeed = 42;
 
 let scene, camera, renderer, controls;
 let entityMeshes = new Map();
 let entityKinds = new Map();
 let terrainGroup = null;
+let terrainMeta = null; // { width, height, depth, data }
+let minimapBaseImage = null;
 
 const keys = new Set();
 let inputSeq = 0;
@@ -20,6 +24,7 @@ let inputSeq = 0;
 document.getElementById("connect-btn").addEventListener("click", () => {
     playerName = document.getElementById("player-name").value || "Farmer";
     const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
+    selectedPlotSeed = parseInt(document.getElementById("plot-seed-input").value) || 42;
     document.getElementById("connect-screen").style.display = "none";
     init(serverUrl);
 });
@@ -51,6 +56,33 @@ document.querySelectorAll(".mode-btn").forEach(btn => {
     });
 });
 
+// Region selection (map + list)
+function selectRegion(index) {
+    selectedRegion = index;
+    document.querySelectorAll("#portugal-map path").forEach(p => p.classList.remove("selected"));
+    document.querySelectorAll(".region-item").forEach(r => r.classList.remove("selected"));
+    const mapPath = document.querySelector('#portugal-map path[data-region="' + index + '"]');
+    const listItem = document.querySelector('.region-item[data-region="' + index + '"]');
+    if (mapPath) mapPath.classList.add("selected");
+    if (listItem) listItem.classList.add("selected");
+    document.getElementById("plot-selector").style.display = "flex";
+}
+
+document.querySelectorAll("#portugal-map path").forEach(path => {
+    path.addEventListener("click", () => selectRegion(parseInt(path.dataset.region)));
+});
+
+document.querySelectorAll(".region-item").forEach(item => {
+    item.addEventListener("click", () => selectRegion(parseInt(item.dataset.region)));
+});
+
+document.getElementById("plot-seed-input").addEventListener("change", (e) => {
+    selectedPlotSeed = parseInt(e.target.value) || 42;
+});
+
+// Show plot selector on load since region 0 is pre-selected
+document.getElementById("plot-selector").style.display = "flex";
+
 // Toolbar
 document.querySelectorAll("#toolbar button").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -70,11 +102,11 @@ async function init(serverUrl) {
 function initRenderer() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87CEEB);
-    scene.fog = new THREE.Fog(0x87CEEB, 200, 800);
+    scene.fog = new THREE.Fog(0x87CEEB, 300, 1000);
 
     camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
-    camera.position.set(20, 40, 20);
-    camera.lookAt(20, 0, 25);
+    camera.position.set(160, 80, 160);
+    camera.lookAt(160, 0, 160);
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -87,19 +119,19 @@ function initRenderer() {
     controls.dampingFactor = 0.1;
     controls.maxPolarAngle = Math.PI * 0.45;
     controls.minDistance = 5;
-    controls.maxDistance = 300;
+    controls.maxDistance = 500;
 
     const sun = new THREE.DirectionalLight(0xfff5e0, 1.5);
-    sun.position.set(100, 200, 100);
+    sun.position.set(200, 300, 200);
     sun.castShadow = true;
-    sun.shadow.mapSize.width = 2048;
-    sun.shadow.mapSize.height = 2048;
+    sun.shadow.mapSize.width = 4096;
+    sun.shadow.mapSize.height = 4096;
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 600;
-    sun.shadow.camera.left = -100;
-    sun.shadow.camera.right = 100;
-    sun.shadow.camera.top = 100;
-    sun.shadow.camera.bottom = -100;
+    sun.shadow.camera.far = 800;
+    sun.shadow.camera.left = -200;
+    sun.shadow.camera.right = 200;
+    sun.shadow.camera.top = 200;
+    sun.shadow.camera.bottom = -200;
     scene.add(sun);
     scene.add(new THREE.AmbientLight(0x404860, 0.6));
     scene.add(new THREE.HemisphereLight(0x87CEEB, 0x4a3a2a, 0.4));
@@ -219,12 +251,14 @@ function buildFramedMessage(msgType, payloadBytes) {
     return frame;
 }
 
-function buildHelloMessage(name, gameMode) {
+function buildHelloMessage(name, gameMode, regionIndex, plotSeed) {
     const payload = new Uint8Array([
         ...encodeBincodeString(name),
         ...encodeBincodeString("dev-token"),
         ...encodeVarint(1),
         gameMode,
+        regionIndex,
+        ...encodeVarint(plotSeed),
     ]);
     return buildFramedMessage(0x0001, payload);
 }
@@ -270,7 +304,7 @@ function connectWebSocket(url) {
     ws.onopen = () => {
         updateStatus("Connected! Sending hello...");
         connected = true;
-        ws.send(buildHelloMessage(playerName, selectedGameMode));
+        ws.send(buildHelloMessage(playerName, selectedGameMode, selectedRegion, selectedPlotSeed));
     };
 
     ws.onmessage = (event) => {
@@ -597,8 +631,7 @@ function renderTerrain(terrainData) {
 
     console.log("Terrain dimensions: " + width + "x" + height + "x" + depth);
 
-    // Collect voxels per material, only render surface voxels
-    const voxelsByMat = {};
+    terrainMeta = { width, height, depth, data: terrainData };
 
     function idx(x, y, z) {
         return z * width * height + y * width + x;
@@ -609,13 +642,31 @@ function renderTerrain(terrainData) {
         return terrainData[12 + idx(x, y, z)] === 0;
     }
 
+    // Build heightmap and surface material map for minimap
+    const heightMap = new Uint8Array(width * depth);
+    const surfaceMap = new Uint8Array(width * depth);
+    for (let z = 0; z < depth; z++) {
+        for (let x = 0; x < width; x++) {
+            for (let y = height - 1; y >= 0; y--) {
+                const mat = terrainData[12 + idx(x, y, z)];
+                if (mat !== 0) {
+                    heightMap[z * width + x] = y;
+                    surfaceMap[z * width + x] = mat;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Collect voxels per material, only render surface voxels
+    const voxelsByMat = {};
+
     for (let z = 0; z < depth; z++) {
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const mat = terrainData[12 + idx(x, y, z)];
-                if (mat === 0) continue; // air
+                if (mat === 0) continue;
 
-                // Only render if at least one face is exposed
                 if (!isAir(x-1,y,z) && !isAir(x+1,y,z) &&
                     !isAir(x,y-1,z) && !isAir(x,y+1,z) &&
                     !isAir(x,y,z-1) && !isAir(x,y,z+1)) continue;
@@ -654,18 +705,190 @@ function renderTerrain(terrainData) {
 
     scene.add(terrainGroup);
 
-    // Move camera to look at terrain center
     const cx = width / 2;
-    const cy = height / 2;
     const cz = depth / 2;
-    camera.position.set(cx + 30, cy + 40, cz + 30);
-    controls.target.set(cx, cy * 0.3, cz);
+    camera.position.set(cx + 60, 80, cz + 60);
+    controls.target.set(cx, 10, cz);
     controls.update();
 
     console.log("Terrain rendered: " + Object.entries(voxelsByMat).map(
         ([m, p]) => m + ":" + (p.length/3)
     ).join(", "));
+
+    renderMinimap(width, depth, heightMap, surfaceMap);
 }
+
+const MINIMAP_COLORS = {
+    1: [136,136,136], // Stone
+    2: [107,68,35],   // Soil
+    3: [58,122,42],   // Grass
+    4: [34,102,170],  // Water
+    5: [212,184,150], // Sand
+    6: [170,119,68],  // Clay
+    7: [85,68,34],    // Mulch
+    8: [34,102,136],  // Swale
+    9: [102,68,34],   // HugelBed
+    10: [26,90,26],   // Canopy
+};
+
+const PLOT_SIZE = 80;
+
+function renderMinimap(tw, td, heightMap, surfaceMap) {
+    const canvas = document.getElementById("minimap");
+    const size = 200;
+    canvas.width = size;
+    canvas.height = size;
+    canvas.style.width = size + "px";
+    canvas.style.height = size + "px";
+    const ctx = canvas.getContext("2d");
+
+    const img = ctx.createImageData(size, size);
+    const scaleX = tw / size;
+    const scaleZ = td / size;
+
+    for (let py = 0; py < size; py++) {
+        for (let px = 0; px < size; px++) {
+            const tx = Math.floor(px * scaleX);
+            const tz = Math.floor(py * scaleZ);
+            const idx = tz * tw + tx;
+            const h = heightMap[idx];
+            const mat = surfaceMap[idx];
+            const base = MINIMAP_COLORS[mat] || [100, 100, 100];
+            const shade = 0.6 + (h / 32) * 0.4;
+            const oi = (py * size + px) * 4;
+            img.data[oi]     = Math.min(255, base[0] * shade);
+            img.data[oi + 1] = Math.min(255, base[1] * shade);
+            img.data[oi + 2] = Math.min(255, base[2] * shade);
+            img.data[oi + 3] = 255;
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    // Draw plot grid lines
+    ctx.strokeStyle = "rgba(100,200,100,0.3)";
+    ctx.lineWidth = 1;
+    const plotPx = PLOT_SIZE / scaleX;
+    const plotPz = PLOT_SIZE / scaleZ;
+    for (let gx = plotPx; gx < size; gx += plotPx) {
+        ctx.beginPath();
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, size);
+        ctx.stroke();
+    }
+    for (let gz = plotPz; gz < size; gz += plotPz) {
+        ctx.beginPath();
+        ctx.moveTo(0, gz);
+        ctx.lineTo(size, gz);
+        ctx.stroke();
+    }
+
+    minimapBaseImage = ctx.getImageData(0, 0, size, size);
+}
+
+function updateMinimapPlayer() {
+    if (!terrainMeta || !minimapBaseImage) return;
+    const canvas = document.getElementById("minimap");
+    const size = canvas.width;
+    const ctx = canvas.getContext("2d");
+
+    ctx.putImageData(minimapBaseImage, 0, 0);
+
+    // Redraw plot grid
+    const scaleX = terrainMeta.width / size;
+    const scaleZ = terrainMeta.depth / size;
+    ctx.strokeStyle = "rgba(100,200,100,0.3)";
+    ctx.lineWidth = 1;
+    const plotPx = PLOT_SIZE / scaleX;
+    const plotPz = PLOT_SIZE / scaleZ;
+    for (let gx = plotPx; gx < size; gx += plotPx) {
+        ctx.beginPath();
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, size);
+        ctx.stroke();
+    }
+    for (let gz = plotPz; gz < size; gz += plotPz) {
+        ctx.beginPath();
+        ctx.moveTo(0, gz);
+        ctx.lineTo(size, gz);
+        ctx.stroke();
+    }
+
+    // Draw all entity dots (plants small green, animals orange, players red)
+    for (const [eid, obj] of entityMeshes) {
+        const px = (obj.position.x / terrainMeta.width) * size;
+        const pz = (obj.position.z / terrainMeta.depth) * size;
+        const info = entityKinds.get(eid);
+        if (!info) continue;
+        if (info.kind === "plant") {
+            ctx.fillStyle = "rgba(80,200,80,0.4)";
+            ctx.fillRect(px - 0.5, pz - 0.5, 1, 1);
+        } else if (info.kind === "animal") {
+            ctx.fillStyle = "#da6";
+            ctx.fillRect(px - 1, pz - 1, 2, 2);
+        }
+    }
+
+    // Draw other players
+    for (const [eid, obj] of entityMeshes) {
+        if (eid === myEntityId) continue;
+        const info = entityKinds.get(eid);
+        if (!info || info.kind !== "player") continue;
+        const px = (obj.position.x / terrainMeta.width) * size;
+        const pz = (obj.position.z / terrainMeta.depth) * size;
+        ctx.fillStyle = "#48f";
+        ctx.beginPath();
+        ctx.arc(px, pz, 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Draw own player
+    const obj = entityMeshes.get(myEntityId);
+    if (obj) {
+        const px = (obj.position.x / terrainMeta.width) * size;
+        const pz = (obj.position.z / terrainMeta.depth) * size;
+        ctx.fillStyle = "#ff4444";
+        ctx.beginPath();
+        ctx.arc(px, pz, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
+
+    // Draw camera view frustum indicator
+    const camPx = (controls.target.x / terrainMeta.width) * size;
+    const camPz = (controls.target.z / terrainMeta.depth) * size;
+    ctx.strokeStyle = "rgba(255,255,255,0.4)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(camPx - 15, camPz - 15, 30, 30);
+
+    // Region label
+    const regionNames = ["Minho", "Tras-os-Montes", "Beira", "Ribatejo", "Alentejo", "Algarve", "Lisboa"];
+    const name = regionNames[selectedRegion] || "Portugal";
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(0, size - 16, size, 16);
+    ctx.fillStyle = "#8f8";
+    ctx.font = "11px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(name + " - Plot " + selectedPlotSeed, size / 2, size - 4);
+}
+
+// Minimap click to navigate
+document.getElementById("minimap").addEventListener("click", (e) => {
+    if (!terrainMeta || !connected) return;
+    const canvas = document.getElementById("minimap");
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width;
+    const mz = (e.clientY - rect.top) / rect.height;
+    const worldX = mx * terrainMeta.width;
+    const worldZ = mz * terrainMeta.depth;
+
+    controls.target.set(worldX, 10, worldZ);
+    camera.position.set(worldX + 40, 60, worldZ + 40);
+    controls.update();
+});
+document.getElementById("minimap").style.cursor = "pointer";
+document.getElementById("minimap").style.pointerEvents = "all";
 
 // --- Entity rendering ---
 
@@ -1161,6 +1384,7 @@ function updateFlames(time) {
 
 let lastTime = performance.now();
 let inputTimer = 0;
+let minimapTimer = 0;
 
 function gameLoop(now) {
     requestAnimationFrame(gameLoop);
@@ -1174,6 +1398,11 @@ function gameLoop(now) {
     }
 
     updateFlames(now / 1000);
+    minimapTimer += dt;
+    if (minimapTimer >= 0.2) {
+        minimapTimer = 0;
+        updateMinimapPlayer();
+    }
 
     if (controls) controls.update();
     if (renderer && scene && camera) renderer.render(scene, camera);

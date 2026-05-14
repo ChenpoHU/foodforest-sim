@@ -67,7 +67,7 @@ impl Shard {
         // Spawn at a random-ish position on the terrain
         let spawn_x = (self.terrain.width / 2) as i32;
         let spawn_z = (self.terrain.depth / 2) as i32;
-        let spawn_y = self.terrain.spawn_height(spawn_x, spawn_z) as f32;
+        let spawn_y = self.terrain.spawn_height(spawn_x, spawn_z);
 
         let entity = self.ecs_world.spawn((
             NetworkId(eid),
@@ -115,18 +115,20 @@ impl Shard {
         tracing::info!("Player {:?} left shard {:?}", player_id, self.id);
     }
 
-    /// Seed the world with initial plants and animals.
+    /// Seed the world with initial plants and animals, scaled to terrain size.
     fn spawn_initial_ecosystem(&mut self) {
         use ff_ecs::components::animal::{Animal, AnimalBehavior, Domesticated};
         use ff_ecs::components::plant::Plant;
 
         let w = self.terrain.width as i32;
         let d = self.terrain.depth as i32;
+        let area_scale = (w as f32 * d as f32) / (80.0 * 80.0);
 
-        for i in 0..80 {
-            let x = (i * 5 + 3) % w;
-            let z = (i * 7 + 2) % d;
-            let y = self.terrain.spawn_height(x, z) as f32;
+        let euc_count = (80.0 * area_scale) as i32;
+        for i in 0..euc_count {
+            let x = ((i as i64 * 17 + 3) % w as i64) as i32;
+            let z = ((i as i64 * 23 + 7) % d as i64) as i32;
+            let y = self.terrain.spawn_height(x, z);
 
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
@@ -144,10 +146,11 @@ impl Shard {
         }
 
         let native_species = [100u16, 101, 102, 200, 201, 202, 203];
-        for i in 0..21 {
-            let x = (i * 11 + 17) % w;
-            let z = (i * 13 + 11) % d;
-            let y = self.terrain.spawn_height(x, z) as f32;
+        let native_count = (21.0 * area_scale) as i32;
+        for i in 0..native_count {
+            let x = ((i as i64 * 31 + 17) % w as i64) as i32;
+            let z = ((i as i64 * 37 + 11) % d as i64) as i32;
+            let y = self.terrain.spawn_height(x, z);
 
             let species_id = native_species[(i as usize) % native_species.len()];
             let eid = EntityId(self.next_entity_id);
@@ -165,12 +168,12 @@ impl Shard {
             ));
         }
 
-        // Scatter herbs and ground cover
         let herb_species = [300u16, 301, 400, 500, 501];
-        for i in 0..100 {
-            let x = (i * 3 + 5) % w;
-            let z = (i * 5 + 3) % d;
-            let y = self.terrain.spawn_height(x, z) as f32;
+        let herb_count = (100.0 * area_scale) as i32;
+        for i in 0..herb_count {
+            let x = ((i as i64 * 13 + 5) % w as i64) as i32;
+            let z = ((i as i64 * 19 + 3) % d as i64) as i32;
+            let y = self.terrain.spawn_height(x, z);
 
             let species_id = herb_species[(i as usize) % herb_species.len()];
             let eid = EntityId(self.next_entity_id);
@@ -188,11 +191,11 @@ impl Shard {
             ));
         }
 
-        // Spawn chickens
-        for i in 0..10 {
-            let x = (w / 2 + i * 2) as f32;
-            let z = (d / 2 + i * 3) as f32;
-            let y = self.terrain.spawn_height(x as i32, z as i32) as f32;
+        let chicken_count = (10.0 * area_scale) as i32;
+        for i in 0..chicken_count {
+            let x = ((i as i64 * 29 + 40) % w as i64) as f32;
+            let z = ((i as i64 * 41 + 60) % d as i64) as f32;
+            let y = self.terrain.spawn_height(x as i32, z as i32);
 
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
@@ -213,17 +216,17 @@ impl Shard {
                     energy: 0.8,
                 },
                 Domesticated {
-                    pen_center: Vec3::new(w as f32 / 2.0, y, d as f32 / 2.0),
-                    pen_radius: 20.0,
+                    pen_center: Vec3::new(x, y, z),
+                    pen_radius: 30.0,
                 },
             ));
         }
 
-        // Spawn wild deer
-        for i in 0..5 {
-            let x = (i * 17 + 10) % w;
-            let z = (i * 13 + 20) % d;
-            let y = self.terrain.spawn_height(x, z) as f32;
+        let deer_count = (5.0 * area_scale) as i32;
+        for i in 0..deer_count {
+            let x = ((i as i64 * 47 + 10) % w as i64) as i32;
+            let z = ((i as i64 * 53 + 20) % d as i64) as i32;
+            let y = self.terrain.spawn_height(x, z);
 
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
@@ -247,7 +250,21 @@ impl Shard {
             ));
         }
 
-        tracing::info!("Spawned initial ecosystem: 80 eucalyptus, 12 native trees, 100 herbs/groundcover, 15 animals");
+        tracing::info!(
+            "Spawned ecosystem: {} eucalyptus, {} native trees, {} herbs, {} chickens, {} deer (scale {:.1}x)",
+            euc_count, native_count, herb_count, chicken_count, deer_count, area_scale
+        );
+    }
+
+    pub fn replace_terrain(&mut self, terrain: VoxelWorld, terrain_bytes: Vec<u8>) {
+        let w = terrain.width as usize;
+        let d = terrain.depth as usize;
+        self.soil_grid = SoilGrid::new(w, d, SOIL_LAYERS);
+        self.terrain = terrain;
+        self.terrain_bytes = terrain_bytes;
+        self.ecs_world.clear();
+        self.next_entity_id = 1000;
+        self.spawn_initial_ecosystem();
     }
 
     /// Run one ECS tick. Borrows fields separately to satisfy the borrow checker.

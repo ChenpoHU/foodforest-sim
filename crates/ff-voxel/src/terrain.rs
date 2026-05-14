@@ -40,9 +40,9 @@ impl VoxelWorld {
         !self.is_solid(x, y, z) && self.is_solid(x, y - 1, z)
     }
 
-    /// Find the spawn position (first air voxel above ground) at (x, z).
-    pub fn spawn_height(&self, x: i32, z: i32) -> i32 {
-        self.height_at(x, z) + 1
+    /// Surface Y at (x, z): top face of the highest solid voxel.
+    pub fn spawn_height(&self, x: i32, z: i32) -> f32 {
+        self.height_at(x, z) as f32 + 0.5
     }
 
     /// Simple slope check: max height difference among 4 neighbors.

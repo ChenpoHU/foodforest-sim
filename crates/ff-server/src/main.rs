@@ -30,22 +30,7 @@ async fn main() {
         .parse::<u32>()
         .expect("Invalid SHARD_ID");
 
-    let terrain_path = std::env::var("TERRAIN_PATH")
-        .unwrap_or_else(|_| "voxel_data/central_portugal/voxels.bin".into());
-
     info!("Starting Food Forest server — shard {shard_id} on {addr}");
-    info!("Loading terrain from {terrain_path}");
-
-    // Load terrain
-    let terrain_bytes = std::fs::read(&terrain_path).expect("Failed to read terrain file");
-    let terrain = ff_voxel::VoxelWorld::from_bytes(&terrain_bytes);
-    info!(
-        "Terrain loaded: {}x{}x{} ({} voxels)",
-        terrain.width,
-        terrain.height,
-        terrain.depth,
-        terrain.data.len()
-    );
 
     let game_mode = std::env::var("GAME_MODE")
         .ok()
@@ -55,8 +40,23 @@ async fn main() {
 
     info!("Game mode: {:?}", game_mode);
 
+    let region_index: u8 = std::env::var("REGION")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let plot_seed: u32 = std::env::var("PLOT_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(42);
+
+    let terrain = ff_voxel::generate::generate_terrain(region_index, plot_seed);
+    let terrain_bytes = terrain.to_bytes();
+    info!(
+        "Terrain generated: {}x{}x{} region={} plot_seed={}",
+        terrain.width, terrain.height, terrain.depth, region_index, plot_seed
+    );
+
     let shard = shard::Shard::new(ff_common::ShardId(shard_id), terrain, terrain_bytes, game_mode);
 
-    // Start the server
     net::ws::run_server(addr, shard).await;
 }
