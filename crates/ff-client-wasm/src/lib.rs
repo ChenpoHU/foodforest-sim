@@ -168,7 +168,7 @@ pub fn build_action_message(action_json: &str) -> Vec<u8> {
 
         let action = ClientAction {
             seq: client.input_seq,
-            action: ActionKind::PlantSeed { species_id: 100 }, // default for now
+            action: ActionKind::PlantSeed { species_id: 100, position: [0, 0, 0] }, // default for now
         };
 
         encode(MessageType::ClientAction, &action).unwrap_or_default()

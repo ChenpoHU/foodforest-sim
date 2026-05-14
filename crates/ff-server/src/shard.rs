@@ -3,7 +3,7 @@
 use ff_common::{EntityId, GameMode, PlayerId, ShardId, SOIL_LAYERS};
 use ff_ecs::components::identity::{NetworkId, Owner};
 use ff_ecs::components::physics::{Collider, Grounded};
-use ff_ecs::components::player::{Hunger, Inventory, Player, PlayerSkills, Stamina};
+use ff_ecs::components::player::{Hunger, Inventory, Player, PlayerSkills, Stamina, Wallet};
 use ff_ecs::components::soil::SoilGrid;
 use ff_ecs::components::transform::{Position, Rotation, Velocity};
 use ff_ecs::Resources;
@@ -90,6 +90,7 @@ impl Shard {
             Inventory::new(),
             Stamina(100.0),
             Hunger(0.0),
+            Wallet(0),
             PlayerSkills::default(),
         ));
 
@@ -130,7 +131,7 @@ impl Shard {
         if let Some(invasive_id) = generate::invasive_species_for_region(self.region_index) {
             let count = (80.0 * area_scale) as i32;
             let harvestable = self.resources.species_db.get_plant(invasive_id)
-                .and_then(|s| Harvestable::from_species(s.harvest_item_id, s.harvest_amount));
+                .and_then(|s| Harvestable::from_species(invasive_id, s.harvest_item_id, s.harvest_amount));
             for i in 0..count {
                 let x = ((i as i64 * 17 + 3) % w as i64) as i32;
                 let z = ((i as i64 * 23 + 7) % d as i64) as i32;
@@ -167,7 +168,7 @@ impl Shard {
 
             let species_id = native_species[i as usize % native_species.len()];
             let harvestable = self.resources.species_db.get_plant(species_id)
-                .and_then(|s| Harvestable::from_species(s.harvest_item_id, s.harvest_amount));
+                .and_then(|s| Harvestable::from_species(species_id, s.harvest_item_id, s.harvest_amount));
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
 
@@ -200,7 +201,7 @@ impl Shard {
 
             let species_id = herb_list[i as usize % herb_list.len()];
             let harvestable = self.resources.species_db.get_plant(species_id)
-                .and_then(|s| Harvestable::from_species(s.harvest_item_id, s.harvest_amount));
+                .and_then(|s| Harvestable::from_species(species_id, s.harvest_item_id, s.harvest_amount));
             let eid = EntityId(self.next_entity_id);
             self.next_entity_id += 1;
 
@@ -223,7 +224,7 @@ impl Shard {
         if self.region_index >= 7 && self.region_index <= 10 {
             let lavender_count = if self.region_index == 7 { (300.0 * area_scale) as i32 } else { (120.0 * area_scale) as i32 };
             let lavender_harvestable = self.resources.species_db.get_plant(301)
-                .and_then(|s| Harvestable::from_species(s.harvest_item_id, s.harvest_amount));
+                .and_then(|s| Harvestable::from_species(301, s.harvest_item_id, s.harvest_amount));
             for i in 0..lavender_count {
                 let x = ((i as i64 * 11 + 7) % w as i64) as i32;
                 let z = ((i as i64 * 17 + 13) % d as i64) as i32;

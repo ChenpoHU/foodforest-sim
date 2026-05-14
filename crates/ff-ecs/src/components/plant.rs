@@ -104,11 +104,18 @@ pub struct Harvestable {
 
 impl Harvestable {
     /// Build a Harvestable for a species. Returns None when the species
-    /// has no edible yield (e.g. cork oak, redwood, clover ground cover).
-    /// Cooldown is tuned for the accelerated growth pace: ~10 s between
-    /// harvests on the same plant.
-    pub fn from_species(yield_item_id: u16, yield_amount: u16) -> Option<Self> {
+    /// has no edible yield (e.g. cork oak, redwood, clover ground cover),
+    /// or when the species is an invasive that must be felled rather than
+    /// picked from (eucalyptus). Cooldown is tuned for the accelerated
+    /// growth pace: ~10 s between harvests on the same plant.
+    pub fn from_species(species_id: u16, yield_item_id: u16, yield_amount: u16) -> Option<Self> {
         if yield_item_id == 0 || yield_amount == 0 {
+            return None;
+        }
+        // Eucalyptus (103) is the invasive species. The player must cut it
+        // down with the tree-felling system; "harvesting" leaves would let
+        // them milk it indefinitely without ever clearing it.
+        if species_id == 103 {
             return None;
         }
         Some(Self {

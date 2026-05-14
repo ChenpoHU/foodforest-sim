@@ -325,6 +325,13 @@ async fn handle_message(
                         }
                     }
                 }
+
+                // Push the player's latest state right after every action,
+                // so Harvest / Eat / Sell visibly update the Property modal
+                // without waiting for the next 0.5 s broadcast tick.
+                if success {
+                    tick::send_player_state(&mut shard, player_id);
+                }
             }
         }
         MessageType::ClientPing => {

@@ -476,6 +476,19 @@ function rebuildToolbar() {
     }
     toolbar.appendChild(plantBtn);
 
+    // Property button — opens the owned-items modal (eat + sell for FoFo Coin).
+    // Carries the live coin count as a chip on the right so the player
+    // always sees their balance without opening the modal.
+    const propBtn = document.createElement("button");
+    propBtn.dataset.action = "property";
+    propBtn.id = "toolbar-property-btn";
+    propBtn.style.cssText = "display:flex; align-items:center; gap:6px; padding:6px 10px;";
+    propBtn.innerHTML =
+        "<span style='font-size:18px;'>🎒</span>" +
+        "<span style='font-size:11px;'>Property</span>" +
+        "<span id='toolbar-coin-chip' style='background:rgba(255,200,80,0.18); color:#ffd966; border:1px solid #c9a45a; border-radius:10px; padding:1px 8px; font-size:11px; font-weight:bold; margin-left:2px;'>🪙 0</span>";
+    toolbar.appendChild(propBtn);
+
     const tools = [
         { action: "build-swale", label: "Swale" },
         { action: "build-hugel", label: "Hugel" },
@@ -516,6 +529,10 @@ function rebuildToolbar() {
                 // The Plant button always opens the menu so the user can
                 // (re)pick a species. Selection is made inside the modal.
                 openPlantMenu();
+                return;
+            }
+            if (action === "property") {
+                openPropertyMenu();
                 return;
             }
             toolbar.querySelectorAll("button").forEach(b => b.classList.remove("active"));
@@ -637,10 +654,16 @@ document.getElementById("plant-menu-close").addEventListener("click", closePlant
 document.getElementById("plant-menu").addEventListener("click", (e) => {
     if (e.target.id === "plant-menu") closePlantMenu();
 });
+document.getElementById("property-menu-close").addEventListener("click", closePropertyMenu);
+document.getElementById("property-menu").addEventListener("click", (e) => {
+    if (e.target.id === "property-menu") closePropertyMenu();
+});
 document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-        const modal = document.getElementById("plant-menu");
-        if (modal && modal.style.display === "flex") closePlantMenu();
+        const plant = document.getElementById("plant-menu");
+        if (plant && plant.style.display === "flex") { closePlantMenu(); return; }
+        const prop = document.getElementById("property-menu");
+        if (prop && prop.style.display === "flex") { closePropertyMenu(); return; }
     }
 });
 
@@ -957,6 +980,11 @@ function handleWelcome(payload) {
     document.getElementById("hud-name").textContent = playerName;
     document.getElementById("hud-stamina").textContent = "Stamina: 100%";
     document.getElementById("hud-hunger").textContent = "Hunger: 0%";
+
+    // Make sure the coin chip shows up immediately (even before the first
+    // PlayerState broadcast). The player can open the Property modal at
+    // any time via the toolbar to inspect / eat / sell their stock.
+    refreshCoinChip();
 }
 
 function handleWorldState(payload) {
@@ -1246,21 +1274,49 @@ const ITEM_DB = {
 let playerInventory = [];
 let playerStamina = 100;
 let playerHunger = 0;
+let playerCoins = 0;
 
 function handlePlayerState(payload) {
     const r = new BincodeReader(payload);
-    playerStamina = r.readF32();
-    playerHunger = r.readF32();
-    const itemCount = r.readVarint();
-    playerInventory = [];
-    for (let i = 0; i < itemCount; i++) {
-        const itemId = r.readU16();
-        const count = r.readU16();
-        playerInventory.push({ itemId, count });
+    // Decode in stages so a wire-format mismatch (e.g. old server, new
+    // client) at the end doesn't throw away the inventory we already
+    // parsed correctly.
+    try {
+        playerStamina = r.readF32();
+        playerHunger = r.readF32();
+        const itemCount = r.readVarint();
+        const items = [];
+        for (let i = 0; i < itemCount; i++) {
+            const itemId = r.readU16();
+            const count = r.readU16();
+            items.push({ itemId, count });
+        }
+        playerInventory = items;
+    } catch (e) {
+        console.warn("PlayerState header/inventory decode failed:", e);
     }
-    r.readU32(); // last_acked_seq
-    updateInventoryHUD();
+    try {
+        playerCoins = r.readU32();
+    } catch (e) {
+        // Old server without the coins field — keep the previous balance.
+    }
+    try {
+        r.readU32(); // last_acked_seq
+    } catch (_) { /* trailing field optional for robustness */ }
+
+    refreshCoinChip();
+    const modal = document.getElementById("property-menu");
+    if (modal && modal.style.display === "flex") {
+        renderPropertyMenu();
+    }
     updatePlayerHUD();
+}
+
+function refreshCoinChip() {
+    const chip = document.getElementById("toolbar-coin-chip");
+    if (chip) chip.textContent = "🪙 " + playerCoins;
+    const big = document.getElementById("property-coins");
+    if (big) big.textContent = "🪙 " + playerCoins + " FoFo";
 }
 
 function updatePlayerHUD() {
@@ -1287,16 +1343,52 @@ const STATUS_CATEGORIES = [
     { key: "animal", title: "Animal Products",  color: "#cc7a4a" },
 ];
 
-function updateInventoryHUD() {
-    let panel = document.getElementById("inventory-panel");
-    if (!panel) {
-        panel = document.createElement("div");
-        panel.id = "inventory-panel";
-        panel.style.cssText = "position:fixed; bottom:70px; right:12px; width:240px; background:rgba(0,15,0,0.9); border:1px solid #3a5a3a; border-radius:10px; padding:12px; font-family:system-ui, sans-serif; font-size:12px; color:#cfc; pointer-events:none; z-index:101; max-height:340px; overflow-y:auto; box-shadow:0 4px 16px rgba(0,0,0,0.4);";
-        document.body.appendChild(panel);
-    }
+// Mirror of the server-side `sell_price` table (interaction.rs) so the UI
+// can show prices before the player commits. Server is the source of truth;
+// if it ever diverges, the ActionResult message will reveal the mismatch.
+const SELL_PRICES = {
+    2000: 12,
+    1100: 8, 1101: 8, 1104: 7, 1105: 7,
+    1108: 10, 1110: 10, 1107: 6, 1102: 6,
+    1112: 5,
+    1200: 4, 1201: 4, 1202: 4, 1203: 4, 1204: 4, 1205: 4,
+    1206: 4, 1207: 4, 1208: 4, 1209: 4, 1210: 4,
+    1501: 3, 1600: 4,
+    1402: 8,
+    1300: 2, 1301: 2, 1302: 2, 1303: 2, 1304: 2, 1305: 2, 1306: 2,
+    1400: 2, 1401: 2, 1403: 2,
+    1500: 1,
+};
+const EAT_NUTRITION = {
+    2000: 30,
+    1100: 15, 1101: 15, 1104: 15, 1105: 15, 1107: 15, 1108: 15, 1110: 15,
+    1102: 12,
+    1112: 10,
+    1200: 10, 1201: 10, 1202: 10, 1203: 10, 1204: 10, 1205: 10,
+    1206: 10, 1207: 10, 1208: 10, 1209: 10, 1210: 10,
+    1501: 10, 1600: 10,
+    1300: 4, 1301: 4, 1302: 4, 1303: 4, 1304: 4, 1305: 4, 1306: 4,
+    1400: 4, 1401: 4, 1402: 4, 1403: 4,
+    1500: 1,
+};
 
-    // Bucket items by category and compute totals.
+function priceOf(itemId) { return SELL_PRICES[itemId] || 0; }
+function nutritionOf(itemId) { return EAT_NUTRITION[itemId] || 0; }
+
+function openPropertyMenu() {
+    renderPropertyMenu();
+    document.getElementById("property-menu").style.display = "flex";
+}
+
+function closePropertyMenu() {
+    document.getElementById("property-menu").style.display = "none";
+}
+
+function renderPropertyMenu() {
+    refreshCoinChip();
+    const body = document.getElementById("property-menu-body");
+    if (!body) return;
+
     const buckets = { fruits: [], nuts: [], herbs: [], animal: [] };
     let totalItems = 0;
     let totalKinds = 0;
@@ -1308,43 +1400,81 @@ function updateInventoryHUD() {
     }
 
     if (totalKinds === 0) {
-        // Empty-state hint so the player knows where to look once they harvest.
-        panel.style.display = "block";
-        panel.innerHTML =
-            "<div style='color:#8f8; font-size:13px; font-weight:bold; margin-bottom:6px;'>Owned produce</div>" +
-            "<div style='color:#777; font-size:11px; line-height:1.5;'>Nothing harvested yet. Pick a plant from the <b style='color:#8f8;'>Plant ▾</b> button, place a seed, wait ~1 min, then use <b style='color:#eedd44;'>Harvest</b> on it.</div>";
+        body.innerHTML =
+            "<div style='color:#888; font-size:13px; line-height:1.6; padding:20px 4px;'>" +
+            "You don't own any produce yet.<br><br>" +
+            "<b style='color:#8f8;'>1.</b> Pick a plant from the <b style='color:#8f8;'>Plant ▾</b> button.<br>" +
+            "<b style='color:#8f8;'>2.</b> Click somewhere on the ground (within ~15 voxels) to place a seed.<br>" +
+            "<b style='color:#8f8;'>3.</b> Wait roughly one minute, then use <b style='color:#eedd44;'>Harvest</b> on the plant.<br><br>" +
+            "Hunted <b style='color:#cc7a4a;'>Game Meat</b> also appears here.</div>";
         return;
     }
 
-    panel.style.display = "block";
     let html = "";
-    html += "<div style='display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; border-bottom:1px solid #2a4a2a; padding-bottom:6px;'>";
-    html += "<span style='color:#8f8; font-size:13px; font-weight:bold;'>Owned produce</span>";
-    html += "<span style='color:#aaa; font-size:10px;'>" + totalKinds + " kinds · " + totalItems + " items</span>";
+    html += "<div style='display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;'>";
+    html += "<span style='color:#aaa; font-size:11px;'>" + totalKinds + " kinds · " + totalItems + " items in stock</span>";
     html += "</div>";
 
     for (const cat of STATUS_CATEGORIES) {
         const items = buckets[cat.key];
         if (items.length === 0) continue;
         const catTotal = items.reduce((s, it) => s + it.count, 0);
-        html += "<div style='margin-top:8px;'>";
-        html += "<div style='display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px;'>";
-        html += "<span style='color:" + cat.color + "; font-size:11px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px;'>" + cat.title + "</span>";
-        html += "<span style='color:#666; font-size:10px;'>" + catTotal + "</span>";
+        html += "<div style='margin-top:14px;'>";
+        html += "<div style='display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; border-bottom:1px solid #2a4a2a; padding-bottom:4px;'>";
+        html += "<span style='color:" + cat.color + "; font-size:12px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px;'>" + cat.title + "</span>";
+        html += "<span style='color:#666; font-size:11px;'>" + catTotal + " total</span>";
         html += "</div>";
-        // Items, biggest stack first.
+
         items.sort((a, b) => b.count - a.count);
         for (const item of items) {
             const info = ITEM_DB[item.itemId] || { name: "Item #" + item.itemId, color: "#aaa" };
-            html += "<div style='display:flex; align-items:center; gap:6px; padding:2px 0; font-family:monospace;'>";
-            html += "<span style='display:inline-block; width:10px; height:10px; border-radius:50%; background:" + info.color + "; flex-shrink:0;'></span>";
-            html += "<span style='flex:1; color:#cfc;'>" + info.name + "</span>";
-            html += "<span style='color:#888;'>×" + item.count + "</span>";
+            const price = priceOf(item.itemId);
+            const nutr = nutritionOf(item.itemId);
+            const sellAllTotal = price * item.count;
+            html += "<div style='display:flex; align-items:center; gap:8px; padding:6px 4px; background:rgba(20,40,20,0.4); border-radius:6px; margin-bottom:4px;'>";
+            html += "<span style='display:inline-block; width:14px; height:14px; border-radius:50%; background:" + info.color + "; flex-shrink:0; border:1px solid rgba(255,255,255,0.15);'></span>";
+            html += "<span style='flex:1; color:#cfc; font-size:13px;'>" + info.name + "</span>";
+            html += "<span style='color:#888; font-size:11px; min-width:36px; text-align:right;'>×" + item.count + "</span>";
+            // Eat
+            const eatDisabled = nutr <= 0;
+            html += "<button class='prop-eat-btn' data-item='" + item.itemId + "' " + (eatDisabled ? "disabled" : "") + " title='" + (eatDisabled ? "Not edible" : ("Restores " + nutr + "% fullness")) + "' style='" +
+                "background:" + (eatDisabled ? "#222" : "#2a5a2a") + "; color:" + (eatDisabled ? "#555" : "#cfc") + "; border:1px solid " + (eatDisabled ? "#333" : "#4a4") + "; border-radius:5px; padding:4px 10px; font-size:11px; cursor:" + (eatDisabled ? "not-allowed" : "pointer") + ";'>🍽 Eat</button>";
+            // Sell 1
+            const sellDisabled = price <= 0;
+            html += "<button class='prop-sell-one-btn' data-item='" + item.itemId + "' " + (sellDisabled ? "disabled" : "") + " title='" + (sellDisabled ? "No market value" : ("Sell 1 for " + price + " FoFo")) + "' style='" +
+                "background:" + (sellDisabled ? "#222" : "#3a2f0a") + "; color:" + (sellDisabled ? "#555" : "#ffd966") + "; border:1px solid " + (sellDisabled ? "#333" : "#c9a45a") + "; border-radius:5px; padding:4px 10px; font-size:11px; cursor:" + (sellDisabled ? "not-allowed" : "pointer") + ";'>🪙 Sell 1 (" + price + ")</button>";
+            // Sell all
+            html += "<button class='prop-sell-all-btn' data-item='" + item.itemId + "' data-count='" + item.count + "' " + (sellDisabled ? "disabled" : "") + " title='" + (sellDisabled ? "No market value" : ("Sell all for " + sellAllTotal + " FoFo")) + "' style='" +
+                "background:" + (sellDisabled ? "#222" : "#2a230a") + "; color:" + (sellDisabled ? "#555" : "#ffd966") + "; border:1px solid " + (sellDisabled ? "#333" : "#8a7a3a") + "; border-radius:5px; padding:4px 10px; font-size:11px; cursor:" + (sellDisabled ? "not-allowed" : "pointer") + ";'>Sell all (" + sellAllTotal + ")</button>";
             html += "</div>";
         }
         html += "</div>";
     }
-    panel.innerHTML = html;
+    body.innerHTML = html;
+
+    // Wire button handlers.
+    body.querySelectorAll(".prop-eat-btn").forEach(b => {
+        b.addEventListener("click", () => {
+            if (b.disabled) return;
+            const id = parseInt(b.dataset.item);
+            ws.send(buildActionMessage(encodeEatAction(id)));
+        });
+    });
+    body.querySelectorAll(".prop-sell-one-btn").forEach(b => {
+        b.addEventListener("click", () => {
+            if (b.disabled) return;
+            const id = parseInt(b.dataset.item);
+            ws.send(buildActionMessage(encodeSellAction(id, 1)));
+        });
+    });
+    body.querySelectorAll(".prop-sell-all-btn").forEach(b => {
+        b.addEventListener("click", () => {
+            if (b.disabled) return;
+            const id = parseInt(b.dataset.item);
+            const count = parseInt(b.dataset.count);
+            ws.send(buildActionMessage(encodeSellAction(id, count)));
+        });
+    });
 }
 
 // --- Entity classification ---
@@ -2180,10 +2310,19 @@ function makeTree(trunkColor, trunkW, trunkH, canopyColor, canopyR, canopyH, can
         leaf.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
         group.add(leaf);
     }
-    // Fruits
+    // Fruits — placed inside a named subgroup so we can toggle visibility
+    // based on the plant's growth stage (only visible when Fruiting).
     if (fruitColor && fruitCount) {
-        const fruitMat = new THREE.MeshStandardMaterial({ color: fruitColor, roughness: 0.4, metalness: 0.05 });
-        const fruitGeo = new THREE.SphereGeometry(0.1, 5, 4);
+        const fruitsGroup = new THREE.Group();
+        fruitsGroup.name = "fruits";
+        fruitsGroup.visible = false; // shown only when growthStage === 5 (Fruiting)
+        const fruitMat = new THREE.MeshStandardMaterial({
+            color: fruitColor,
+            roughness: 0.4,
+            metalness: 0.05,
+            emissive: new THREE.Color(fruitColor).multiplyScalar(0.25),
+        });
+        const fruitGeo = new THREE.SphereGeometry(0.14, 6, 5);
         for (let i = 0; i < fruitCount; i++) {
             const a = (i / fruitCount) * Math.PI * 2;
             const rr = canopyR * 0.6;
@@ -2193,8 +2332,9 @@ function makeTree(trunkColor, trunkW, trunkH, canopyColor, canopyR, canopyH, can
                 canopyY - canopyH * 0.3 + Math.sin(i * 2.3) * 0.3,
                 Math.sin(a) * rr
             );
-            group.add(fruit);
+            fruitsGroup.add(fruit);
         }
+        group.add(fruitsGroup);
     }
     return group;
 }
@@ -2949,11 +3089,16 @@ function createOrUpdateEntity(eid, x, y, z, rot, category) {
     obj.position.set(x, y, z);
     if (obj.rotation) obj.rotation.y = rot;
 
-    // Scale plants by growth stage
+    // Scale plants by growth stage, and reveal fruits only while Fruiting.
     const info = entityKinds.get(eid);
     if (info && info.kind === "plant" && info.growthStage !== undefined) {
         const s = GROWTH_SCALES[info.growthStage] || 1.0;
         obj.scale.set(s, s, s);
+        // GrowthStage::Fruiting === 5 (see ff-ecs plant component)
+        const fruitsGroup = obj.getObjectByName ? obj.getObjectByName("fruits") : null;
+        if (fruitsGroup) {
+            fruitsGroup.visible = info.growthStage === 5;
+        }
     }
 
     // Track own player for camera
@@ -3026,7 +3171,7 @@ function onWorldClick(event) {
                 const plants = COUNTRY_PLANTS[country] || COUNTRY_PLANTS["Portugal"];
                 const found = plants.find(p => p.action === selectedAction);
                 const sid = found ? found.sid : 100;
-                const actionPayload = encodePlantAction(sid);
+                const actionPayload = encodePlantAction(sid, ix, iy, iz);
                 ws.send(buildActionMessage(actionPayload));
             } else if (selectedAction === "water") {
                 const actionPayload = encodeWaterAction(ix, iy, iz);
@@ -3046,8 +3191,13 @@ function onWorldClick(event) {
 }
 
 // ActionKind bincode encoders (enum variant index as varint, then fields)
-function encodePlantAction(speciesId) {
-    return [...encodeVarint(0), ...encodeVarint(speciesId)]; // PlantSeed { species_id }
+function encodePlantAction(speciesId, x, y, z) {
+    // PlantSeed { species_id: u16, position: [i32; 3] }
+    return [
+        ...encodeVarint(0),
+        ...encodeVarint(speciesId),
+        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
+    ];
 }
 
 function encodeHarvestAction(entityId) {
@@ -3088,6 +3238,16 @@ function encodeInspectAction(entityId) {
 
 function encodeHuntAction(entityId) {
     return [...encodeVarint(12), ...encodeVarint(entityId)];
+}
+
+function encodeEatAction(itemId) {
+    // EatItem { item_id: u16 } — variant 14
+    return [...encodeVarint(14), ...encodeVarint(itemId)];
+}
+
+function encodeSellAction(itemId, count) {
+    // SellItem { item_id: u16, count: u16 } — variant 15
+    return [...encodeVarint(15), ...encodeVarint(itemId), ...encodeVarint(count)];
 }
 
 function encodeHochsitzAction(x, y, z) {

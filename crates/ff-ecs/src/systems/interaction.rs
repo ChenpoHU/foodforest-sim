@@ -36,22 +36,33 @@ pub fn process_action(
     };
 
     match action {
-        ActionKind::PlantSeed { species_id } => {
+        ActionKind::PlantSeed { species_id, position } => {
             // Validate species exists
             let Some(species) = resources.species_db.get_plant(*species_id) else {
                 return ActionResult::Failure("Unknown plant species".into());
             };
 
-            // Plant at player's feet position
-            let plant_x = player_pos.x as i32;
-            let plant_z = player_pos.z as i32;
+            // Plant at the click position, snapped to terrain height. We
+            // accept the player's X/Z and let the terrain decide Y so the
+            // sapling sits on the ground even on slopes.
+            let [px, _py, pz] = *position;
+            let plant_x = px;
+            let plant_z = pz;
             let plant_y = terrain.spawn_height(plant_x, plant_z);
+
+            // Generous distance check so the player can lay out a small
+            // food forest without constantly stepping forward.
+            let dx = plant_x as f32 - player_pos.x;
+            let dz = plant_z as f32 - player_pos.z;
+            if (dx * dx + dz * dz).sqrt() > 15.0 {
+                return ActionResult::Failure("Too far away to plant — move closer".into());
+            }
 
             let id = *next_entity_id;
             *next_entity_id += 1;
 
             let harvestable =
-                Harvestable::from_species(species.harvest_item_id, species.harvest_amount);
+                Harvestable::from_species(*species_id, species.harvest_item_id, species.harvest_amount);
 
             let entity = world.spawn((
                 NetworkId(EntityId(id)),
@@ -76,8 +87,8 @@ pub fn process_action(
             {
                 if net_id.0 == *entity_id {
                     let dist = (pos.0 - player_pos).length();
-                    if dist > 5.0 {
-                        return ActionResult::Failure("Too far away".into());
+                    if dist > 10.0 {
+                        return ActionResult::Failure("Too far away — move closer".into());
                     }
                     if plant.growth_stage != GrowthStage::Fruiting {
                         return ActionResult::Failure("Not ready to harvest".into());
@@ -140,8 +151,8 @@ pub fn process_action(
         ActionKind::BuildSwale { position, .. } => {
             let [x, y, z] = *position;
             let dist = Vec3::new(x as f32, y as f32, z as f32) - player_pos;
-            if dist.length() > 5.0 {
-                return ActionResult::Failure("Too far away".into());
+            if dist.length() > 15.0 {
+                return ActionResult::Failure("Too far away — move closer".into());
             }
 
             terrain.set(x, y, z, VoxelMaterial::Swale);
@@ -151,8 +162,8 @@ pub fn process_action(
         ActionKind::BuildHugelBed { position } => {
             let [x, y, z] = *position;
             let dist = Vec3::new(x as f32, y as f32, z as f32) - player_pos;
-            if dist.length() > 5.0 {
-                return ActionResult::Failure("Too far away".into());
+            if dist.length() > 15.0 {
+                return ActionResult::Failure("Too far away — move closer".into());
             }
             terrain.set(x, y, z, VoxelMaterial::HugelBed);
             ActionResult::Success("Built hugel bed".into())
@@ -174,8 +185,8 @@ pub fn process_action(
             {
                 if net_id.0 == *entity_id {
                     let dist = (pos.0 - player_pos).length();
-                    if dist > 6.0 {
-                        return ActionResult::Failure("Too far away".into());
+                    if dist > 10.0 {
+                        return ActionResult::Failure("Too far away — move closer".into());
                     }
                     if plant.growth_stage == GrowthStage::Dead {
                         return ActionResult::Failure("Tree is already dead".into());
@@ -373,8 +384,8 @@ pub fn process_action(
         ActionKind::BuildHochsitz { position } => {
             let [x, y, z] = *position;
             let dist = Vec3::new(x as f32, y as f32, z as f32) - player_pos;
-            if dist.length() > 6.0 {
-                return ActionResult::Failure("Too far away".into());
+            if dist.length() > 15.0 {
+                return ActionResult::Failure("Too far away — move closer".into());
             }
             // Place the hochsitz as a structure entity
             let eid = EntityId(*next_entity_id);
@@ -388,7 +399,90 @@ pub fn process_action(
             ActionResult::Success(format!("Built hunting stand (Hochsitz)"))
         }
 
+        ActionKind::EatItem { item_id } => {
+            let nutrition = eat_nutrition(*item_id);
+            let mut inv = match world.get::<&mut crate::components::player::Inventory>(player_entity) {
+                Ok(i) => i,
+                Err(_) => return ActionResult::Failure("Inventory unavailable".into()),
+            };
+            if !inv.remove(*item_id, 1) {
+                return ActionResult::Failure("You don't have any to eat".into());
+            }
+            drop(inv);
+            if let Ok(mut hunger) = world.get::<&mut crate::components::player::Hunger>(player_entity) {
+                hunger.0 = (hunger.0 - nutrition).max(0.0);
+            }
+            if let Ok(mut stamina) = world.get::<&mut crate::components::player::Stamina>(player_entity) {
+                stamina.0 = (stamina.0 + nutrition * 0.5).min(100.0);
+            }
+            ActionResult::Success(format!("Ate 1 — restored {:.0}% fullness", nutrition))
+        }
+
+        ActionKind::SellItem { item_id, count } => {
+            if *count == 0 {
+                return ActionResult::Failure("Nothing to sell".into());
+            }
+            let price = sell_price(*item_id);
+            if price == 0 {
+                return ActionResult::Failure("This item has no market value".into());
+            }
+            let total = price * (*count as u32);
+            let mut inv = match world.get::<&mut crate::components::player::Inventory>(player_entity) {
+                Ok(i) => i,
+                Err(_) => return ActionResult::Failure("Inventory unavailable".into()),
+            };
+            if !inv.remove(*item_id, *count) {
+                return ActionResult::Failure("Not enough to sell".into());
+            }
+            drop(inv);
+            if let Ok(mut wallet) = world.get::<&mut crate::components::player::Wallet>(player_entity) {
+                wallet.0 = wallet.0.saturating_add(total);
+            }
+            ActionResult::Success(format!("Sold {} for {} FoFo", count, total))
+        }
+
         _ => ActionResult::Failure("Action not implemented yet".into()),
+    }
+}
+
+/// FoFo Coin price per unit for an inventory item. Returns 0 for items
+/// that have no market value (clover ground cover, etc.). Tuned so
+/// hunting and tree fruits pay better than easy herbs.
+fn sell_price(item_id: u16) -> u32 {
+    match item_id {
+        // Animal products — premium
+        2000 => 12,
+        // Nuts — long maturity, higher payoff
+        1100 | 1101 => 8,           // Chestnut, Walnut
+        1104 | 1105 => 7,           // Hazelnut, Almond
+        1108 | 1110 => 10,          // Macadamia, Pistachio
+        1107 => 6,                  // Redwood cones
+        1102 => 6,                  // Carob pods
+        // Fruits & berries — staple income
+        1112 => 5,                  // Cherries
+        1200..=1210 => 4,           // Understory fruit trees
+        1501 => 3,                  // Strawberries
+        1600 => 4,                  // Grapes
+        // Herbs & spices — small but stackable
+        1402 => 8,                  // Saffron (premium)
+        1300..=1306 | 1400 | 1401 | 1403 => 2,
+        // Ground covers (clover) sell for almost nothing
+        1500 => 1,
+        _ => 0,
+    }
+}
+
+/// Hunger reduction (in display-percent units, matching ServerPlayerState.hunger)
+/// when the player eats one of `item_id`. Returns 0.0 for inedible items.
+fn eat_nutrition(item_id: u16) -> f32 {
+    match item_id {
+        2000 => 30.0,                                      // Game meat
+        1100 | 1101 | 1104 | 1105 | 1107 | 1108 | 1110 => 15.0, // Nuts
+        1102 => 12.0,                                      // Carob
+        1112 | 1200..=1210 | 1501 | 1600 => 10.0,          // Fruits
+        1300..=1306 | 1400..=1403 => 4.0,                  // Herbs & spices
+        1500 => 1.0,                                       // Clover
+        _ => 0.0,
     }
 }
 

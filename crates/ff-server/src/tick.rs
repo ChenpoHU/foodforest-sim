@@ -50,7 +50,7 @@ pub async fn run_tick_loop(shard: Arc<Mutex<Shard>>) {
             }
 
             if tick_count % NET_SEND_INTERVAL as u64 == 0 {
-                broadcast_updates(&shard);
+                broadcast_updates(&mut shard);
             }
         }
 
@@ -87,7 +87,7 @@ pub async fn run_tick_loop(shard: Arc<Mutex<Shard>>) {
 }
 
 /// Build and broadcast entity position updates to all connected players.
-fn broadcast_updates(shard: &Shard) {
+fn broadcast_updates(shard: &mut Shard) {
     let tick = shard.resources.calendar.tick;
 
     // Collect entity updates
@@ -149,35 +149,81 @@ fn broadcast_updates(shard: &Shard) {
         }
     }
 
-    // Send per-player state (inventory, stamina, hunger) every 10 ticks (~0.5s)
+    // Push per-player state (inventory, stamina, hunger, coins) every 10
+    // ticks (~0.5 s) as a steady heartbeat. Action handlers in ws.rs also
+    // call `send_player_state` directly so the player sees their stack
+    // update the same instant their Harvest/Eat/Sell succeeds.
     if tick.0 % 10 == 0 {
-        for (player_id, session) in &shard.sessions {
-            // Find this player's entity
-            for (_entity, (player, stamina, hunger, inv)) in shard
+        ensure_wallets(shard);
+        let player_ids: Vec<ff_common::PlayerId> = shard.sessions.keys().copied().collect();
+        for pid in player_ids {
+            send_player_state(shard, pid);
+        }
+    }
+}
+
+/// Make sure every player entity has a `Wallet` component. Idempotent;
+/// missing wallets are inserted as `Wallet(0)`.
+pub fn ensure_wallets(shard: &mut Shard) {
+    let needs: Vec<hecs::Entity> = shard
+        .ecs_world
+        .query::<&ff_ecs::components::player::Player>()
+        .iter()
+        .filter(|(e, _)| {
+            shard
                 .ecs_world
-                .query::<(
-                    &ff_ecs::components::player::Player,
-                    &ff_ecs::components::player::Stamina,
-                    &ff_ecs::components::player::Hunger,
-                    &ff_ecs::components::player::Inventory,
-                )>()
-                .iter()
-            {
-                if player.player_id != *player_id { continue; }
-                let state = ServerPlayerState {
-                    stamina: stamina.0,
-                    hunger: hunger.0,
-                    inventory: inv.slots.iter().map(|s| ItemStackMsg {
-                        item_id: s.item_id,
-                        count: s.count,
-                    }).collect(),
-                    last_acked_seq: player.last_input_seq,
-                };
-                if let Ok(buf) = encode(MessageType::ServerPlayerState, &state) {
-                    session.send(buf);
-                }
-                break;
-            }
+                .get::<&ff_ecs::components::player::Wallet>(*e)
+                .is_err()
+        })
+        .map(|(e, _)| e)
+        .collect();
+    for e in needs {
+        let _ = shard
+            .ecs_world
+            .insert_one(e, ff_ecs::components::player::Wallet(0));
+    }
+}
+
+/// Build and send a fresh `ServerPlayerState` for a single player. Safe
+/// to call after any action that mutates inventory / hunger / wallet —
+/// the client modal will reflect the change on the next render.
+pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
+    ensure_wallets(shard);
+    let Some(session) = shard.sessions.get(&player_id) else { return };
+
+    let mut payload: Option<ServerPlayerState> = None;
+    for (entity, (player, stamina, hunger, inv)) in shard
+        .ecs_world
+        .query::<(
+            &ff_ecs::components::player::Player,
+            &ff_ecs::components::player::Stamina,
+            &ff_ecs::components::player::Hunger,
+            &ff_ecs::components::player::Inventory,
+        )>()
+        .iter()
+    {
+        if player.player_id != player_id { continue; }
+        let coins = shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Wallet>(entity)
+            .map(|w| w.0)
+            .unwrap_or(0);
+        payload = Some(ServerPlayerState {
+            stamina: stamina.0,
+            hunger: hunger.0,
+            inventory: inv.slots.iter().map(|s| ItemStackMsg {
+                item_id: s.item_id,
+                count: s.count,
+            }).collect(),
+            coins,
+            last_acked_seq: player.last_input_seq,
+        });
+        break;
+    }
+
+    if let Some(state) = payload {
+        if let Ok(buf) = encode(MessageType::ServerPlayerState, &state) {
+            session.send(buf);
         }
     }
 }

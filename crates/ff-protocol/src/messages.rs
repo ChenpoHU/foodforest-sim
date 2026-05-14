@@ -71,7 +71,7 @@ pub struct ClientAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ActionKind {
-    PlantSeed { species_id: u16 },
+    PlantSeed { species_id: u16, position: [i32; 3] },
     Harvest { entity_id: EntityId },
     Dig { position: [i32; 3] },
     Water { position: [i32; 3], radius: u8 },
@@ -89,6 +89,10 @@ pub enum ActionKind {
     Inspect { entity_id: EntityId },
     HuntAnimal { entity_id: EntityId },
     BuildHochsitz { position: [i32; 3] },
+    /// Consume one of `item_id` from the player's inventory to reduce hunger.
+    EatItem { item_id: u16 },
+    /// Sell `count` of `item_id` from inventory for FoFo Coin.
+    SellItem { item_id: u16, count: u16 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +197,8 @@ pub struct ServerPlayerState {
     pub stamina: f32,
     pub hunger: f32,
     pub inventory: Vec<ItemStackMsg>,
+    /// FoFo Coin balance — earned by selling harvested produce or hunted game.
+    pub coins: u32,
     pub last_acked_seq: u32,
 }
 

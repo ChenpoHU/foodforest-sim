@@ -70,6 +70,11 @@ pub struct Stamina(pub f32);
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Hunger(pub f32);
 
+/// FoFo Coin balance — the soft currency. Earned by selling produce and
+/// game meat, spent later on trades or upgrades.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct Wallet(pub u32);
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PlayerSkills {
     pub logging: f32,
