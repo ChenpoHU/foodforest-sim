@@ -331,6 +331,64 @@
                 </div>
             </div>
             <div style="margin-top:18px; padding-top:14px; border-top:1px solid #1a2a44;">
+                <div style="color:#8ccdff; font-size:12px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">State broadcast</div>
+                <p style="color:#779; font-size:11px; margin:0 0 6px 0;">Costs 5 Influence per send. Banner appears on every connected player's screen.</p>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+                    <select id="prop-tone" style="background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px;">
+                        <option value="0">📜 Decree</option>
+                        <option value="1">📣 Rally</option>
+                        <option value="2">⚠️ Crisis</option>
+                    </select>
+                    <input id="prop-message" type="text" maxlength="200" placeholder="Your message to the populace…"
+                        style="flex:1; background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px; font-family:inherit;" />
+                    <button id="prop-send" style="background:#1a3a5a; color:#8ccdff; border:1px solid #4477aa; border-radius:4px; padding:4px 14px; cursor:pointer; font-size:12px;">Send</button>
+                </div>
+                <div id="prop-feedback" style="color:#557; font-size:10px; min-height:14px;"></div>
+            </div>
+            <div style="margin-top:18px; padding-top:14px; border-top:1px solid #1a2a44;">
+                <div style="color:#8ccdff; font-size:12px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">UBI grant</div>
+                <p style="color:#779; font-size:11px; margin:0 0 6px 0;">Wire coins from your wallet directly. Pick a single recipient from the surveillance table (use the per-row Pay button) or "All farmers" to broadcast a stipend (cost = amount × count).</p>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+                    <select id="ubi-target" style="background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px; min-width:160px;">
+                        <option value="0">All farmers</option>
+                    </select>
+                    <input id="ubi-amount" type="number" min="1" max="9999" value="10"
+                        style="width:90px; background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px;" />
+                    <span style="color:#779; font-size:11px;">coins each</span>
+                    <button id="ubi-send" style="background:#3a5a1a; color:#cfe9aa; border:1px solid #7aaa44; border-radius:4px; padding:4px 14px; cursor:pointer; font-size:12px;">Wire</button>
+                </div>
+                <div id="ubi-feedback" style="color:#557; font-size:10px; min-height:14px;"></div>
+            </div>
+            <div style="margin-top:18px; padding-top:14px; border-top:1px solid #1a2a44;">
+                <div style="color:#8ccdff; font-size:12px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Bounty / task</div>
+                <p style="color:#779; font-size:11px; margin:0 0 6px 0;">Issue a public task. Costs 5 Influence to broadcast. Every farmer who completes it earns the reward — paid from your wallet at claim time. If you run out of coin mid-task it auto-cancels.</p>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
+                    <select id="task-tone" style="background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px;">
+                        <option value="0">📜 Decree</option>
+                        <option value="1">📣 Rally</option>
+                        <option value="2">⚠️ Crisis</option>
+                    </select>
+                    <select id="task-kind" style="background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px;">
+                        <option value="0">🌱 Plant seeds</option>
+                        <option value="1">🍎 Harvest</option>
+                        <option value="2">🪓 Cut tree</option>
+                        <option value="3">🏹 Hunt</option>
+                    </select>
+                    <input id="task-target" type="number" min="1" max="99" value="3"
+                        style="width:60px; background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px;" />
+                    <span style="color:#779; font-size:11px;">× target</span>
+                    <input id="task-reward" type="number" min="1" max="9999" value="30"
+                        style="width:80px; background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px;" />
+                    <span style="color:#779; font-size:11px;">🪙 / claimant</span>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+                    <input id="task-message" type="text" maxlength="200" placeholder="Call to action (the message broadcast to all farmers)…"
+                        style="flex:1; background:#0a1626; color:#cfe; border:1px solid #1a2a44; border-radius:4px; padding:4px 8px; font-size:12px; font-family:inherit;" />
+                    <button id="task-send" style="background:#5a3a1a; color:#ffd966; border:1px solid #c9a45a; border-radius:4px; padding:4px 14px; cursor:pointer; font-size:12px;">Issue</button>
+                </div>
+                <div id="task-feedback" style="color:#557; font-size:10px; min-height:14px;"></div>
+            </div>
+            <div style="margin-top:18px; padding-top:14px; border-top:1px solid #1a2a44;">
                 <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
                     <div style="color:#8ccdff; font-size:12px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px;">Surveillance</div>
                     <div id="dash-surveillance-meta" style="color:#557; font-size:10px;">No data yet</div>
@@ -339,6 +397,20 @@
             </div>
         </div>
     </div>
+
+    <!-- Propaganda banner — appears at the top of EVERY player's screen
+         (monarch and farmer alike) for a few seconds when a Monarch
+         broadcasts a state message. -->
+    <div id="state-banner" style="position:fixed; top:0; left:0; right:0; display:none; z-index:600; pointer-events:none; padding:14px 22px; text-align:center; font-family:system-ui, sans-serif; box-shadow:0 4px 18px rgba(0,0,0,0.5);">
+        <div id="state-banner-title" style="font-size:11px; letter-spacing:2px; text-transform:uppercase; margin-bottom:4px; opacity:0.8;"></div>
+        <div id="state-banner-message" style="font-size:18px; font-weight:bold;"></div>
+        <div id="state-banner-sender" style="font-size:11px; margin-top:4px; opacity:0.7;"></div>
+    </div>
+
+    <!-- Active task tray: sticky list of every open bounty. Visible to
+         every connected player — farmers use it to track which tasks
+         are still claimable; the issuing Monarch sees their own brief. -->
+    <div id="task-tray" style="position:fixed; top:50px; right:230px; width:260px; display:none; flex-direction:column; gap:6px; z-index:550; pointer-events:none; font-family:system-ui, sans-serif;"></div>
 
     <!-- Property modal (owned items, eat & sell for FoFo Coin) -->
     <div id="property-menu" style="position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); z-index:400; pointer-events:all;">
@@ -366,6 +438,6 @@
         <input id="chat-input" type="text" placeholder="Press Enter to chat..." />
     </div>
 
-    <script type="module" src="./main.js?v=monarch5"></script>
+    <script type="module" src="./main.js?v=monarch8"></script>
 </body>
 </html>

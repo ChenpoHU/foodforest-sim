@@ -26,6 +26,29 @@ pub struct Shard {
     pub sessions: HashMap<PlayerId, PlayerSession>,
     pub next_entity_id: u64,
     pub region_index: u8,
+    /// Active Tech-Monarch tasks keyed by task_id. The reward coins are
+    /// escrowed (already debited from the issuing Monarch's wallet) so
+    /// the Monarch can't spend them before someone claims the task.
+    pub active_tasks: HashMap<u32, MonarchTask>,
+    /// Per-(task, player) action count toward an active task. Cleared
+    /// when the task is claimed or the issuing Monarch disconnects.
+    pub task_progress: HashMap<(u32, PlayerId), u32>,
+    /// Monotonic ID generator for new tasks.
+    pub next_task_id: u32,
+}
+
+/// A live Monarch-issued task.
+#[derive(Debug, Clone)]
+pub struct MonarchTask {
+    pub id: u32,
+    pub monarch_id: PlayerId,
+    pub monarch_name: String,
+    pub tone: u8,
+    pub message: String,
+    /// 0=Plant, 1=Harvest, 2=CutTree, 3=Hunt.
+    pub task_kind: u8,
+    pub target: u32,
+    pub reward: u32,
 }
 
 impl Shard {
@@ -48,6 +71,9 @@ impl Shard {
             sessions: HashMap::new(),
             next_entity_id: 1000,
             region_index,
+            active_tasks: HashMap::new(),
+            task_progress: HashMap::new(),
+            next_task_id: 1,
         };
 
         // Spawn some initial plants and animals
@@ -104,13 +130,36 @@ impl Shard {
     pub fn remove_player(&mut self, player_id: PlayerId) {
         self.sessions.remove(&player_id);
 
-        // Find and despawn the player entity
+        // Find player entity (and capture wallet refund target before despawning).
         let mut to_despawn = Vec::new();
         for (entity, player) in self.ecs_world.query_mut::<&Player>() {
             if player.player_id == player_id {
                 to_despawn.push(entity);
             }
         }
+
+        // Cancel any tasks issued by this Monarch. Rewards are paid
+        // out of the live wallet at claim time (no escrow), so there's
+        // nothing to refund — just drop the tasks and the open
+        // per-player progress entries.
+        let cancelled: Vec<u32> = self
+            .active_tasks
+            .iter()
+            .filter(|(_, t)| t.monarch_id == player_id)
+            .map(|(id, _)| *id)
+            .collect();
+        if !cancelled.is_empty() {
+            for id in &cancelled {
+                self.active_tasks.remove(id);
+                self.task_progress.retain(|(tid, _), _| *tid != *id);
+            }
+            tracing::info!(
+                "Cancelled {} task(s) for departing monarch {:?}",
+                cancelled.len(),
+                player_id
+            );
+        }
+
         for entity in to_despawn {
             let _ = self.ecs_world.despawn(entity);
         }

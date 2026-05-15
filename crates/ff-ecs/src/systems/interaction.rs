@@ -418,6 +418,170 @@ pub fn process_action(
             ActionResult::Success(format!("Ate 1 — restored {:.0}% fullness", nutrition))
         }
 
+        ActionKind::GrantUbi { target_player_id, amount } => {
+            // Tech-Monarch only. The actual fan-out across multiple
+            // recipients is done by the WS layer (we don't have session
+            // info here); this handler validates the Monarch and
+            // performs the direct 1:1 transfer when the target is a
+            // specific player. For "all farmers" mode (target=0) ws.rs
+            // handles the multi-credit explicitly.
+            if world.get::<&crate::components::player::Monarch>(player_entity).is_err() {
+                return ActionResult::Failure("Only Tech Monarchs can wire UBI".into());
+            }
+            if *amount == 0 {
+                return ActionResult::Failure("Amount must be greater than zero".into());
+            }
+            if *target_player_id == 0 {
+                // Multi-recipient transfer is handled in ws.rs which has
+                // access to the session map and ECS world. We just return
+                // success here so ws.rs can perform the credit pass.
+                return ActionResult::Success(format!(
+                    "UBI dispatch queued: {} coins each",
+                    amount
+                ));
+            }
+            // Single-recipient direct transfer.
+            let monarch_wallet_before = world
+                .get::<&crate::components::player::Wallet>(player_entity)
+                .map(|w| w.0)
+                .unwrap_or(0);
+            if monarch_wallet_before < *amount {
+                return ActionResult::Failure(format!(
+                    "Need {} coins (you have {})",
+                    amount, monarch_wallet_before
+                ));
+            }
+            // Find target entity.
+            let mut target_entity = None;
+            for (e, p) in world.query::<&crate::components::player::Player>().iter() {
+                if p.player_id.0 == *target_player_id {
+                    target_entity = Some(e);
+                    break;
+                }
+            }
+            let Some(te) = target_entity else {
+                return ActionResult::Failure("Target player not found".into());
+            };
+            if te == player_entity {
+                return ActionResult::Failure("Cannot wire UBI to yourself".into());
+            }
+            // Debit Monarch.
+            if let Ok(mut w) = world.get::<&mut crate::components::player::Wallet>(player_entity) {
+                w.0 = w.0.saturating_sub(*amount);
+            }
+            // Credit target.
+            if let Ok(mut w) = world.get::<&mut crate::components::player::Wallet>(te) {
+                w.0 = w.0.saturating_add(*amount);
+            }
+            ActionResult::Success(format!("Wired {} coins UBI", amount))
+        }
+
+        ActionKind::IssueTask { tone, message, task_kind, target, reward } => {
+            // Tech-Monarch only. Charges 5 Influence to issue; the
+            // reward itself is NOT escrowed — every farmer who fulfils
+            // the criteria gets paid out of the Monarch's wallet at
+            // claim time. If the Monarch can't cover a payout the task
+            // auto-cancels (handled in ws.rs). Each player can claim a
+            // given task at most once.
+            const INFLUENCE_COST: f32 = 5.0;
+            if *target == 0 {
+                return ActionResult::Failure("Target must be at least 1".into());
+            }
+            if *reward == 0 {
+                return ActionResult::Failure("Reward must be at least 1 coin".into());
+            }
+            if *task_kind > 3 {
+                return ActionResult::Failure("Invalid task kind".into());
+            }
+            if *tone > 2 {
+                return ActionResult::Failure("Invalid tone".into());
+            }
+            let trimmed = message.trim();
+            if trimmed.is_empty() {
+                return ActionResult::Failure("Task message cannot be empty".into());
+            }
+            if trimmed.chars().count() > 200 {
+                return ActionResult::Failure(
+                    "Task message too long (max 200 characters)".into(),
+                );
+            }
+            // Validate Monarch + take Influence.
+            {
+                let mut monarch = match world
+                    .get::<&mut crate::components::player::Monarch>(player_entity)
+                {
+                    Ok(m) => m,
+                    Err(_) => {
+                        return ActionResult::Failure(
+                            "Only Tech Monarchs can issue tasks".into(),
+                        )
+                    }
+                };
+                if monarch.influence < INFLUENCE_COST {
+                    return ActionResult::Failure(format!(
+                        "Need {:.0} Influence (you have {:.0})",
+                        INFLUENCE_COST, monarch.influence
+                    ));
+                }
+                monarch.influence -= INFLUENCE_COST;
+            }
+            // Sanity-check the Monarch has at least one reward's worth
+            // of coin to seed the task — otherwise it would cancel on
+            // the very first claim, wasting Influence. This is a soft
+            // check, not an escrow.
+            {
+                let wallet = world
+                    .get::<&crate::components::player::Wallet>(player_entity)
+                    .map(|w| w.0)
+                    .unwrap_or(0);
+                if wallet < *reward {
+                    return ActionResult::Failure(format!(
+                        "You'd be unable to pay the first claimant — need {} coins, have {}",
+                        reward, wallet
+                    ));
+                }
+            }
+            ActionResult::Success(format!(
+                "Task issued: {} coins per claimant",
+                reward
+            ))
+        }
+
+        ActionKind::Propaganda { tone, message } => {
+            // Tech-Monarch only. The action just charges resources here;
+            // the actual network fan-out is done by the WS layer (which
+            // owns the session map) when it sees ActionResult::Success.
+            let mut monarch = match world.get::<&mut crate::components::player::Monarch>(player_entity) {
+                Ok(m) => m,
+                Err(_) => {
+                    return ActionResult::Failure(
+                        "Only Tech Monarchs can issue state broadcasts".into(),
+                    )
+                }
+            };
+            const INFLUENCE_COST: f32 = 5.0;
+            if monarch.influence < INFLUENCE_COST {
+                return ActionResult::Failure(format!(
+                    "Need {:.0} Influence (you have {:.0})",
+                    INFLUENCE_COST, monarch.influence
+                ));
+            }
+            let trimmed = message.trim();
+            if trimmed.is_empty() {
+                return ActionResult::Failure("Broadcast cannot be empty".into());
+            }
+            if trimmed.chars().count() > 200 {
+                return ActionResult::Failure(
+                    "Broadcast too long (max 200 characters)".into(),
+                );
+            }
+            if *tone > 2 {
+                return ActionResult::Failure("Invalid tone".into());
+            }
+            monarch.influence -= INFLUENCE_COST;
+            ActionResult::Success(format!("Broadcast sent ({} chars)", trimmed.chars().count()))
+        }
+
         ActionKind::DeploySemiAI { position } => {
             // Tech-Monarch only. The action does nothing for Farmer players.
             let mut monarch = match world.get::<&mut crate::components::player::Monarch>(player_entity) {

@@ -11,10 +11,19 @@ use ff_protocol::messages::*;
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
+
+/// Monotonic counter to generate a unique `PlayerId` per WebSocket
+/// connection. Previously we derived the id from `hash_name(player_name)`,
+/// which collided whenever two clients used the same display name (the
+/// default "Farmer" was a guaranteed collision). The second connect
+/// would overwrite the first's session, and every server-bound action
+/// got routed to the wrong WS.
+static NEXT_PLAYER_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Run the WebSocket server and tick loop.
 pub async fn run_server(addr: SocketAddr, shard: Arc<Mutex<Shard>>) {
@@ -82,7 +91,7 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
     );
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let player_id = PlayerId(hash_name(&hello.player_name));
+    let player_id = PlayerId(NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed));
 
     let (entity_id, shard_id, tick, terrain_bytes) = {
         let mut shard = shard.lock().await;
@@ -105,13 +114,18 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
         let role = ff_common::PlayerRole::from(hello.player_role)
             .validate_for_mode(shard.resources.game_mode);
         info!("  → role resolved as {:?}", role);
+        // Disambiguate display name on collision (e.g. two players both
+        // named "Farmer"). The Monarch's surveillance roster needs to be
+        // able to tell them apart; player_id is already unique, this is
+        // just for the human-visible name.
+        let display_name = disambiguate_name(&hello.player_name, &shard);
         let session = PlayerSession::new(
             player_id,
             EntityId(0), // will be set below
-            hello.player_name.clone(),
+            display_name.clone(),
             tx,
         );
-        let (eid, entity) = shard.add_player(player_id, hello.player_name.clone(), session);
+        let (eid, entity) = shard.add_player(player_id, display_name, session);
         if role == ff_common::PlayerRole::TechMonarch {
             let _ = shard
                 .ecs_world
@@ -361,6 +375,371 @@ async fn handle_message(
                     }
                 }
 
+                // DeploySemiAI fan-out: the world spawn happens in the
+                // ECS handler, but clients that joined BEFORE the drone
+                // existed never received a kind tag for the new entity
+                // (ServerBatchUpdate carries position only). Push a
+                // ServerEntitySpawn so every connected client renders
+                // the drone with the right mesh, not the gray fallback.
+                if success {
+                    if let ff_protocol::messages::ActionKind::DeploySemiAI { .. } =
+                        &action.action
+                    {
+                        // Find the newest SemiAI worker owned by this player —
+                        // it's the one we just spawned.
+                        let mut newest: Option<(EntityId, [f32; 3], f32)> = None;
+                        for (e, (net_id, owner, pos)) in shard
+                            .ecs_world
+                            .query::<(
+                                &ff_ecs::components::identity::NetworkId,
+                                &ff_ecs::components::identity::Owner,
+                                &ff_ecs::components::transform::Position,
+                            )>()
+                            .iter()
+                        {
+                            if owner.0 != player_id {
+                                continue;
+                            }
+                            if shard
+                                .ecs_world
+                                .get::<&ff_ecs::components::ai_agent::SemiAIWorker>(e)
+                                .is_err()
+                            {
+                                continue;
+                            }
+                            let rot = shard
+                                .ecs_world
+                                .get::<&ff_ecs::components::transform::Rotation>(e)
+                                .map(|r| r.0)
+                                .unwrap_or(0.0);
+                            if newest.is_none() || newest.unwrap().0 .0 < net_id.0 .0 {
+                                newest = Some((net_id.0, [pos.0.x, pos.0.y, pos.0.z], rot));
+                            }
+                        }
+                        if let Some((entity_id, position, rotation)) = newest {
+                            let snap = EntitySnapshot {
+                                entity_id,
+                                kind: EntityKind::SemiAI,
+                                position,
+                                rotation,
+                                state: EntityState::Active,
+                            };
+                            let spawn = ServerEntitySpawn { entity: snap };
+                            if let Ok(buf) = encode(MessageType::ServerEntitySpawn, &spawn) {
+                                for session in shard.sessions.values() {
+                                    session.send(buf.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Propaganda fan-out — the ECS handler validates and
+                // charges Influence; the broadcast itself is a network
+                // side-effect, so we issue it here from the WS layer
+                // where the session map lives.
+                if success {
+                    if let ff_protocol::messages::ActionKind::Propaganda { tone, message } =
+                        &action.action
+                    {
+                        let from_name = shard
+                            .sessions
+                            .get(&player_id)
+                            .map(|s| s.player_name.clone())
+                            .unwrap_or_else(|| "Tech Monarch".into());
+                        let bc = ServerStateBroadcast {
+                            from_player: player_id,
+                            from_name,
+                            tone: *tone,
+                            message: message.trim().to_string(),
+                        };
+                        if let Ok(buf) = encode(MessageType::ServerStateBroadcast, &bc) {
+                            for session in shard.sessions.values() {
+                                session.send(buf.clone());
+                            }
+                        }
+                    }
+                }
+
+                // GrantUbi multi-recipient fan-out: when target=0 the
+                // ECS handler just validates the Monarch role; the
+                // actual credit pass is done here so we can see every
+                // session and credit each connected farmer atomically.
+                if success {
+                    if let ff_protocol::messages::ActionKind::GrantUbi {
+                        target_player_id: 0,
+                        amount,
+                    } = &action.action
+                    {
+                        // Collect farmer entities (anyone NOT a Monarch).
+                        let mut farmer_entities: Vec<(hecs::Entity, ff_common::PlayerId)> =
+                            Vec::new();
+                        for (e, player) in shard
+                            .ecs_world
+                            .query::<&ff_ecs::components::player::Player>()
+                            .iter()
+                        {
+                            if player.player_id == player_id {
+                                continue;
+                            }
+                            if !shard.sessions.contains_key(&player.player_id) {
+                                continue;
+                            }
+                            if shard
+                                .ecs_world
+                                .get::<&ff_ecs::components::player::Monarch>(e)
+                                .is_ok()
+                            {
+                                continue;
+                            }
+                            farmer_entities.push((e, player.player_id));
+                        }
+                        let total_cost = (*amount as u64) * (farmer_entities.len() as u64);
+                        let monarch_balance = shard
+                            .ecs_world
+                            .query_one::<&ff_ecs::components::player::Wallet>(pe)
+                            .ok()
+                            .and_then(|mut q| q.get().map(|w| w.0 as u64))
+                            .unwrap_or(0);
+                        if total_cost > monarch_balance {
+                            // Tell the monarch we couldn't afford it.
+                            let resp = ServerActionResult {
+                                seq: action.seq,
+                                success: false,
+                                message: Some(format!(
+                                    "Not enough coin: need {} ({} × {}) but have {}",
+                                    total_cost,
+                                    amount,
+                                    farmer_entities.len(),
+                                    monarch_balance
+                                )),
+                            };
+                            if let Ok(buf) = encode(MessageType::ServerActionResult, &resp) {
+                                if let Some(session) = shard.sessions.get(&player_id) {
+                                    session.send(buf);
+                                }
+                            }
+                        } else if farmer_entities.is_empty() {
+                            let resp = ServerActionResult {
+                                seq: action.seq,
+                                success: false,
+                                message: Some("No farmers connected to receive UBI".into()),
+                            };
+                            if let Ok(buf) = encode(MessageType::ServerActionResult, &resp) {
+                                if let Some(session) = shard.sessions.get(&player_id) {
+                                    session.send(buf);
+                                }
+                            }
+                        } else {
+                            // Debit monarch.
+                            if let Ok(mut w) = shard
+                                .ecs_world
+                                .get::<&mut ff_ecs::components::player::Wallet>(pe)
+                            {
+                                w.0 = w.0.saturating_sub(total_cost as u32);
+                            }
+                            // Credit each farmer + push their player state.
+                            for (fe, fpid) in &farmer_entities {
+                                if let Ok(mut w) = shard
+                                    .ecs_world
+                                    .get::<&mut ff_ecs::components::player::Wallet>(*fe)
+                                {
+                                    w.0 = w.0.saturating_add(*amount);
+                                }
+                                tick::send_player_state(&mut shard, *fpid);
+                            }
+                            // Drop a state broadcast so everyone sees the gift.
+                            let from_name = shard
+                                .sessions
+                                .get(&player_id)
+                                .map(|s| s.player_name.clone())
+                                .unwrap_or_else(|| "Tech Monarch".into());
+                            let bc = ServerStateBroadcast {
+                                from_player: player_id,
+                                from_name,
+                                tone: 1, // Rally
+                                message: format!(
+                                    "UBI distributed: {} coins to {} farmers",
+                                    amount,
+                                    farmer_entities.len()
+                                ),
+                            };
+                            if let Ok(buf) = encode(MessageType::ServerStateBroadcast, &bc) {
+                                for session in shard.sessions.values() {
+                                    session.send(buf.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // GrantUbi single-recipient: the ECS handler already
+                // performed the transfer. We just need to push fresh
+                // ServerPlayerState to the recipient so their HUD updates.
+                if success {
+                    if let ff_protocol::messages::ActionKind::GrantUbi {
+                        target_player_id,
+                        ..
+                    } = &action.action
+                    {
+                        if *target_player_id != 0 {
+                            tick::send_player_state(
+                                &mut shard,
+                                ff_common::PlayerId(*target_player_id),
+                            );
+                        }
+                    }
+                }
+
+                // IssueTask: ECS handler escrowed reward + charged
+                // Influence. Now register the task in the shard's
+                // active_tasks map and broadcast it to every session.
+                if success {
+                    if let ff_protocol::messages::ActionKind::IssueTask {
+                        tone,
+                        message,
+                        task_kind,
+                        target,
+                        reward,
+                    } = &action.action
+                    {
+                        let monarch_name = shard
+                            .sessions
+                            .get(&player_id)
+                            .map(|s| s.player_name.clone())
+                            .unwrap_or_else(|| "Tech Monarch".into());
+                        let task_id = shard.next_task_id;
+                        shard.next_task_id = shard.next_task_id.saturating_add(1);
+                        let task = crate::shard::MonarchTask {
+                            id: task_id,
+                            monarch_id: player_id,
+                            monarch_name: monarch_name.clone(),
+                            tone: *tone,
+                            message: message.trim().to_string(),
+                            task_kind: *task_kind,
+                            target: *target,
+                            reward: *reward,
+                        };
+                        shard.active_tasks.insert(task_id, task);
+                        let bc = ServerTaskBroadcast {
+                            task_id,
+                            monarch_id: player_id,
+                            monarch_name,
+                            tone: *tone,
+                            message: message.trim().to_string(),
+                            task_kind: *task_kind,
+                            target: *target,
+                            reward: *reward,
+                        };
+                        if let Ok(buf) = encode(MessageType::ServerTaskBroadcast, &bc) {
+                            for session in shard.sessions.values() {
+                                session.send(buf.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Task-progress tracking: every successful action that
+                // matches an active task kind bumps the issuing player's
+                // progress. Tasks are NOT winner-take-all — every farmer
+                // who hits the target gets paid out of the Monarch's
+                // wallet at claim time. Each player can only claim a
+                // given task once. If the Monarch can't cover a payout
+                // the task is cancelled and all open progress is dropped.
+                if success {
+                    let completions = bump_task_progress(&mut shard, player_id, &action.action);
+                    for (task_id, reward, winner_name) in completions {
+                        // Look up the issuing Monarch and their wallet.
+                        let monarch_id = match shard.active_tasks.get(&task_id) {
+                            Some(t) => t.monarch_id,
+                            None => continue, // already cancelled in this batch
+                        };
+                        let mut monarch_entity = None;
+                        let mut winner_entity = None;
+                        for (e, p) in shard
+                            .ecs_world
+                            .query::<&ff_ecs::components::player::Player>()
+                            .iter()
+                        {
+                            if p.player_id == monarch_id {
+                                monarch_entity = Some(e);
+                            } else if p.player_id == player_id {
+                                winner_entity = Some(e);
+                            }
+                        }
+                        let monarch_balance = monarch_entity
+                            .and_then(|e| {
+                                shard
+                                    .ecs_world
+                                    .get::<&ff_ecs::components::player::Wallet>(e)
+                                    .map(|w| w.0)
+                                    .ok()
+                            })
+                            .unwrap_or(0);
+
+                        // Can the monarch pay? If not, cancel the task
+                        // and notify everyone — fairer than partially
+                        // paying or silently dropping the claim.
+                        if monarch_balance < reward {
+                            shard.active_tasks.remove(&task_id);
+                            shard
+                                .task_progress
+                                .retain(|(tid, _), _| *tid != task_id);
+                            // Reuse ServerTaskComplete with reward = 0 +
+                            // winner_id = 0 to signal "task defunded".
+                            let bc = ServerTaskComplete {
+                                task_id,
+                                winner_id: ff_common::PlayerId(0),
+                                winner_name: "(defunded)".into(),
+                                reward: 0,
+                                monarch_id,
+                            };
+                            if let Ok(buf) = encode(MessageType::ServerTaskComplete, &bc) {
+                                for session in shard.sessions.values() {
+                                    session.send(buf.clone());
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Debit Monarch, credit winner.
+                        if let Some(me) = monarch_entity {
+                            if let Ok(mut w) = shard
+                                .ecs_world
+                                .get::<&mut ff_ecs::components::player::Wallet>(me)
+                            {
+                                w.0 = w.0.saturating_sub(reward);
+                            }
+                        }
+                        if let Some(we) = winner_entity {
+                            if let Ok(mut w) = shard
+                                .ecs_world
+                                .get::<&mut ff_ecs::components::player::Wallet>(we)
+                            {
+                                w.0 = w.0.saturating_add(reward);
+                            }
+                        }
+
+                        let bc = ServerTaskComplete {
+                            task_id,
+                            winner_id: player_id,
+                            winner_name: winner_name.clone(),
+                            reward,
+                            monarch_id,
+                        };
+                        if let Ok(buf) = encode(MessageType::ServerTaskComplete, &bc) {
+                            for session in shard.sessions.values() {
+                                session.send(buf.clone());
+                            }
+                        }
+                        // Refresh both players' HUDs so wallet changes
+                        // appear instantly (without waiting for the
+                        // next 0.5 s heartbeat).
+                        tick::send_player_state(&mut shard, player_id);
+                        tick::send_player_state(&mut shard, monarch_id);
+                    }
+                }
+
                 // Push the player's latest state right after every action,
                 // so Harvest / Eat / Sell visibly update the Property modal
                 // without waiting for the next 0.5 s broadcast tick.
@@ -416,13 +795,94 @@ async fn handle_message(
     Ok(())
 }
 
-/// Simple string hash for generating player IDs.
-fn hash_name(name: &str) -> u64 {
-    let mut hash: u64 = 5381;
-    for byte in name.bytes() {
-        hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
+/// Returns `true` if a `ClientAction` counts toward a task of the given
+/// kind. Task-kind discriminants:
+///   0 = Plant  (any `PlantSeed`)
+///   1 = Harvest (any `Harvest`)
+///   2 = CutTree (`CutTree` — counted on the SuccessWithDespawn path)
+///   3 = Hunt    (`HuntAnimal`)
+fn action_matches_task(action: &ff_protocol::messages::ActionKind, task_kind: u8) -> bool {
+    use ff_protocol::messages::ActionKind::*;
+    match (task_kind, action) {
+        (0, PlantSeed { .. }) => true,
+        (1, Harvest { .. }) => true,
+        (2, CutTree { .. }) => true,
+        (3, HuntAnimal { .. }) => true,
+        _ => false,
     }
-    hash
+}
+
+/// Walks every active task and bumps the actor's progress against
+/// matching ones. Returns the list of `(task_id, reward, winner_name)`
+/// for tasks the caller just completed THIS TICK — the caller pays from
+/// the Monarch's wallet and fans out `ServerTaskComplete`.
+///
+/// Excludes the issuing Monarch's own actions. Per-player progress is
+/// capped at `target + 1` so each player can only claim each task once
+/// (further matching actions don't bump or re-trigger completion).
+fn bump_task_progress(
+    shard: &mut crate::shard::Shard,
+    actor: PlayerId,
+    action: &ff_protocol::messages::ActionKind,
+) -> Vec<(u32, u32, String)> {
+    // Snapshot task info so we can mutate task_progress while iterating.
+    let task_infos: Vec<(u32, u8, u32, u32, PlayerId)> = shard
+        .active_tasks
+        .values()
+        .map(|t| (t.id, t.task_kind, t.target, t.reward, t.monarch_id))
+        .collect();
+    if task_infos.is_empty() {
+        return Vec::new();
+    }
+    let actor_name = shard
+        .sessions
+        .get(&actor)
+        .map(|s| s.player_name.clone())
+        .unwrap_or_else(|| "?".into());
+    let mut completed = Vec::new();
+    for (task_id, task_kind, target, reward, monarch_id) in task_infos {
+        if monarch_id == actor {
+            continue;
+        }
+        if !action_matches_task(action, task_kind) {
+            continue;
+        }
+        let key = (task_id, actor);
+        let progress = shard.task_progress.entry(key).or_insert(0);
+        // Already claimed (sentinel: target + 1 means paid out)?
+        if *progress > target {
+            continue;
+        }
+        *progress = progress.saturating_add(1);
+        if *progress == target {
+            // Just hit target — record the completion and lift the
+            // progress one more so we never re-trigger.
+            *progress = target.saturating_add(1);
+            completed.push((task_id, reward, actor_name.clone()));
+        }
+    }
+    completed
+}
+
+/// If `desired` is already in use as a display name, append " #2",
+/// " #3", … until a free slot is found. Player ids are still unique
+/// either way; this is purely so a Monarch can tell two "Farmer"s apart
+/// in the surveillance roster and decision log.
+fn disambiguate_name(desired: &str, shard: &Shard) -> String {
+    let exists = |candidate: &str| {
+        shard.sessions.values().any(|s| s.player_name == candidate)
+    };
+    if !exists(desired) {
+        return desired.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{} #{}", desired, n);
+        if !exists(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// Short human-readable tag for the surveillance feed.
@@ -446,5 +906,27 @@ fn action_tag(action: &ff_protocol::messages::ActionKind) -> String {
         EatItem { .. } => "eat".into(),
         SellItem { .. } => "sell".into(),
         DeploySemiAI { .. } => "deploy AI".into(),
+        Propaganda { tone, .. } => match tone {
+            1 => "rally broadcast".into(),
+            2 => "crisis broadcast".into(),
+            _ => "decree broadcast".into(),
+        },
+        GrantUbi { target_player_id, amount } => {
+            if *target_player_id == 0 {
+                format!("UBI {} all", amount)
+            } else {
+                format!("UBI {} → {}", amount, target_player_id)
+            }
+        }
+        IssueTask { task_kind, target, reward, .. } => {
+            let kind = match task_kind {
+                0 => "plant",
+                1 => "harvest",
+                2 => "cut tree",
+                3 => "hunt",
+                _ => "task",
+            };
+            format!("issued task: {kind} ×{target} (🪙{reward})")
+        }
     }
 }

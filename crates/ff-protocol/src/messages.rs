@@ -31,6 +31,17 @@ pub enum MessageType {
     /// every connected farmer (position, vitals, recent action) so the
     /// monarch can pick targets for UBI grants, propaganda, sanctions.
     ServerMonarchSurveillance = 0x010E,
+    /// A propaganda broadcast issued by a Tech-Monarch — fan-out to every
+    /// connected player (monarchs included, so the monarch can confirm
+    /// their own send). The client renders this as a banner + chat row
+    /// in a colour dictated by `tone`.
+    ServerStateBroadcast = 0x010F,
+    /// A Monarch-issued public task with a coin reward escrowed from the
+    /// Monarch's wallet. First player to fulfil the criteria wins.
+    ServerTaskBroadcast = 0x0110,
+    /// Sent when an active task is claimed by a winning player. Both the
+    /// winner and the issuing Monarch use this for HUD feedback.
+    ServerTaskComplete = 0x0111,
 
     // Shard Manager <-> Server
     ShardRegister = 0x0201,
@@ -104,6 +115,64 @@ pub enum ActionKind {
     /// Compute. The worker auto-harvests fruiting plants in radius and
     /// banks the proceeds to the monarch's wallet.
     DeploySemiAI { position: [i32; 3] },
+    /// Tech-Monarch only: blast a state-channel message to every
+    /// connected player. `tone` selects rendering style on the client
+    /// (0 = Decree, 1 = Rally, 2 = Crisis). Costs Influence.
+    Propaganda { tone: u8, message: String },
+    /// Tech-Monarch only: transfer `amount` coins from the Monarch's
+    /// wallet to a target farmer. `target_player_id = 0` is reserved for
+    /// "all connected farmers" (each receives `amount`; total cost is
+    /// `amount * farmer_count`). Costs nothing besides the coins.
+    GrantUbi { target_player_id: u64, amount: u32 },
+    /// Tech-Monarch only: issue a public task with a coin reward. The
+    /// reward is escrowed from the Monarch's wallet at issue time. First
+    /// connected farmer to perform `target` matching actions wins it.
+    /// `task_kind`: 0 = Plant, 1 = Harvest, 2 = CutTree, 3 = Hunt.
+    IssueTask {
+        tone: u8,
+        message: String,
+        task_kind: u8,
+        target: u32,
+        reward: u32,
+    },
+}
+
+/// A Monarch-issued task pushed to every player. The client shows it as
+/// a sticky banner + an HUD card so the player can track progress
+/// without re-opening any modal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerTaskBroadcast {
+    pub task_id: u32,
+    pub monarch_id: PlayerId,
+    pub monarch_name: String,
+    pub tone: u8,
+    pub message: String,
+    pub task_kind: u8,
+    pub target: u32,
+    pub reward: u32,
+}
+
+/// Sent when a task is claimed by a winning player. The reward has
+/// already been credited server-side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerTaskComplete {
+    pub task_id: u32,
+    pub winner_id: PlayerId,
+    pub winner_name: String,
+    pub reward: u32,
+    pub monarch_id: PlayerId,
+}
+
+/// State-channel broadcast pushed by the server when a Tech-Monarch
+/// issues a propaganda action. Distinct from `ServerChat` so the client
+/// can render it as a top-of-screen banner instead of an ordinary chat
+/// line.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerStateBroadcast {
+    pub from_player: PlayerId,
+    pub from_name: String,
+    pub tone: u8,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,6 +6,7 @@ let connected = false;
 let playerName = "Farmer";
 let selectedAction = null;
 let myEntityId = 0;
+let myPlayerId = 0;
 let selectedGameMode = 0;
 let selectedRegion = 0;
 let selectedPlotSeed = 42;
@@ -797,6 +798,114 @@ document.getElementById("monarch-dashboard-close").addEventListener("click", clo
 document.getElementById("monarch-dashboard").addEventListener("click", (e) => {
     if (e.target.id === "monarch-dashboard") closeMonarchDashboard();
 });
+
+// Propaganda composer: hooked up once at module load. The Send button
+// fires the ClientAction; the optimistic UI feedback comes from the
+// ServerActionResult round-trip (which also tells us if Influence was
+// too low etc.).
+function sendPropaganda() {
+    const msgEl = document.getElementById("prop-message");
+    const toneEl = document.getElementById("prop-tone");
+    const fb = document.getElementById("prop-feedback");
+    if (!msgEl || !toneEl) return;
+    const message = msgEl.value.trim();
+    if (!message) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Write something first."; }
+        return;
+    }
+    if (!ws || ws.readyState !== 1) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Not connected."; }
+        return;
+    }
+    const tone = parseInt(toneEl.value, 10) || 0;
+    ws.send(buildActionMessage(encodePropagandaAction(tone, message)));
+    if (fb) { fb.style.color = "#8fcf8f"; fb.textContent = "Broadcasting…"; }
+    msgEl.value = "";
+}
+document.getElementById("prop-send").addEventListener("click", sendPropaganda);
+document.getElementById("prop-message").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        sendPropaganda();
+    }
+});
+
+// UBI composer ------------------------------------------------------------
+function sendUbi(presetTargetId) {
+    const targetEl = document.getElementById("ubi-target");
+    const amountEl = document.getElementById("ubi-amount");
+    const fb = document.getElementById("ubi-feedback");
+    if (!targetEl || !amountEl) return;
+    // When a per-row "Pay" button is used we pass the target id directly
+    // and ignore the dropdown selection.
+    let target = presetTargetId !== undefined
+        ? presetTargetId
+        : (targetEl.value ? targetEl.value : "0");
+    // BigInt-safe: player ids are u64; we send them verbatim back through
+    // encodeVarint which accepts numbers up to u32 — fine because our
+    // monotonic counter starts at 1 and won't blow past u32 in any
+    // realistic session.
+    const targetNum = Number(target) || 0;
+    const amount = parseInt(amountEl.value, 10);
+    if (!Number.isFinite(amount) || amount <= 0) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Amount must be > 0."; }
+        return;
+    }
+    if (!ws || ws.readyState !== 1) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Not connected."; }
+        return;
+    }
+    ws.send(buildActionMessage(encodeGrantUbiAction(targetNum, amount)));
+    if (fb) {
+        fb.style.color = "#cfe9aa";
+        fb.textContent = targetNum === 0
+            ? ("Wiring " + amount + " coins to every farmer…")
+            : ("Wiring " + amount + " coins…");
+    }
+}
+document.getElementById("ubi-send").addEventListener("click", () => sendUbi());
+
+// Task composer -----------------------------------------------------------
+function sendTask() {
+    const toneEl = document.getElementById("task-tone");
+    const kindEl = document.getElementById("task-kind");
+    const targetEl = document.getElementById("task-target");
+    const rewardEl = document.getElementById("task-reward");
+    const msgEl = document.getElementById("task-message");
+    const fb = document.getElementById("task-feedback");
+    if (!toneEl || !kindEl || !targetEl || !rewardEl || !msgEl) return;
+    const message = msgEl.value.trim();
+    if (!message) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Write a brief first."; }
+        return;
+    }
+    const target = parseInt(targetEl.value, 10);
+    const reward = parseInt(rewardEl.value, 10);
+    if (!Number.isFinite(target) || target <= 0) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Target must be > 0."; }
+        return;
+    }
+    if (!Number.isFinite(reward) || reward <= 0) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Reward must be > 0."; }
+        return;
+    }
+    if (!ws || ws.readyState !== 1) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Not connected."; }
+        return;
+    }
+    const tone = parseInt(toneEl.value, 10) || 0;
+    const kind = parseInt(kindEl.value, 10) || 0;
+    ws.send(buildActionMessage(encodeIssueTaskAction(tone, message, kind, target, reward)));
+    if (fb) { fb.style.color = "#ffd966"; fb.textContent = "Issuing task…"; }
+    msgEl.value = "";
+}
+document.getElementById("task-send").addEventListener("click", sendTask);
+document.getElementById("task-message").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        sendTask();
+    }
+});
 document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
         const plant = document.getElementById("plant-menu");
@@ -1044,11 +1153,38 @@ function buildInputMessage(mx, mz, yaw, jump, sprint) {
     return buildFramedMessage(0x0002, payload.slice(0, o));
 }
 
+// seq → action variant tag, kept around long enough for the matching
+// ServerActionResult to land. Used to bump local task progress
+// optimistically without having to parse the success message.
+const pendingActionVariant = new Map();
+
 function buildActionMessage(actionKind) {
     inputSeq++;
     const seqBytes = encodeVarint(inputSeq);
     const payload = new Uint8Array([...seqBytes, ...actionKind]);
+    // The variant tag is the first byte of actionKind for variants < 251.
+    if (actionKind.length > 0) {
+        pendingActionVariant.set(inputSeq, actionKind[0]);
+        // Bound the map so it doesn't grow forever if the server drops a result.
+        if (pendingActionVariant.size > 256) {
+            const oldest = pendingActionVariant.keys().next().value;
+            pendingActionVariant.delete(oldest);
+        }
+    }
     return buildFramedMessage(0x0003, payload);
+}
+
+// Mapping from ActionKind variant → task-kind discriminant. Mirrors
+// the server's action_matches_task. -1 means the action doesn't count
+// toward any task.
+function taskKindForVariant(variant) {
+    switch (variant) {
+        case 0:  return 0; // PlantSeed → Plant
+        case 1:  return 1; // Harvest → Harvest
+        case 11: return 2; // CutTree → CutTree
+        case 13: return 3; // HuntAnimal → Hunt
+        default: return -1;
+    }
 }
 
 function buildChatMessage(text) {
@@ -1098,14 +1234,276 @@ function handleServerMessage(data) {
         case 0x0102: handleWorldState(payload); break;
         case 0x010D: handleBatchUpdate(payload); break;
         case 0x010A: handleChat(payload); break;
+        case 0x0103: handleEntitySpawn(payload); break;
         case 0x0104: handleEntityDespawn(payload); break;
         case 0x010B: break; // pong
         case 0x010C: handleActionResult(payload); break;
         case 0x0106: handlePlayerState(payload); break;
         case 0x010E: handleMonarchSurveillance(payload); break;
+        case 0x010F: handleStateBroadcast(payload); break;
+        case 0x0110: handleTaskBroadcast(payload); break;
+        case 0x0111: handleTaskComplete(payload); break;
         default:
             console.log("Unknown msg 0x" + msgType.toString(16), payloadLen, "bytes");
     }
+}
+
+// --- Active Monarch tasks ------------------------------------------------
+// Indexed by task_id. Each entry is { task_id, monarch_id, monarch_name,
+// tone, message, task_kind, target, reward, my_progress, claimed }.
+const activeTasks = new Map();
+
+const TASK_KIND_LABEL = {
+    0: { word: "Plant",   icon: "🌱" },
+    1: { word: "Harvest", icon: "🍎" },
+    2: { word: "Cut tree",icon: "🪓" },
+    3: { word: "Hunt",    icon: "🏹" },
+};
+
+function bumpLocalTaskProgress(taskKind) {
+    if (taskKind < 0) return;
+    let touched = false;
+    for (const t of activeTasks.values()) {
+        if (t.claimed) continue;
+        if (t.task_kind !== taskKind) continue;
+        // The issuing Monarch can't claim their own bounty.
+        if (t.monarch_id === myPlayerId) continue;
+        t.my_progress = Math.min(t.target, (t.my_progress || 0) + 1);
+        // We don't optimistically set `claimed` — wait for the server's
+        // ServerTaskComplete to be authoritative (and to know which
+        // player actually won).
+        touched = true;
+    }
+    if (touched) renderTaskTray();
+}
+
+function handleTaskBroadcast(payload) {
+    const r = new BincodeReader(payload);
+    const task_id = r.readU32();
+    const monarch_id = r.readU64();
+    const monarch_name = r.readString();
+    const tone = r.readU8();
+    const message = r.readString();
+    const task_kind = r.readU8();
+    const target = r.readU32();
+    const reward = r.readU32();
+    activeTasks.set(task_id, {
+        task_id, monarch_id, monarch_name, tone, message,
+        task_kind, target, reward, my_progress: 0, claimed: false,
+    });
+    // Surface as a banner + chat entry — same visual language as a
+    // state broadcast, plus the reward in the title.
+    const cfg = PROP_TONES[tone] || PROP_TONES[0];
+    const banner = document.getElementById("state-banner");
+    const title = document.getElementById("state-banner-title");
+    const body = document.getElementById("state-banner-message");
+    const sender = document.getElementById("state-banner-sender");
+    if (banner && title && body && sender) {
+        const kindLabel = TASK_KIND_LABEL[task_kind] || { word: "Task", icon: "📝" };
+        banner.style.background = cfg.bg;
+        banner.style.borderBottom = "2px solid " + cfg.border;
+        banner.style.color = cfg.text;
+        title.textContent = "BOUNTY · " + kindLabel.word.toUpperCase() + " × " + target;
+        body.textContent = message;
+        sender.textContent = kindLabel.icon + " " + reward + " 🪙 per claimant · issued by " + monarch_name;
+        banner.style.display = "block";
+        if (stateBannerHideTimer) clearTimeout(stateBannerHideTimer);
+        stateBannerHideTimer = setTimeout(() => {
+            banner.style.display = "none";
+            stateBannerHideTimer = null;
+        }, 8000);
+    }
+    appendTaskChatLine(monarch_name, tone, task_kind, target, reward, message);
+    renderTaskTray();
+}
+
+function handleTaskComplete(payload) {
+    const r = new BincodeReader(payload);
+    const task_id = r.readU32();
+    const winner_id = r.readU64();
+    const winner_name = r.readString();
+    const reward = r.readU32();
+    const monarch_id = r.readU64();
+    const task = activeTasks.get(task_id);
+    // Defunded sentinel: winner_id=0 + reward=0 means the issuing
+    // Monarch couldn't cover a payout — the task is gone for everyone.
+    if (winner_id === 0 && reward === 0) {
+        activeTasks.delete(task_id);
+        if (task) {
+            appendStateChatLine(task.monarch_name, 2, "Task defunded: " + task.message);
+        }
+        renderTaskTray();
+        return;
+    }
+    // Update my view of this task — if I was the winner, mark claimed
+    // so I can't re-trigger optimistic progress. The task stays alive
+    // for other farmers.
+    if (task) {
+        if (winner_id === myPlayerId) {
+            task.claimed = true;
+            task.my_progress = task.target;
+        }
+    }
+    // Chat line + a brief banner for the winner.
+    const monarchName = task ? task.monarch_name : "Tech Monarch";
+    const message = winner_id === myPlayerId
+        ? ("You earned " + reward + " 🪙 from " + monarchName + "!")
+        : (winner_name + " claimed " + reward + " 🪙 from " + monarchName);
+    appendStateChatLine(monarchName, 1, message);
+    if (winner_id === myPlayerId) {
+        const banner = document.getElementById("state-banner");
+        const title = document.getElementById("state-banner-title");
+        const body = document.getElementById("state-banner-message");
+        const sender = document.getElementById("state-banner-sender");
+        if (banner && title && body && sender) {
+            const cfg = PROP_TONES[1];
+            banner.style.background = cfg.bg;
+            banner.style.borderBottom = "2px solid " + cfg.border;
+            banner.style.color = cfg.text;
+            title.textContent = "BOUNTY CLAIMED";
+            body.textContent = "+" + reward + " 🪙 from " + monarchName;
+            sender.textContent = "";
+            banner.style.display = "block";
+            if (stateBannerHideTimer) clearTimeout(stateBannerHideTimer);
+            stateBannerHideTimer = setTimeout(() => {
+                banner.style.display = "none";
+                stateBannerHideTimer = null;
+            }, 4000);
+        }
+    }
+    renderTaskTray();
+}
+
+function appendTaskChatLine(monarchName, tone, taskKind, target, reward, message) {
+    const chatLog = document.getElementById("chat-log");
+    if (!chatLog) return;
+    const cfg = PROP_TONES[tone] || PROP_TONES[0];
+    const kindLabel = TASK_KIND_LABEL[taskKind] || { word: "Task", icon: "📝" };
+    const line = document.createElement("div");
+    line.style.cssText =
+        "margin:2px 0; padding:3px 6px; border-left:3px solid " + cfg.border + ";" +
+        "background:rgba(0,0,0,0.35); color:" + cfg.text + "; font-size:11px;";
+    line.innerHTML =
+        "<span style='font-weight:bold; letter-spacing:1px; font-size:10px; opacity:0.8; margin-right:6px;'>📝 BOUNTY · " +
+        kindLabel.icon + " " + kindLabel.word + " × " + target + " · 🪙 " + reward + "</span>" +
+        "<span style='opacity:0.7; margin-right:6px;'>" + escapeHtml(monarchName) + ":</span>" +
+        "<span>" + escapeHtml(message) + "</span>";
+    chatLog.appendChild(line);
+    chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function renderTaskTray() {
+    const tray = document.getElementById("task-tray");
+    if (!tray) return;
+    if (activeTasks.size === 0) {
+        tray.style.display = "none";
+        tray.innerHTML = "";
+        return;
+    }
+    tray.style.display = "flex";
+    let html = "";
+    for (const t of activeTasks.values()) {
+        const kindLabel = TASK_KIND_LABEL[t.task_kind] || { word: "Task", icon: "📝" };
+        const cfg = PROP_TONES[t.tone] || PROP_TONES[0];
+        const isMine = t.monarch_id === myPlayerId;
+        const isClaimed = t.claimed;
+        const myCount = t.my_progress || 0;
+        const pct = Math.min(100, (myCount / t.target) * 100);
+        const progressColor = isClaimed ? "#8fcf8f" : cfg.border;
+        const progressText = isMine
+            ? "Issued by you"
+            : (isClaimed ? "Claimed!" : myCount + " / " + t.target);
+        html +=
+            "<div style='background:rgba(10,16,28,0.92); border:1px solid " + cfg.border + "; border-radius:6px; padding:8px 10px; box-shadow:0 2px 10px rgba(0,0,0,0.5);'>" +
+              "<div style='display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:4px;'>" +
+                "<span style='font-size:10px; letter-spacing:1px; color:" + cfg.text + "; opacity:0.85;'>" + kindLabel.icon + " " + kindLabel.word.toUpperCase() + " × " + t.target + "</span>" +
+                "<span style='font-size:11px; color:#ffd966; font-weight:bold;'>🪙 " + t.reward + "</span>" +
+              "</div>" +
+              "<div style='font-size:11px; color:#cfe; margin-bottom:5px; line-height:1.3;'>" + escapeHtml(t.message) + "</div>" +
+              "<div style='width:100%; height:6px; background:#0a1626; border-radius:3px; overflow:hidden;'>" +
+                "<div style='height:100%; width:" + pct + "%; background:" + progressColor + ";'></div>" +
+              "</div>" +
+              "<div style='display:flex; justify-content:space-between; font-size:10px; color:#779; margin-top:3px;'>" +
+                "<span>" + escapeHtml(t.monarch_name) + "</span>" +
+                "<span>" + progressText + "</span>" +
+              "</div>" +
+            "</div>";
+    }
+    tray.innerHTML = html;
+}
+
+const PROP_TONES = {
+    0: { label: "DECREE", bg: "linear-gradient(180deg, rgba(60,80,140,0.96), rgba(30,40,90,0.96))", border: "#7a9cff", text: "#cfe1ff" },
+    1: { label: "RALLY",  bg: "linear-gradient(180deg, rgba(50,140,70,0.96), rgba(20,80,40,0.96))", border: "#86d692", text: "#dcf3df" },
+    2: { label: "CRISIS", bg: "linear-gradient(180deg, rgba(180,60,40,0.96), rgba(110,20,10,0.96))", border: "#ff8c6c", text: "#ffe1d6" },
+};
+
+let stateBannerHideTimer = null;
+
+function handleStateBroadcast(payload) {
+    const r = new BincodeReader(payload);
+    const fromPlayer = r.readU64();
+    const fromName = r.readString();
+    const tone = r.readU8();
+    const message = r.readString();
+
+    const cfg = PROP_TONES[tone] || PROP_TONES[0];
+
+    // Banner overlay — appears for ~6 s, longer messages get a slightly
+    // longer dwell so people can actually read them.
+    const banner = document.getElementById("state-banner");
+    const title = document.getElementById("state-banner-title");
+    const body = document.getElementById("state-banner-message");
+    const sender = document.getElementById("state-banner-sender");
+    if (banner && title && body && sender) {
+        banner.style.background = cfg.bg;
+        banner.style.borderBottom = "2px solid " + cfg.border;
+        banner.style.color = cfg.text;
+        title.textContent = "STATE CHANNEL · " + cfg.label;
+        body.textContent = message;
+        sender.textContent = "— " + fromName;
+        banner.style.display = "block";
+
+        if (stateBannerHideTimer) clearTimeout(stateBannerHideTimer);
+        const dwellMs = Math.min(12000, 4000 + message.length * 35);
+        stateBannerHideTimer = setTimeout(() => {
+            banner.style.display = "none";
+            stateBannerHideTimer = null;
+        }, dwellMs);
+    }
+
+    // Also append to chat with state styling, so players can scroll back
+    // through past decrees instead of relying on whoever was looking up.
+    appendStateChatLine(fromName, tone, message);
+
+    // If the receiver is a monarch, log it to their decision feed so the
+    // dashboard shows a history of their own propaganda.
+    if (playerRoleLive === 1) {
+        const tone_word = cfg.label.toLowerCase();
+        pushMonarchDecision("Broadcast (" + tone_word + "): " + message,
+            tone === 2 ? "warn" : "good");
+        const dash = document.getElementById("monarch-dashboard");
+        if (dash && dash.style.display === "flex") {
+            renderMonarchDashboard();
+        }
+    }
+}
+
+function appendStateChatLine(fromName, tone, message) {
+    const chatLog = document.getElementById("chat-log");
+    if (!chatLog) return;
+    const cfg = PROP_TONES[tone] || PROP_TONES[0];
+    const line = document.createElement("div");
+    line.style.cssText =
+        "margin:2px 0; padding:3px 6px; border-left:3px solid " + cfg.border + ";" +
+        "background:rgba(0,0,0,0.35); color:" + cfg.text + "; font-size:11px;";
+    line.innerHTML =
+        "<span style='font-weight:bold; letter-spacing:1px; font-size:10px; opacity:0.8; margin-right:6px;'>📡 " +
+        cfg.label + "</span>" +
+        "<span style='opacity:0.7; margin-right:6px;'>" + escapeHtml(fromName) + ":</span>" +
+        "<span>" + escapeHtml(message) + "</span>";
+    chatLog.appendChild(line);
+    chatLog.scrollTop = chatLog.scrollHeight;
 }
 
 // Last received surveillance roster (Tech Monarch only). Rendered into
@@ -1143,6 +1541,7 @@ function handleWelcome(payload) {
     const r = new BincodeReader(payload);
     myEntityId = r.readU64();
     const playerId = r.readU64();
+    myPlayerId = playerId;
     const shardId = r.readU32();
     const tick = r.readU64();
     const tickRate = r.readU32();
@@ -1332,6 +1731,59 @@ function handleEntityDespawn(payload) {
     entityKinds.delete(eid);
 }
 
+// ServerEntitySpawn payload — same EntitySnapshot wire format used in
+// handleWorldState, just for a single entity. We need this so clients
+// that joined before a new entity (e.g. a Monarch's drone) was spawned
+// learn its kind tag and render the right mesh instead of the gray
+// fallback sphere.
+function handleEntitySpawn(payload) {
+    const r = new BincodeReader(payload);
+    const eid = r.readU64();
+    const kindTag = r.readVarint();
+    let kind = "unknown";
+    let speciesId = 0;
+    if (kindTag === 0) {
+        kind = "player";
+    } else if (kindTag === 1) {
+        speciesId = r.readU16();
+        kind = "plant";
+    } else if (kindTag === 2) {
+        speciesId = r.readU16();
+        kind = "animal";
+    } else if (kindTag === 3) {
+        r.readU8();
+        kind = "npc";
+    } else if (kindTag === 4) {
+        r.readU16();
+        kind = "item";
+    } else if (kindTag === 5) {
+        speciesId = r.readU8();
+        kind = "structure";
+    } else if (kindTag === 6) {
+        kind = "semi-ai";
+    }
+    const px = r.readF32();
+    const py = r.readF32();
+    const pz = r.readF32();
+    const rot = r.readF32();
+    // We don't need the EntityState here — the periodic ServerBatchUpdate
+    // is authoritative for live state and runs ~10 Hz anyway.
+
+    entityKinds.set(eid, { kind, speciesId, growthStage: 0 });
+
+    // If we already created a placeholder mesh for this eid (from a
+    // batch update that arrived before the spawn message), drop it so
+    // the next update rebuilds it with the correct category.
+    const existing = entityMeshes.get(eid);
+    if (existing) {
+        scene.remove(existing);
+        entityMeshes.delete(eid);
+    }
+
+    const category = classifyEntity(kind, speciesId);
+    createOrUpdateEntity(eid, px, py, pz, rot, category);
+}
+
 function handleActionResult(payload) {
     const r = new BincodeReader(payload);
     const seq = r.readU32();
@@ -1340,9 +1792,43 @@ function handleActionResult(payload) {
     let message = "";
     if (hasMsg === 1) message = r.readString();
 
+    // Match this result back to the action we sent so we can bump the
+    // local task tray optimistically. Server is still authoritative for
+    // ServerTaskComplete payouts.
+    const variant = pendingActionVariant.get(seq);
+    pendingActionVariant.delete(seq);
+    if (success && variant !== undefined) {
+        bumpLocalTaskProgress(taskKindForVariant(variant));
+    }
+
     if (success && message.startsWith("INSPECT|")) {
         showInspectPanel(message);
         return;
+    }
+
+    // Route specific message kinds to the right composer feedback line
+    // so the Monarch sees inline confirmation/failure right where they
+    // hit Send (instead of having to scan the chat log).
+    if (message.includes("Broadcast") || message.includes("Influence")) {
+        const fb = document.getElementById("prop-feedback");
+        if (fb) {
+            fb.style.color = success ? "#8fcf8f" : "#ff9a6a";
+            fb.textContent = message;
+        }
+    }
+    if (message.includes("UBI") || message.includes("Wired") || message.includes("UBI dispatch") || message.includes("No farmers")) {
+        const fb = document.getElementById("ubi-feedback");
+        if (fb) {
+            fb.style.color = success ? "#cfe9aa" : "#ff9a6a";
+            fb.textContent = message;
+        }
+    }
+    if (message.includes("Task issued") || message.includes("first claimant") || message.includes("Reward must")) {
+        const fb = document.getElementById("task-feedback");
+        if (fb) {
+            fb.style.color = success ? "#ffd966" : "#ff9a6a";
+            fb.textContent = message;
+        }
     }
 
     const chatLog = document.getElementById("chat-log");
@@ -1631,14 +2117,17 @@ function renderSurveillance() {
 
     // Header + one row per player. Hunger and stamina are shown as
     // compact 0..100 numbers — fast to scan when you're picking targets.
+    // Each row has a per-player "Pay" button that wires the current UBI
+    // amount directly to that farmer.
     let html =
-        "<div style='display:grid; grid-template-columns: 1.5fr 0.6fr 0.6fr 0.6fr 1fr 1.4fr; gap:8px; color:#557; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; padding-bottom:4px; border-bottom:1px dashed #1a2a44; margin-bottom:4px;'>" +
+        "<div style='display:grid; grid-template-columns: 1.4fr 0.5fr 0.5fr 0.5fr 0.9fr 1.2fr auto; gap:8px; color:#557; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; padding-bottom:4px; border-bottom:1px dashed #1a2a44; margin-bottom:4px;'>" +
         "<span>Player</span>" +
         "<span style='text-align:right;'>Coin</span>" +
         "<span style='text-align:right;'>Stam</span>" +
         "<span style='text-align:right;'>Hung</span>" +
         "<span>Position</span>" +
         "<span>Last action</span>" +
+        "<span></span>" +
         "</div>";
     for (const row of rows) {
         const roleIcon = row.role === 1 ? "👑" : "🧑‍🌾";
@@ -1647,17 +2136,50 @@ function renderSurveillance() {
         const pz = Math.round(row.position[2]);
         const hungerColor = row.hunger > 60 ? "#ff9a6a" : (row.hunger > 30 ? "#ffd966" : "#8fcf8f");
         const staminaColor = row.stamina < 30 ? "#ff9a6a" : (row.stamina < 60 ? "#ffd966" : "#8fcf8f");
+        // Pay button only for *other* farmers — paying yourself is a
+        // no-op the server rejects, and there's no use case for it.
+        const isSelf = row.player_id === myPlayerId;
+        const payBtn = (isSelf || row.role === 1)
+            ? "<span style='font-size:10px; color:#445;'>—</span>"
+            : "<button data-pay='" + row.player_id + "' style='background:#1a2a14; color:#cfe9aa; border:1px solid #4a6a24; border-radius:3px; padding:1px 8px; cursor:pointer; font-size:10px;'>Pay</button>";
         html +=
-            "<div style='display:grid; grid-template-columns: 1.5fr 0.6fr 0.6fr 0.6fr 1fr 1.4fr; gap:8px; align-items:center; padding:3px 0;'>" +
+            "<div style='display:grid; grid-template-columns: 1.4fr 0.5fr 0.5fr 0.5fr 0.9fr 1.2fr auto; gap:8px; align-items:center; padding:3px 0;'>" +
             "<span><span style='margin-right:4px;'>" + roleIcon + "</span><span style='color:" + roleColor + ";'>" + escapeHtml(row.player_name) + "</span></span>" +
             "<span style='text-align:right; color:#ffd966;'>" + row.coins + "</span>" +
             "<span style='text-align:right; color:" + staminaColor + ";'>" + Math.round(row.stamina) + "</span>" +
             "<span style='text-align:right; color:" + hungerColor + ";'>" + Math.round(row.hunger) + "</span>" +
             "<span style='color:#779;'>" + px + ", " + pz + "</span>" +
             "<span style='color:#bcd;'>" + escapeHtml(row.last_action) + "</span>" +
+            "<span>" + payBtn + "</span>" +
             "</div>";
     }
     surv.innerHTML = html;
+
+    // Wire the per-row Pay buttons.
+    surv.querySelectorAll("button[data-pay]").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const targetId = btn.getAttribute("data-pay");
+            sendUbi(targetId);
+        });
+    });
+
+    // Keep the UBI target dropdown in sync with the live roster so the
+    // Monarch can pick a specific farmer without having to know the id.
+    const sel = document.getElementById("ubi-target");
+    if (sel) {
+        const prev = sel.value;
+        let opts = "<option value=\"0\">All farmers</option>";
+        for (const row of rows) {
+            if (row.player_id === myPlayerId) continue;
+            if (row.role === 1) continue; // skip other monarchs
+            opts += "<option value=\"" + row.player_id + "\">" + escapeHtml(row.player_name) + "</option>";
+        }
+        sel.innerHTML = opts;
+        // Restore the previous selection if it's still in the list.
+        if ([...sel.options].some(o => o.value === prev)) {
+            sel.value = prev;
+        }
+    }
 }
 
 function escapeHtml(s) {
@@ -3663,6 +4185,43 @@ function encodeDeployAIAction(x, y, z) {
     return [
         ...encodeVarint(16),
         ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
+    ];
+}
+
+function encodePropagandaAction(tone, message) {
+    // Propaganda { tone: u8, message: String } — variant 17
+    const msgBytes = new TextEncoder().encode(message);
+    return [
+        ...encodeVarint(17),
+        tone & 0xff,
+        ...encodeVarint(msgBytes.length),
+        ...msgBytes,
+    ];
+}
+
+function encodeGrantUbiAction(targetPlayerId, amount) {
+    // GrantUbi { target_player_id: u64, amount: u32 } — variant 18
+    // target_player_id is a varint (bincode standard for u64). 0 = all
+    // farmers.
+    return [
+        ...encodeVarint(18),
+        ...encodeVarint(targetPlayerId),
+        ...encodeVarint(amount),
+    ];
+}
+
+function encodeIssueTaskAction(tone, message, taskKind, target, reward) {
+    // IssueTask { tone: u8, message: String, task_kind: u8, target: u32,
+    //             reward: u32 } — variant 19
+    const msgBytes = new TextEncoder().encode(message);
+    return [
+        ...encodeVarint(19),
+        tone & 0xff,
+        ...encodeVarint(msgBytes.length),
+        ...msgBytes,
+        taskKind & 0xff,
+        ...encodeVarint(target),
+        ...encodeVarint(reward),
     ];
 }
 
