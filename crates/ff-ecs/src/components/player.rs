@@ -75,6 +75,37 @@ pub struct Hunger(pub f32);
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Wallet(pub u32);
 
+/// Marker + resources for the Tech-Monarch role (only attachable in
+/// Realistic mode). The Monarch does not farm directly; instead they
+/// pay `compute` to deploy semi-AI workers that harvest fruiting plants
+/// in their place, accruing `influence` per successful harvest.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Monarch {
+    /// 0..100. Spent to deploy AI workers (20 per deployment). Regenerates
+    /// passively (~0.5 per tick = 10/s).
+    pub compute: f32,
+    /// 0..100. Soft prestige meter — each successful AI harvest grants +1.
+    /// Currently informational; future decisions (price manipulation, mass
+    /// layoffs) will be gated on minimum influence.
+    pub influence: f32,
+    /// Lifetime count of AI workers this monarch has deployed.
+    pub deployments: u32,
+    /// Lifetime count of plants auto-harvested by this monarch's AI fleet
+    /// — i.e. "jobs cut" from the farmer player perspective.
+    pub jobs_cut: u32,
+}
+
+impl Default for Monarch {
+    fn default() -> Self {
+        Self {
+            compute: 100.0,
+            influence: 0.0,
+            deployments: 0,
+            jobs_cut: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PlayerSkills {
     pub logging: f32,

@@ -2,6 +2,7 @@
 
 pub mod animal_ai;
 pub mod interaction;
+pub mod monarch_ai;
 pub mod npc_ai;
 pub mod physics;
 pub mod plant_growth;
@@ -69,6 +70,14 @@ pub fn run_tick(
 
     if tick % 10 == 0 {
         npc_ai::run(world, terrain, resources);
+    }
+
+    // Tech-Monarch domain runs only in Realistic mode (where the role is
+    // unlockable). Regenerate compute every 20 ticks and let semi-AI
+    // workers auto-harvest fruiting plants on the same cadence.
+    if resources.game_mode == GameMode::Realistic && tick % 20 == 0 {
+        monarch_ai::tick_monarchs(world);
+        monarch_ai::tick_semi_ai_workers(world, resources);
     }
 
     TickResult { messages: fell_messages, despawned }

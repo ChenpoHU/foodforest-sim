@@ -25,12 +25,26 @@ let inputSeq = 0;
 
 // Connect screen
 document.getElementById("connect-btn").addEventListener("click", () => {
-    playerName = document.getElementById("player-name").value || "Farmer";
-    const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
-    selectedPlotSeed = parseInt(document.getElementById("plot-seed-input").value) || 42;
-    document.getElementById("connect-screen").style.display = "none";
-    rebuildToolbar();
-    init(serverUrl);
+    try {
+        playerName = document.getElementById("player-name").value || "Farmer";
+        const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
+        selectedPlotSeed = parseInt(document.getElementById("plot-seed-input").value) || 42;
+        document.getElementById("connect-screen").style.display = "none";
+        // Optimistically reflect the role the user picked so the toolbar
+        // renders correctly on first paint, before the server has had a
+        // chance to confirm or downgrade (Tech Monarch outside Realistic
+        // is silently downgraded server-side; the next ServerPlayerState
+        // will correct us if so).
+        playerRoleLive = selectedGameMode === 1 ? selectedRole : 0;
+        rebuildToolbar();
+        init(serverUrl);
+    } catch (err) {
+        // Surface any startup error to the visible status bar so we don't
+        // just sit silently on "Connecting...".
+        console.error("Startup failed:", err);
+        document.getElementById("status").textContent =
+            "Startup error: " + (err && err.message ? err.message : String(err));
+    }
 });
 
 document.getElementById("player-name").addEventListener("keydown", (e) => {
@@ -42,6 +56,60 @@ const modeDescriptions = {
     1: "Full felling physics. Falling trees can crush you. Real danger.",
     2: "Wildfire deadline + animals with learning AI that adapt to your behavior.",
 };
+
+// Player role: 0 = Farmer (default), 1 = Tech Monarch (Realistic mode only).
+let selectedRole = 0;
+
+// Live Monarch state from the server. `playerRoleLive` is 0 (Farmer) or
+// 1 (Tech Monarch), and the server has final say (TechMonarch outside
+// Realistic gets quietly downgraded to Farmer).
+// These have to live above `rebuildToolbar()` because that function is
+// invoked at module-load time and reads `playerRoleLive`.
+let playerRoleLive = 0;
+let monarchCompute = 0;
+let monarchInfluence = 0;
+let monarchDeployments = 0;
+let monarchJobsCut = 0;
+// Append-only log of recent Monarch decisions for the dashboard.
+const monarchDecisions = [];
+function pushMonarchDecision(text, tone) {
+    monarchDecisions.push({ text, tone: tone || "ok", at: Date.now() });
+    while (monarchDecisions.length > 12) monarchDecisions.shift();
+}
+
+const roleDescriptions = {
+    0: "Plant, harvest, and trade your own food forest.",
+    1: "Deploy semi-AI workers to auto-harvest the world. Each AI run accrues FoFo and Influence, and cuts a job a farmer might have done.",
+};
+
+function refreshRoleVisibility() {
+    const row = document.getElementById("role-row");
+    if (!row) return;
+    // Tech Monarch is only legal in Realistic (mode 1). In other modes we
+    // force-reset the selection to Farmer so the connect button can't send
+    // an invalid role.
+    if (selectedGameMode === 1) {
+        row.style.display = "flex";
+    } else {
+        row.style.display = "none";
+        if (selectedRole !== 0) {
+            selectedRole = 0;
+            applyRoleVisuals();
+        }
+    }
+}
+
+function applyRoleVisuals() {
+    document.querySelectorAll(".role-btn").forEach(b => {
+        const isActive = parseInt(b.dataset.role) === selectedRole;
+        b.style.background = isActive ? "#2a5a2a" : "#1a2a1a";
+        b.style.color = isActive ? "#cfc" : "#aaa";
+        b.style.borderColor = isActive ? "#4a4" : "#444";
+        b.classList.toggle("active", isActive);
+    });
+    const desc = document.getElementById("role-desc");
+    if (desc) desc.textContent = roleDescriptions[selectedRole];
+}
 
 document.querySelectorAll(".mode-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -57,6 +125,14 @@ document.querySelectorAll(".mode-btn").forEach(btn => {
         btn.classList.add("active");
         selectedGameMode = parseInt(btn.dataset.mode);
         document.getElementById("mode-desc").textContent = modeDescriptions[selectedGameMode];
+        refreshRoleVisibility();
+    });
+});
+
+document.querySelectorAll(".role-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+        selectedRole = parseInt(btn.dataset.role);
+        applyRoleVisuals();
     });
 });
 
@@ -443,6 +519,65 @@ function rebuildToolbar() {
     const toolbar = document.getElementById("toolbar");
     toolbar.innerHTML = "";
 
+    // --- Tech Monarch toolbar ---------------------------------------------
+    // Monarchs don't farm by hand. Their toolbar is just: deploy AI,
+    // open dashboard, inspect, and a live Compute/Influence readout.
+    if (playerRoleLive === 1) {
+        const deployBtn = document.createElement("button");
+        deployBtn.dataset.action = "deploy-ai";
+        deployBtn.id = "toolbar-deploy-btn";
+        deployBtn.style.cssText = "display:flex; align-items:center; gap:6px; padding:6px 12px;";
+        deployBtn.innerHTML =
+            "<span style='font-size:18px;'>🤖</span>" +
+            "<span style='font-size:11px;'>Deploy AI</span>";
+        toolbar.appendChild(deployBtn);
+
+        const dashBtn = document.createElement("button");
+        dashBtn.dataset.action = "monarch-dashboard";
+        dashBtn.style.cssText = "display:flex; align-items:center; gap:6px; padding:6px 12px;";
+        dashBtn.innerHTML =
+            "<span style='font-size:18px;'>📊</span>" +
+            "<span style='font-size:11px;'>Dashboard</span>";
+        toolbar.appendChild(dashBtn);
+
+        const inspectBtn = document.createElement("button");
+        inspectBtn.dataset.action = "inspect";
+        inspectBtn.style.cssText = "display:flex; align-items:center; gap:6px; padding:6px 12px;";
+        inspectBtn.innerHTML = "<span style='font-size:18px;'>?</span><span style='font-size:11px;'>Inspect</span>";
+        toolbar.appendChild(inspectBtn);
+
+        // Live resource chips
+        const chips = document.createElement("div");
+        chips.style.cssText = "display:flex; align-items:center; gap:6px; margin-left:6px;";
+        chips.innerHTML =
+            "<span id='toolbar-compute-chip' style='background:rgba(60,200,255,0.18); color:#8ccdff; border:1px solid #4477aa; border-radius:10px; padding:2px 8px; font-size:11px; font-weight:bold;'>⚡ 0 Compute</span>" +
+            "<span id='toolbar-influence-chip' style='background:rgba(255,210,90,0.18); color:#ffd966; border:1px solid #c9a45a; border-radius:10px; padding:2px 8px; font-size:11px; font-weight:bold;'>★ 0 Influence</span>" +
+            "<span id='toolbar-coin-chip' style='background:rgba(255,200,80,0.18); color:#ffd966; border:1px solid #c9a45a; border-radius:10px; padding:2px 8px; font-size:11px; font-weight:bold;'>🪙 0</span>";
+        toolbar.appendChild(chips);
+
+        toolbar.querySelectorAll("button").forEach(b => {
+            b.addEventListener("click", () => {
+                const action = b.dataset.action;
+                if (action === "monarch-dashboard") {
+                    openMonarchDashboard();
+                    return;
+                }
+                toolbar.querySelectorAll("button").forEach(x => x.classList.remove("active"));
+                b.classList.add("active");
+                selectedAction = action;
+                selectedPlant = null;
+            });
+        });
+
+        // No persisted action by default.
+        selectedAction = null;
+        refreshCoinChip();
+        refreshMonarchHud();
+        return;
+    }
+
+    // --- Farmer toolbar (default) -----------------------------------------
+
     // Drop the plant selection if we moved to a region that doesn't grow it,
     // so the toolbar label never lies about what will be planted.
     if (selectedPlant) {
@@ -658,12 +793,18 @@ document.getElementById("property-menu-close").addEventListener("click", closePr
 document.getElementById("property-menu").addEventListener("click", (e) => {
     if (e.target.id === "property-menu") closePropertyMenu();
 });
+document.getElementById("monarch-dashboard-close").addEventListener("click", closeMonarchDashboard);
+document.getElementById("monarch-dashboard").addEventListener("click", (e) => {
+    if (e.target.id === "monarch-dashboard") closeMonarchDashboard();
+});
 document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
         const plant = document.getElementById("plant-menu");
         if (plant && plant.style.display === "flex") { closePlantMenu(); return; }
         const prop = document.getElementById("property-menu");
         if (prop && prop.style.display === "flex") { closePropertyMenu(); return; }
+        const dash = document.getElementById("monarch-dashboard");
+        if (dash && dash.style.display === "flex") { closeMonarchDashboard(); return; }
     }
 });
 
@@ -871,7 +1012,7 @@ function buildFramedMessage(msgType, payloadBytes) {
     return frame;
 }
 
-function buildHelloMessage(name, gameMode, regionIndex, plotSeed) {
+function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole) {
     const payload = new Uint8Array([
         ...encodeBincodeString(name),
         ...encodeBincodeString("dev-token"),
@@ -879,6 +1020,7 @@ function buildHelloMessage(name, gameMode, regionIndex, plotSeed) {
         gameMode,
         regionIndex,
         ...encodeVarint(plotSeed),
+        playerRole & 0xff,
     ]);
     return buildFramedMessage(0x0001, payload);
 }
@@ -924,7 +1066,7 @@ function connectWebSocket(url) {
     ws.onopen = () => {
         updateStatus("Connected! Sending hello...");
         connected = true;
-        ws.send(buildHelloMessage(playerName, selectedGameMode, selectedRegion, selectedPlotSeed));
+        ws.send(buildHelloMessage(playerName, selectedGameMode, selectedRegion, selectedPlotSeed, selectedRole));
     };
 
     ws.onmessage = (event) => {
@@ -960,8 +1102,40 @@ function handleServerMessage(data) {
         case 0x010B: break; // pong
         case 0x010C: handleActionResult(payload); break;
         case 0x0106: handlePlayerState(payload); break;
+        case 0x010E: handleMonarchSurveillance(payload); break;
         default:
             console.log("Unknown msg 0x" + msgType.toString(16), payloadLen, "bytes");
+    }
+}
+
+// Last received surveillance roster (Tech Monarch only). Rendered into
+// the dashboard when it's open, otherwise cached for the next open.
+let monarchSurveillance = { tick: 0, rows: [] };
+
+function handleMonarchSurveillance(payload) {
+    const r = new BincodeReader(payload);
+    const tick = r.readU64();
+    const count = r.readVarint();
+    const rows = [];
+    for (let i = 0; i < count; i++) {
+        const player_id = r.readU64();
+        const player_name = r.readString();
+        const role = r.readU8();
+        const px = r.readF32();
+        const py = r.readF32();
+        const pz = r.readF32();
+        const coins = r.readU32();
+        const stamina = r.readF32();
+        const hunger = r.readF32();
+        const last_action = r.readString();
+        rows.push({ player_id, player_name, role, position: [px, py, pz], coins, stamina, hunger, last_action });
+    }
+    monarchSurveillance = { tick, rows };
+
+    // If the dashboard is open, refresh it live.
+    const dash = document.getElementById("monarch-dashboard");
+    if (dash && dash.style.display === "flex") {
+        renderMonarchDashboard();
     }
 }
 
@@ -980,6 +1154,7 @@ function handleWelcome(payload) {
     document.getElementById("hud-name").textContent = playerName;
     document.getElementById("hud-stamina").textContent = "Stamina: 100%";
     document.getElementById("hud-hunger").textContent = "Hunger: 0%";
+    renderHudRole();
 
     // Make sure the coin chip shows up immediately (even before the first
     // PlayerState broadcast). The player can open the Property modal at
@@ -1031,6 +1206,8 @@ function handleWorldState(payload) {
         } else if (kindTag === 5) {
             speciesId = r.readU8(); // structure kind
             kind = "structure";
+        } else if (kindTag === 6) {
+            kind = "semi-ai";
         }
 
         const px = r.readF32();
@@ -1304,12 +1481,192 @@ function handlePlayerState(payload) {
         r.readU32(); // last_acked_seq
     } catch (_) { /* trailing field optional for robustness */ }
 
+    // Monarch block — optional (only sent when the server-side struct has
+    // the new fields). Any decode failure here is non-fatal.
+    let prevDeployments = monarchDeployments;
+    let prevJobsCut = monarchJobsCut;
+    let prevRole = playerRoleLive;
+    try {
+        playerRoleLive = r.readU8();
+        monarchCompute = r.readF32();
+        monarchInfluence = r.readF32();
+        monarchDeployments = r.readU32();
+        monarchJobsCut = r.readU32();
+    } catch (_) { /* server doesn't speak monarch yet */ }
+
+    // Log notable monarch transitions for the dashboard.
+    if (playerRoleLive === 1) {
+        if (prevRole !== 1) {
+            pushMonarchDecision("Tech Monarch mandate activated", "good");
+        }
+        if (monarchDeployments > prevDeployments) {
+            pushMonarchDecision(
+                "Deployed semi-AI worker (-20 Compute, +1 deployment)",
+                "good"
+            );
+        }
+        if (monarchJobsCut > prevJobsCut) {
+            const cuts = monarchJobsCut - prevJobsCut;
+            pushMonarchDecision(
+                cuts + " job" + (cuts > 1 ? "s" : "") + " auto-harvested by your AI fleet (+FoFo, +Influence)",
+                "warn"
+            );
+        }
+    }
+
+    // If the player's role changed, the toolbar layout changes too.
+    if (playerRoleLive !== prevRole) {
+        rebuildToolbar();
+    }
+
     refreshCoinChip();
+    refreshMonarchHud();
     const modal = document.getElementById("property-menu");
     if (modal && modal.style.display === "flex") {
         renderPropertyMenu();
     }
+    const dash = document.getElementById("monarch-dashboard");
+    if (dash && dash.style.display === "flex") {
+        renderMonarchDashboard();
+    }
     updatePlayerHUD();
+}
+
+function refreshMonarchHud() {
+    // Show Compute / Influence chips on the toolbar when the player is a
+    // Tech Monarch. We just toggle elements that the toolbar already
+    // creates conditionally — no DOM surgery here.
+    const computeChip = document.getElementById("toolbar-compute-chip");
+    if (computeChip) {
+        computeChip.textContent = "⚡ " + Math.floor(monarchCompute) + " Compute";
+    }
+    const inflChip = document.getElementById("toolbar-influence-chip");
+    if (inflChip) {
+        inflChip.textContent = "★ " + Math.floor(monarchInfluence) + " Influence";
+    }
+}
+
+// --- Monarch dashboard renderer ------------------------------------------
+
+function openMonarchDashboard() {
+    renderMonarchDashboard();
+    document.getElementById("monarch-dashboard").style.display = "flex";
+}
+
+function closeMonarchDashboard() {
+    document.getElementById("monarch-dashboard").style.display = "none";
+}
+
+function renderMonarchDashboard() {
+    const bars = document.getElementById("dash-bars");
+    const log = document.getElementById("dash-decisions");
+    if (!bars || !log) return;
+
+    function bar(label, value, max, color, hint) {
+        const pct = Math.max(0, Math.min(100, (value / max) * 100));
+        return (
+            "<div style='margin-bottom:14px;'>" +
+            "<div style='display:flex; justify-content:space-between; font-size:12px; color:#cfe; margin-bottom:3px;'>" +
+            "<span>" + label + "</span>" +
+            "<span style='color:#789;'>" + value.toFixed(0) + " / " + max + "</span>" +
+            "</div>" +
+            "<div style='width:100%; height:14px; background:#0a1626; border:1px solid #1a2a44; border-radius:3px; position:relative;'>" +
+            "<div style='height:100%; width:" + pct + "%; background:" + color + "; border-radius:2px;'></div>" +
+            "</div>" +
+            (hint ? "<div style='font-size:10px; color:#557; margin-top:2px;'>" + hint + "</div>" : "") +
+            "</div>"
+        );
+    }
+
+    let html = "";
+    html += bar("Compute", monarchCompute, 100, "#3ec8ff",
+        "Spend 20 per AI deployment. Regenerates ~0.5 / tick.");
+    html += bar("Influence", monarchInfluence, 100,
+        "linear-gradient(90deg, #c97a3e, #ffd966)",
+        "+1 per successful AI auto-harvest. Soft prestige meter.");
+    html += "<div style='margin-bottom:10px;'>" +
+        "<div style='font-size:12px; color:#cfe; margin-bottom:3px;'>FoFo Coin balance</div>" +
+        "<div style='font-size:22px; font-weight:bold; color:#ffd966;'>🪙 " + playerCoins + "</div>" +
+        "</div>";
+    html += "<div style='display:flex; gap:14px; padding-top:8px; border-top:1px solid #1a2a44;'>" +
+        "<div><div style='font-size:11px; color:#789;'>AI deployed</div>" +
+          "<div style='font-size:18px; color:#cfe;'>" + monarchDeployments + "</div></div>" +
+        "<div><div style='font-size:11px; color:#789;'>Jobs cut</div>" +
+          "<div style='font-size:18px; color:#ff9a6a;'>" + monarchJobsCut + "</div></div>" +
+        "</div>";
+    bars.innerHTML = html;
+
+    if (monarchDecisions.length === 0) {
+        log.innerHTML =
+            "<div style='color:#557; font-style:italic;'>No decisions yet. Use the toolbar's <b style='color:#3ec8ff;'>Deploy AI</b> button and click a fruiting area on the ground.</div>";
+    } else {
+        let logHtml = "";
+        for (let i = monarchDecisions.length - 1; i >= 0; i--) {
+            const d = monarchDecisions[i];
+            const color = d.tone === "warn" ? "#ff9a6a" : (d.tone === "bad" ? "#ff6a6a" : "#8fcf8f");
+            logHtml += "<div><span style='color:" + color + "; margin-right:6px;'>•</span>" + d.text + "</div>";
+        }
+        log.innerHTML = logHtml;
+    }
+
+    renderSurveillance();
+}
+
+function renderSurveillance() {
+    const surv = document.getElementById("dash-surveillance");
+    const meta = document.getElementById("dash-surveillance-meta");
+    if (!surv) return;
+
+    const rows = monarchSurveillance.rows || [];
+    if (meta) {
+        meta.textContent = rows.length === 0
+            ? "Waiting for next tick…"
+            : rows.length + " connected · tick " + monarchSurveillance.tick;
+    }
+    if (rows.length === 0) {
+        surv.innerHTML =
+            "<div style='color:#557; font-style:italic;'>No players to observe yet. Roster updates ~1 Hz once anyone else joins.</div>";
+        return;
+    }
+
+    // Header + one row per player. Hunger and stamina are shown as
+    // compact 0..100 numbers — fast to scan when you're picking targets.
+    let html =
+        "<div style='display:grid; grid-template-columns: 1.5fr 0.6fr 0.6fr 0.6fr 1fr 1.4fr; gap:8px; color:#557; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; padding-bottom:4px; border-bottom:1px dashed #1a2a44; margin-bottom:4px;'>" +
+        "<span>Player</span>" +
+        "<span style='text-align:right;'>Coin</span>" +
+        "<span style='text-align:right;'>Stam</span>" +
+        "<span style='text-align:right;'>Hung</span>" +
+        "<span>Position</span>" +
+        "<span>Last action</span>" +
+        "</div>";
+    for (const row of rows) {
+        const roleIcon = row.role === 1 ? "👑" : "🧑‍🌾";
+        const roleColor = row.role === 1 ? "#8ccdff" : "#8fcf8f";
+        const px = Math.round(row.position[0]);
+        const pz = Math.round(row.position[2]);
+        const hungerColor = row.hunger > 60 ? "#ff9a6a" : (row.hunger > 30 ? "#ffd966" : "#8fcf8f");
+        const staminaColor = row.stamina < 30 ? "#ff9a6a" : (row.stamina < 60 ? "#ffd966" : "#8fcf8f");
+        html +=
+            "<div style='display:grid; grid-template-columns: 1.5fr 0.6fr 0.6fr 0.6fr 1fr 1.4fr; gap:8px; align-items:center; padding:3px 0;'>" +
+            "<span><span style='margin-right:4px;'>" + roleIcon + "</span><span style='color:" + roleColor + ";'>" + escapeHtml(row.player_name) + "</span></span>" +
+            "<span style='text-align:right; color:#ffd966;'>" + row.coins + "</span>" +
+            "<span style='text-align:right; color:" + staminaColor + ";'>" + Math.round(row.stamina) + "</span>" +
+            "<span style='text-align:right; color:" + hungerColor + ";'>" + Math.round(row.hunger) + "</span>" +
+            "<span style='color:#779;'>" + px + ", " + pz + "</span>" +
+            "<span style='color:#bcd;'>" + escapeHtml(row.last_action) + "</span>" +
+            "</div>";
+    }
+    surv.innerHTML = html;
+}
+
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 }
 
 function refreshCoinChip() {
@@ -1322,6 +1679,19 @@ function refreshCoinChip() {
 function updatePlayerHUD() {
     document.getElementById("hud-stamina").textContent = "Stamina: " + playerStamina.toFixed(0) + "%";
     document.getElementById("hud-hunger").textContent = "Hunger: " + playerHunger.toFixed(0) + "%";
+    renderHudRole();
+}
+
+function renderHudRole() {
+    const el = document.getElementById("hud-role");
+    if (!el) return;
+    if (playerRoleLive === 1) {
+        el.textContent = "👑 Tech Monarch";
+        el.style.color = "#8ccdff";
+    } else {
+        el.textContent = "🧑‍🌾 Farmer";
+        el.style.color = "#8fcf8f";
+    }
 }
 
 // Map each harvested item to a top-level category so the player can see
@@ -1481,6 +1851,7 @@ function renderPropertyMenu() {
 
 function classifyEntity(kind, speciesId) {
     if (kind === "player") return "player";
+    if (kind === "semi-ai") return "semi-ai";
     if (kind === "animal") {
         if (speciesId === 10) return "chicken";
         if (speciesId === 21) return "deer";
@@ -2242,7 +2613,7 @@ function travelToRegion(regionIndex, plotSeed) {
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
         connected = true;
-        ws.send(buildHelloMessage(playerName, selectedGameMode, regionIndex, plotSeed));
+        ws.send(buildHelloMessage(playerName, selectedGameMode, regionIndex, plotSeed, selectedRole));
     };
     ws.onmessage = (event) => {
         handleServerMessage(new Uint8Array(event.data));
@@ -2961,6 +3332,40 @@ function createEntityMesh(category) {
             mesh.castShadow = true;
             return mesh;
         }
+        case "semi-ai": {
+            // Boxy hover-drone in a cool blue palette — visually distinct
+            // from organic life so farmers immediately recognise it as a
+            // monarch deployment competing for harvestable fruit.
+            const g = new THREE.Group();
+            const chassis = new THREE.Mesh(
+                new THREE.BoxGeometry(0.45, 0.25, 0.45),
+                new THREE.MeshStandardMaterial({
+                    color: 0x3a4a6a, roughness: 0.4, metalness: 0.6,
+                    emissive: 0x224477, emissiveIntensity: 0.25,
+                })
+            );
+            chassis.position.y = 0.9;
+            chassis.castShadow = true;
+            g.add(chassis);
+            // Eye / sensor strip
+            const eye = new THREE.Mesh(
+                new THREE.BoxGeometry(0.38, 0.06, 0.02),
+                new THREE.MeshStandardMaterial({
+                    color: 0x44ccff, emissive: 0x44ccff, emissiveIntensity: 1.2,
+                })
+            );
+            eye.position.set(0, 0.92, 0.23);
+            g.add(eye);
+            // Four rotor pods at the corners
+            const rotorMat = new THREE.MeshStandardMaterial({ color: 0x1a2030, roughness: 0.6 });
+            const rotorGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.04, 8);
+            for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+                const r = new THREE.Mesh(rotorGeo, rotorMat);
+                r.position.set(sx * 0.28, 1.0, sz * 0.28);
+                g.add(r);
+            }
+            return g;
+        }
         case "hochsitz": {
             // Closed Kanzel (German hunting stand) — larch wood, ~3.5m stilts, 1.2x1.2m cabin
             const g = new THREE.Group();
@@ -3185,6 +3590,9 @@ function onWorldClick(event) {
             } else if (selectedAction === "build-hochsitz") {
                 const actionPayload = encodeHochsitzAction(ix, iy, iz);
                 ws.send(buildActionMessage(actionPayload));
+            } else if (selectedAction === "deploy-ai") {
+                const actionPayload = encodeDeployAIAction(ix, iy, iz);
+                ws.send(buildActionMessage(actionPayload));
             }
         }
     }
@@ -3248,6 +3656,14 @@ function encodeEatAction(itemId) {
 function encodeSellAction(itemId, count) {
     // SellItem { item_id: u16, count: u16 } — variant 15
     return [...encodeVarint(15), ...encodeVarint(itemId), ...encodeVarint(count)];
+}
+
+function encodeDeployAIAction(x, y, z) {
+    // DeploySemiAI { position: [i32; 3] } — variant 16
+    return [
+        ...encodeVarint(16),
+        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
+    ];
 }
 
 function encodeHochsitzAction(x, y, z) {

@@ -86,6 +86,7 @@ pub fn client_connect(server_url: &str, player_name: &str) -> bool {
         game_mode: 1,
         region_index: 0,
         plot_seed: 42,
+        player_role: 0,
     };
 
     if let Ok(_buf) = encode(MessageType::ClientHello, &hello) {
@@ -106,6 +107,7 @@ pub fn build_hello_message(player_name: &str) -> Vec<u8> {
         game_mode: 1,
         region_index: 0,
         plot_seed: 42,
+        player_role: 0,
     };
     encode(MessageType::ClientHello, &hello).unwrap_or_default()
 }
@@ -276,6 +278,7 @@ fn process_message(client: &mut GameClient, data: &[u8]) {
                                 EntityKind::NpcAgent { .. } => 3,
                                 EntityKind::DroppedItem { .. } => 4,
                                 EntityKind::Structure { .. } => 5,
+                                EntityKind::SemiAI => 6,
                             },
                             x: es.position[0],
                             y: es.position[1],
@@ -354,6 +357,7 @@ fn process_message(client: &mut GameClient, data: &[u8]) {
                             EntityKind::NpcAgent { .. } => 3,
                             EntityKind::DroppedItem { .. } => 4,
                             EntityKind::Structure { .. } => 5,
+                            EntityKind::SemiAI => 6,
                         },
                         x: es.position[0],
                         y: es.position[1],

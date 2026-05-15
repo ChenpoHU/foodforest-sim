@@ -27,6 +27,10 @@ pub enum MessageType {
     ServerPong = 0x010B,
     ServerActionResult = 0x010C,
     ServerBatchUpdate = 0x010D,
+    /// Sent every ~1 s to Tech-Monarch sessions only. A live roster of
+    /// every connected farmer (position, vitals, recent action) so the
+    /// monarch can pick targets for UBI grants, propaganda, sanctions.
+    ServerMonarchSurveillance = 0x010E,
 
     // Shard Manager <-> Server
     ShardRegister = 0x0201,
@@ -43,6 +47,9 @@ pub struct ClientHello {
     pub game_mode: u8,
     pub region_index: u8,
     pub plot_seed: u32,
+    /// `PlayerRole` discriminant. The server validates this against the
+    /// chosen game mode and may downgrade (TechMonarch is Realistic-only).
+    pub player_role: u8,
 }
 
 /// Sent every tick (50ms) with the player's movement input.
@@ -93,6 +100,10 @@ pub enum ActionKind {
     EatItem { item_id: u16 },
     /// Sell `count` of `item_id` from inventory for FoFo Coin.
     SellItem { item_id: u16, count: u16 },
+    /// Tech-Monarch only: drop a semi-AI harvester at `position`. Costs
+    /// Compute. The worker auto-harvests fruiting plants in radius and
+    /// banks the proceeds to the monarch's wallet.
+    DeploySemiAI { position: [i32; 3] },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +153,8 @@ pub enum EntityKind {
     NpcAgent { role: u8 },
     DroppedItem { item_id: u16 },
     Structure { kind: u8 },
+    /// Semi-AI worker deployed by a Tech Monarch.
+    SemiAI,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +213,14 @@ pub struct ServerPlayerState {
     /// FoFo Coin balance — earned by selling harvested produce or hunted game.
     pub coins: u32,
     pub last_acked_seq: u32,
+    /// 0 = Farmer, 1 = Tech Monarch. Drives whether the Monarch dashboard
+    /// renders on the client.
+    pub role: u8,
+    /// Monarch resources. All zero for Farmer players.
+    pub monarch_compute: f32,
+    pub monarch_influence: f32,
+    pub monarch_deployments: u32,
+    pub monarch_jobs_cut: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +282,28 @@ pub struct ServerActionResult {
     pub seq: u32,
     pub success: bool,
     pub message: Option<String>,
+}
+
+/// One row in the Monarch surveillance feed — a single farmer's
+/// observable state, snapshot at the moment of broadcast.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonarchSurveillanceRow {
+    pub player_id: PlayerId,
+    pub player_name: String,
+    pub role: u8,
+    pub position: [f32; 3],
+    pub coins: u32,
+    pub stamina: f32,
+    pub hunger: f32,
+    /// Short tag describing this player's most recent action ("plant
+    /// olive", "harvest", "moving", "idle"). Trimmed server-side.
+    pub last_action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerMonarchSurveillance {
+    pub tick: Tick,
+    pub rows: Vec<MonarchSurveillanceRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

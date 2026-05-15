@@ -1,5 +1,20 @@
+use ff_common::PlayerId;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
+
+/// Semi-AI harvester deployed by a Tech-Monarch player. Periodically scans
+/// for nearby Fruiting plants and "harvests" them, crediting the owning
+/// monarch with FoFo Coin and Influence. The plant snaps back to Mature
+/// just like a normal Harvest action.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SemiAIWorker {
+    /// Monarch who deployed this unit — destination for earned coins.
+    pub owner: PlayerId,
+    /// Tick at which the unit was deployed (used for stagger + lifespan).
+    pub deployed_at_tick: u64,
+    /// Last tick this unit performed a successful harvest.
+    pub last_harvest_tick: u64,
+}
 
 /// NPC agent with a role and task queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]

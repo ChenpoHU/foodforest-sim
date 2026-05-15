@@ -160,6 +160,114 @@ fn broadcast_updates(shard: &mut Shard) {
             send_player_state(shard, pid);
         }
     }
+
+    // Tech-Monarch surveillance feed: 1 Hz roster of every connected
+    // farmer's observable state. Skipped entirely when no monarch is
+    // online, which is the common case.
+    if tick.0 % 20 == 0 {
+        broadcast_surveillance(shard);
+    }
+}
+
+/// Build the Monarch surveillance roster and push it to every connected
+/// Tech-Monarch session. No-op when no monarch is online.
+fn broadcast_surveillance(shard: &mut Shard) {
+    // Find which sessions belong to Monarchs (their player entity carries
+    // the Monarch component).
+    let mut monarch_player_ids: Vec<ff_common::PlayerId> = Vec::new();
+    for (_e, (player, _m)) in shard.ecs_world.query::<(
+        &ff_ecs::components::player::Player,
+        &ff_ecs::components::player::Monarch,
+    )>().iter() {
+        if shard.sessions.contains_key(&player.player_id) {
+            monarch_player_ids.push(player.player_id);
+        }
+    }
+    if monarch_player_ids.is_empty() {
+        return;
+    }
+
+    // Build a row per connected player (farmer or monarch — monarchs see
+    // themselves in the roster too, so they can verify the feed is live).
+    let connected: Vec<(ff_common::PlayerId, String)> = shard
+        .sessions
+        .iter()
+        .map(|(pid, s)| (*pid, s.player_name.clone()))
+        .collect();
+
+    let mut rows = Vec::with_capacity(connected.len());
+    for (pid, name) in connected {
+        // Find the player's entity + components.
+        let mut found_entity: Option<hecs::Entity> = None;
+        for (entity, player) in shard
+            .ecs_world
+            .query::<&ff_ecs::components::player::Player>()
+            .iter()
+        {
+            if player.player_id == pid {
+                found_entity = Some(entity);
+                break;
+            }
+        }
+        let Some(entity) = found_entity else { continue };
+
+        let position = shard
+            .ecs_world
+            .get::<&ff_ecs::components::transform::Position>(entity)
+            .map(|p| [p.0.x, p.0.y, p.0.z])
+            .unwrap_or([0.0, 0.0, 0.0]);
+        let coins = shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Wallet>(entity)
+            .map(|w| w.0)
+            .unwrap_or(0);
+        let stamina = shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Stamina>(entity)
+            .map(|s| s.0)
+            .unwrap_or(0.0);
+        let hunger = shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Hunger>(entity)
+            .map(|h| h.0)
+            .unwrap_or(0.0);
+        let role = if shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Monarch>(entity)
+            .is_ok()
+        {
+            1
+        } else {
+            0
+        };
+        let last_action = shard
+            .sessions
+            .get(&pid)
+            .map(|s| s.last_action.clone())
+            .unwrap_or_default();
+
+        rows.push(MonarchSurveillanceRow {
+            player_id: pid,
+            player_name: name,
+            role,
+            position,
+            coins,
+            stamina,
+            hunger,
+            last_action,
+        });
+    }
+
+    let msg = ServerMonarchSurveillance {
+        tick: shard.resources.calendar.tick,
+        rows,
+    };
+    let Ok(buf) = encode(MessageType::ServerMonarchSurveillance, &msg) else { return };
+    for pid in monarch_player_ids {
+        if let Some(session) = shard.sessions.get(&pid) {
+            session.send(buf.clone());
+        }
+    }
 }
 
 /// Make sure every player entity has a `Wallet` component. Idempotent;
@@ -208,6 +316,17 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             .get::<&ff_ecs::components::player::Wallet>(entity)
             .map(|w| w.0)
             .unwrap_or(0);
+        // If the player has a Monarch component, they're a Tech Monarch.
+        // Otherwise they're a Farmer with zero monarch resources.
+        let monarch = shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Monarch>(entity)
+            .ok()
+            .map(|m| *m);
+        let (role, m_compute, m_influence, m_deployments, m_jobs_cut) = match monarch {
+            Some(m) => (1u8, m.compute, m.influence, m.deployments, m.jobs_cut),
+            None => (0u8, 0.0, 0.0, 0u32, 0u32),
+        };
         payload = Some(ServerPlayerState {
             stamina: stamina.0,
             hunger: hunger.0,
@@ -217,6 +336,11 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             }).collect(),
             coins,
             last_acked_seq: player.last_input_seq,
+            role,
+            monarch_compute: m_compute,
+            monarch_influence: m_influence,
+            monarch_deployments: m_deployments,
+            monarch_jobs_cut: m_jobs_cut,
         });
         break;
     }

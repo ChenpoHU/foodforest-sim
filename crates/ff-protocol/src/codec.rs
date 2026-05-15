@@ -73,6 +73,7 @@ pub fn decode(bytes: &[u8]) -> Result<(MessageType, &[u8]), ProtocolError> {
         0x010B => MessageType::ServerPong,
         0x010C => MessageType::ServerActionResult,
         0x010D => MessageType::ServerBatchUpdate,
+        0x010E => MessageType::ServerMonarchSurveillance,
         0x0201 => MessageType::ShardRegister,
         0x0202 => MessageType::ShardPlayerTransfer,
         0x0203 => MessageType::ShardHealthReport,
@@ -116,6 +117,10 @@ mod tests {
             player_name: "Farmer".into(),
             token: "dev-token".into(),
             protocol_version: 1,
+            game_mode: 1,
+            region_index: 0,
+            plot_seed: 42,
+            player_role: 0,
         };
         let buf = encode(MessageType::ClientHello, &hello).unwrap();
         // Print each byte as hex for JS replication

@@ -13,6 +13,10 @@ pub struct PlayerSession {
     pub sender: mpsc::UnboundedSender<Vec<u8>>,
     /// Last input sequence number acknowledged.
     pub last_acked_seq: u32,
+    /// Short human-readable tag describing this player's most recent
+    /// activity ("plant olive", "harvest", "moving", "idle"). Surfaces in
+    /// the Tech-Monarch surveillance feed.
+    pub last_action: String,
 }
 
 impl PlayerSession {
@@ -28,6 +32,7 @@ impl PlayerSession {
             player_name,
             sender,
             last_acked_seq: 0,
+            last_action: "joined".into(),
         }
     }
 

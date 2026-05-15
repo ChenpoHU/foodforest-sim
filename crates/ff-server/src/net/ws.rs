@@ -77,8 +77,8 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
     };
 
     info!(
-        "Player '{}' connected from {peer_addr} (mode={} region={} plot={})",
-        hello.player_name, hello.game_mode, hello.region_index, hello.plot_seed
+        "Player '{}' connected from {peer_addr} (mode={} region={} plot={} role={})",
+        hello.player_name, hello.game_mode, hello.region_index, hello.plot_seed, hello.player_role
     );
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -100,13 +100,23 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
             );
             shard.replace_terrain(terrain, tb, hello.region_index);
         }
+        // Validate role against the (possibly already-set) mode. TechMonarch
+        // is silently downgraded to Farmer outside Realistic.
+        let role = ff_common::PlayerRole::from(hello.player_role)
+            .validate_for_mode(shard.resources.game_mode);
+        info!("  → role resolved as {:?}", role);
         let session = PlayerSession::new(
             player_id,
             EntityId(0), // will be set below
             hello.player_name.clone(),
             tx,
         );
-        let (eid, _entity) = shard.add_player(player_id, hello.player_name.clone(), session);
+        let (eid, entity) = shard.add_player(player_id, hello.player_name.clone(), session);
+        if role == ff_common::PlayerRole::TechMonarch {
+            let _ = shard
+                .ecs_world
+                .insert_one(entity, ff_ecs::components::player::Monarch::default());
+        }
 
         // Update entity_id in session
         if let Some(s) = shard.sessions.get_mut(&player_id) {
@@ -151,6 +161,8 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
                 EntityKind::Animal { species_id: animal.species_id }
             } else if let Ok(structure) = shard.ecs_world.get::<&ff_ecs::components::identity::Structure>(_e) {
                 EntityKind::Structure { kind: structure.kind }
+            } else if shard.ecs_world.get::<&ff_ecs::components::ai_agent::SemiAIWorker>(_e).is_ok() {
+                EntityKind::SemiAI
             } else if shard.ecs_world.get::<&ff_ecs::components::player::Player>(_e).is_ok() {
                 EntityKind::Player
             } else {
@@ -279,10 +291,33 @@ async fn handle_message(
                     break;
                 }
             }
+
+            // Update the surveillance tag so the Monarch sees "moving"
+            // vs "idle" without us having to inspect every input.
+            let moving = input.move_dir[0].abs() + input.move_dir[1].abs() > 0.01;
+            if let Some(s) = shard.sessions.get_mut(&player_id) {
+                let tag = if input.jump {
+                    "jumping"
+                } else if input.sprint && moving {
+                    "sprinting"
+                } else if moving {
+                    "moving"
+                } else {
+                    "idle"
+                };
+                if s.last_action != tag {
+                    s.last_action = tag.to_string();
+                }
+            }
         }
         MessageType::ClientAction => {
             let action: ClientAction = decode_payload(payload)?;
             let mut shard = shard.lock().await;
+
+            // Record a short surveillance tag for this action.
+            if let Some(s) = shard.sessions.get_mut(&player_id) {
+                s.last_action = action_tag(&action.action);
+            }
 
             // Find player entity
             let mut player_entity = None;
@@ -388,4 +423,28 @@ fn hash_name(name: &str) -> u64 {
         hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
     }
     hash
+}
+
+/// Short human-readable tag for the surveillance feed.
+fn action_tag(action: &ff_protocol::messages::ActionKind) -> String {
+    use ff_protocol::messages::ActionKind::*;
+    match action {
+        PlantSeed { species_id, .. } => format!("plant #{species_id}"),
+        Harvest { .. } => "harvest".into(),
+        Dig { .. } => "dig".into(),
+        Water { .. } => "water".into(),
+        BuildSwale { .. } => "build swale".into(),
+        BuildHugelBed { .. } => "build hugel".into(),
+        AddMulch { .. } => "mulch".into(),
+        FeedAnimal { .. } => "feed animal".into(),
+        TradeNpc { .. } => "trade".into(),
+        PickUp { .. } => "pick up".into(),
+        CutTree { .. } => "cut tree".into(),
+        Inspect { .. } => "inspect".into(),
+        HuntAnimal { .. } => "hunt".into(),
+        BuildHochsitz { .. } => "build hochsitz".into(),
+        EatItem { .. } => "eat".into(),
+        SellItem { .. } => "sell".into(),
+        DeploySemiAI { .. } => "deploy AI".into(),
+    }
 }

@@ -92,6 +92,39 @@ impl From<u8> for GameMode {
     }
 }
 
+/// Which kind of citizen the player is roleplaying.
+/// - `Farmer` (default): hands-on food-forest worker. Plants, harvests, hunts, sells.
+/// - `TechMonarch`: tech-oligarch role only unlockable in `Realistic` mode. Doesn't
+///   farm directly; deploys semi-AI workers that automate harvesting, accruing
+///   Compute and Influence resources used to issue further "decisions."
+/// The numeric repr is part of the wire protocol — do not renumber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum PlayerRole {
+    Farmer = 0,
+    TechMonarch = 1,
+}
+
+impl From<u8> for PlayerRole {
+    fn from(v: u8) -> Self {
+        match v {
+            1 => Self::TechMonarch,
+            _ => Self::Farmer,
+        }
+    }
+}
+
+impl PlayerRole {
+    /// Tech Monarch is only allowed in Realistic mode. Any other request
+    /// (or in any other mode) is silently downgraded to Farmer.
+    pub fn validate_for_mode(self, mode: GameMode) -> Self {
+        match (self, mode) {
+            (Self::TechMonarch, GameMode::Realistic) => Self::TechMonarch,
+            _ => Self::Farmer,
+        }
+    }
+}
+
 /// Material IDs stored in the voxel grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]

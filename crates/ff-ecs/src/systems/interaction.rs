@@ -418,6 +418,45 @@ pub fn process_action(
             ActionResult::Success(format!("Ate 1 — restored {:.0}% fullness", nutrition))
         }
 
+        ActionKind::DeploySemiAI { position } => {
+            // Tech-Monarch only. The action does nothing for Farmer players.
+            let mut monarch = match world.get::<&mut crate::components::player::Monarch>(player_entity) {
+                Ok(m) => m,
+                Err(_) => return ActionResult::Failure("Only Tech Monarchs can deploy AI workers".into()),
+            };
+            if monarch.compute < 20.0 {
+                return ActionResult::Failure(
+                    format!("Need 20 Compute (you have {:.0})", monarch.compute),
+                );
+            }
+            let [x, _y, z] = *position;
+            let dist = (x as f32 - player_pos.x).hypot(z as f32 - player_pos.z);
+            if dist > 30.0 {
+                return ActionResult::Failure("Target out of broadcast range".into());
+            }
+            monarch.compute -= 20.0;
+            monarch.deployments = monarch.deployments.saturating_add(1);
+            drop(monarch);
+
+            let y = terrain.spawn_height(x, z);
+            let tick = resources.calendar.tick.0;
+            let id = *next_entity_id;
+            *next_entity_id += 1;
+            world.spawn((
+                NetworkId(EntityId(id)),
+                Owner(player_id),
+                Position(Vec3::new(x as f32, y, z as f32)),
+                Rotation(0.0),
+                Velocity(Vec3::ZERO),
+                crate::components::ai_agent::SemiAIWorker {
+                    owner: player_id,
+                    deployed_at_tick: tick,
+                    last_harvest_tick: tick,
+                },
+            ));
+            ActionResult::Success("Deployed semi-AI worker".into())
+        }
+
         ActionKind::SellItem { item_id, count } => {
             if *count == 0 {
                 return ActionResult::Failure("Nothing to sell".into());
