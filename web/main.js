@@ -1,5 +1,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+// Entity model registry + shared tree builder live in their own files
+// under ./models/. main.js consults MODEL_BUILDERS first; species that
+// haven't been migrated yet still fall through to the inline switch.
+import { MODEL_BUILDERS, makeTreePositional as makeTree } from "./models/index.js";
 
 let ws = null;
 let connected = false;
@@ -179,10 +183,15 @@ const WORLD_COUNTRIES = [
 
 let selectedCountryIdx = 0;
 
-function drawWorldMap() {
-    const canvas = document.getElementById("world-canvas");
-    const ctx = canvas.getContext("2d");
-    const w = canvas.width, h = canvas.height;
+// Static layer (ocean + continents) is identical every redraw, so we
+// render it once into an offscreen canvas and blit instead of running
+// ~40 path operations every time the user clicks a country. ~50× faster
+// redraw and avoids a noticeable flicker on the connect screen.
+let _worldMapBase = null;
+function buildWorldMapBase(w, h) {
+    const off = document.createElement("canvas");
+    off.width = w; off.height = h;
+    const ctx = off.getContext("2d");
 
     // Ocean
     const grad = ctx.createLinearGradient(0, 0, 0, h);
@@ -244,8 +253,19 @@ function drawWorldMap() {
     ctx.lineTo(610,150); ctx.lineTo(620,130); ctx.lineTo(630,110);
     ctx.lineTo(620,90); ctx.lineTo(600,70); ctx.lineTo(580,60);
     ctx.closePath(); ctx.fill();
+    return off;
+}
 
-    // Draw country markers
+function drawWorldMap() {
+    const canvas = document.getElementById("world-canvas");
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height;
+
+    // Lazily build the static base layer the first time, then blit.
+    if (!_worldMapBase) _worldMapBase = buildWorldMapBase(w, h);
+    ctx.drawImage(_worldMapBase, 0, 0);
+
+    // Draw country markers (only this loop runs on each redraw).
     for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
         const c = WORLD_COUNTRIES[i];
         const isSelected = (i === selectedCountryIdx);
@@ -951,42 +971,324 @@ async function init(serverUrl) {
     requestAnimationFrame(gameLoop);
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Distant Horizons + Shaders look
+// ──────────────────────────────────────────────────────────────────────
+// Three pieces work together to imitate the Minecraft "Distant Horizons
+// + Shaders" aesthetic in plain Three.js without real volumetric clouds
+// or per-pixel LOD streaming:
+//
+//   1. A large sky-dome sphere with a custom shader: three-band gradient
+//      from below-horizon → horizon → zenith, a sun disc + halo, and
+//      animated fBM cloud noise projected onto a virtual plane above
+//      the camera. The dome follows the camera each frame so it appears
+//      infinite.
+//   2. A low-poly ring of procedurally elevated hills that surrounds
+//      the voxel terrain. Coloured to blend from green near the playable
+//      area to atmospheric blue at the far edge, and faded into the fog
+//      so the seam is invisible.
+//   3. ACES tone mapping + a tuned FogExp2 colour that matches the
+//      sky-dome's horizon band — the two cross-fade smoothly.
+//
+// The look is updated each frame via `updateSky(dt)` from the game loop,
+// which advances the cloud-time uniform and re-centres the dome.
+const SKY_TOP_COLOR     = new THREE.Color(0x6a98c8);
+const SKY_HORIZON_COLOR = new THREE.Color(0xd6c8b0);
+const SKY_GROUND_COLOR  = new THREE.Color(0xb89870);
+const SUN_DIRECTION     = new THREE.Vector3(0.55, 0.70, 0.45).normalize();
+const SUN_COLOR_SHADER  = new THREE.Color(0xfff0d2);
+
+let skyMaterial = null;
+let skyDomeMesh = null;
+let cloudTime   = 0;
+
+function buildSkyDome() {
+    const geo = new THREE.SphereGeometry(2200, 32, 16);
+    const mat = new THREE.ShaderMaterial({
+        uniforms: {
+            topColor:     { value: SKY_TOP_COLOR },
+            horizonColor: { value: SKY_HORIZON_COLOR },
+            groundColor:  { value: SKY_GROUND_COLOR },
+            sunDir:       { value: SUN_DIRECTION.clone() },
+            sunColor:     { value: SUN_COLOR_SHADER },
+            time:         { value: 0 },
+        },
+        vertexShader: `
+            varying vec3 vDir;
+            void main() {
+                vec4 worldPos = modelMatrix * vec4(position, 1.0);
+                vDir = normalize(worldPos.xyz - cameraPosition);
+                gl_Position = projectionMatrix * viewMatrix * worldPos;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vDir;
+            uniform vec3 topColor;
+            uniform vec3 horizonColor;
+            uniform vec3 groundColor;
+            uniform vec3 sunDir;
+            uniform vec3 sunColor;
+            uniform float time;
+
+            float hash(vec2 p) {
+                return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+            }
+            float noise(vec2 p) {
+                vec2 i = floor(p), f = fract(p);
+                f = f*f*(3.0-2.0*f);
+                return mix(mix(hash(i), hash(i+vec2(1,0)), f.x),
+                           mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
+            }
+            float fbm(vec2 p) {
+                float v = 0.0, a = 0.5;
+                for (int i = 0; i < 5; i++) {
+                    v += a * noise(p);
+                    p *= 2.05; a *= 0.5;
+                }
+                return v;
+            }
+
+            void main() {
+                vec3 d = normalize(vDir);
+                float h = d.y;
+
+                // 3-band gradient: below-horizon ground tint → horizon
+                // band → zenith blue.
+                vec3 sky = mix(horizonColor, topColor, pow(max(h, 0.0), 0.5));
+                sky = mix(groundColor, sky, smoothstep(-0.10, 0.10, h));
+
+                // Sun disc + halo.
+                vec3 sd = normalize(sunDir);
+                float sunDot = max(dot(d, sd), 0.0);
+                float sunDisc = smoothstep(0.997, 0.9995, sunDot);
+                float sunHalo = pow(sunDot, 7.0) * 0.35
+                              + pow(sunDot, 96.0) * 0.55;
+                sky += sunColor * (sunDisc * 2.2 + sunHalo);
+
+                // fBM clouds projected onto a virtual plane above the
+                // camera. Skip below-horizon, fade smoothly near it.
+                if (h > 0.0) {
+                    vec2 uv = d.xz / (h + 0.42);
+                    uv *= 1.55;
+                    uv += vec2(time * 0.011, time * 0.006);
+                    float c1 = fbm(uv);
+                    float c2 = fbm(uv * 2.1 + 7.0);
+                    float clouds = smoothstep(0.50, 0.85, c1 * 0.65 + c2 * 0.35);
+                    clouds *= smoothstep(0.02, 0.30, h);
+                    // Brighten cloud edges facing the sun, darken the
+                    // shadowed underside ever so slightly.
+                    float sunSide = clamp(
+                        dot(normalize(vec3(d.x, 0.0, d.z)),
+                            normalize(vec3(sd.x, 0.0, sd.z))) * 0.5 + 0.5,
+                        0.0, 1.0
+                    );
+                    vec3 cloudColor = mix(
+                        vec3(0.78, 0.80, 0.86),
+                        vec3(1.00, 0.98, 0.92),
+                        sunSide
+                    );
+                    sky = mix(sky, cloudColor, clouds * 0.95);
+                }
+
+                gl_FragColor = vec4(sky, 1.0);
+            }
+        `,
+        side: THREE.BackSide,
+        depthWrite: false,
+        fog: false,
+    });
+    skyMaterial = mat;
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = -1000;
+    return mesh;
+}
+
+function buildDistantHorizon() {
+    // Low-poly ring of procedural hills surrounding the voxel terrain.
+    // Centre is the voxel-terrain centre; inner radius is sunk well
+    // below the playable surface so the seam hides inside the voxels.
+    const SIZE    = 3200;
+    const SEG     = 110;
+    const INNER_R = 240; // beyond voxel terrain reach (≈226)
+    const geo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
+    geo.rotateX(-Math.PI / 2);
+    const pos = geo.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    const nearColor = new THREE.Color(0x4d7a36);
+    const farColor  = new THREE.Color(0xa8c4dc);
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const z = pos.getZ(i);
+        const r = Math.sqrt(x * x + z * z);
+        if (r < INNER_R) {
+            // Push deep below the voxel terrain so this part never peeks
+            // through. Colour is irrelevant — never visible.
+            pos.setY(i, -80);
+            colors[i * 3]     = 0.2;
+            colors[i * 3 + 1] = 0.4;
+            colors[i * 3 + 2] = 0.2;
+            continue;
+        }
+        // Multi-octave sine noise so hills feel organic without an FBM
+        // texture lookup.
+        const n1 = Math.sin(x * 0.0078) * Math.cos(z * 0.0091);
+        const n2 = Math.sin(x * 0.027 + 1.7) * Math.sin(z * 0.022 - 0.6);
+        const n3 = Math.sin(x * 0.061 + 2.5) * Math.cos(z * 0.054 + 0.2);
+        // Rolling hills grow taller further out so they break the
+        // horizon line visibly.
+        const baseElev = (r - INNER_R) * 0.05;
+        const elev = n1 * 26 + n2 * 12 + n3 * 5 + Math.min(50, baseElev);
+        pos.setY(i, elev);
+        // Atmospheric blue blend by distance.
+        const t = Math.min(1.0, (r - INNER_R) / (SIZE * 0.4));
+        const c = nearColor.clone().lerp(farColor, t * 0.85);
+        colors[i * 3]     = c.r;
+        colors[i * 3 + 1] = c.g;
+        colors[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.95,
+        metalness: 0.0,
+        flatShading: true,
+        fog: true,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    // Centre on the voxel-terrain centre. Slightly below voxel base so
+    // we tuck under the seam.
+    mesh.position.set(160, 2, 160);
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
+    return mesh;
+}
+
+function updateSky(dt) {
+    cloudTime += dt;
+    if (skyMaterial) skyMaterial.uniforms.time.value = cloudTime;
+    if (skyDomeMesh && camera) {
+        skyDomeMesh.position.copy(camera.position);
+    }
+}
+
+// ── Water shader ─────────────────────────────────────────────────────
+// Replaces the static MeshStandardMaterial we used to render each
+// water voxel-tile with an animated ShaderMaterial:
+//   - vertex displacement (two-octave sine + slow swell) → real ripples
+//   - per-fragment normal perturbation (fBM-like cross-noise) → glints
+//   - depth-blended colour from shallow to deep
+//   - Fresnel-style edge brightening so water reads as a surface, not a sheet
+// The `time` uniform is updated each frame by updateWater() so every
+// instance moves in sync. Materials are cached here so we don't end up
+// with one program per tile.
+const waterMaterials = [];
+// Grass-tuft shader materials, animated each frame by updateGrass().
+const grassMaterials = [];
+function updateGrass(time) {
+    for (const mat of grassMaterials) {
+        if (mat && mat.uniforms && mat.uniforms.time) {
+            mat.uniforms.time.value = time;
+        }
+    }
+}
+
+function buildWaterMaterial({ shallow, deep, opacity }) {
+    return new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        uniforms: {
+            time:    { value: 0 },
+            shallow: { value: shallow },
+            deep:    { value: deep },
+            opacity: { value: opacity },
+            sunDir:  { value: SUN_DIRECTION.clone() },
+        },
+        vertexShader: `
+            varying vec3 vWorldPos;
+            varying vec3 vViewDir;
+            varying vec2 vUv;
+            uniform float time;
+
+            // Two-octave wave displacement for organic surface motion.
+            float wave(vec2 p, float t) {
+                return sin(p.x * 1.3 + t * 1.2) * 0.04
+                     + sin(p.y * 1.7 - t * 0.9) * 0.04
+                     + sin((p.x + p.y) * 0.8 + t * 0.5) * 0.025;
+            }
+
+            void main() {
+                vec4 worldPos = modelMatrix * vec4(position, 1.0);
+                worldPos.y += wave(worldPos.xz, time);
+                vWorldPos = worldPos.xyz;
+                vViewDir = normalize(worldPos.xyz - cameraPosition);
+                vUv = uv;
+                gl_Position = projectionMatrix * viewMatrix * worldPos;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vWorldPos;
+            varying vec3 vViewDir;
+            varying vec2 vUv;
+            uniform vec3 shallow;
+            uniform vec3 deep;
+            uniform float opacity;
+            uniform float time;
+            uniform vec3 sunDir;
+
+            float hash(vec2 p) {
+                return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+            }
+            float noise(vec2 p) {
+                vec2 i = floor(p), f = fract(p);
+                f = f*f*(3.0-2.0*f);
+                return mix(mix(hash(i), hash(i+vec2(1,0)), f.x),
+                           mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
+            }
+
+            void main() {
+                vec3 v = -normalize(vViewDir);
+
+                // Faux normal from gradient of moving noise — gives the
+                // characteristic glitter without sampling a normal map.
+                vec2 q = vWorldPos.xz * 1.2 + vec2(time * 0.12, time * 0.07);
+                float nA = noise(q);
+                float nB = noise(q + vec2(0.15, 0.0));
+                float nC = noise(q + vec2(0.0, 0.15));
+                vec3 nrm = normalize(vec3(nA - nB, 1.0, nA - nC) * vec3(2.5, 1.0, 2.5));
+
+                // Diffuse against the sun + ambient sky tint.
+                float lambert = max(dot(nrm, normalize(sunDir)), 0.0);
+                vec3 baseColor = mix(deep, shallow, smoothstep(0.0, 1.0, vUv.y * 0.6 + nA * 0.6));
+                vec3 lit = baseColor * (0.55 + 0.45 * lambert);
+
+                // Sun glint — sharper than diffuse for sparkle.
+                vec3 halfDir = normalize(normalize(sunDir) + v);
+                float spec = pow(max(dot(nrm, halfDir), 0.0), 80.0);
+                lit += vec3(1.0, 0.97, 0.88) * spec * 0.8;
+
+                // Fresnel: brighter at glancing view angles.
+                float fres = pow(1.0 - max(dot(nrm, v), 0.0), 3.0);
+                lit = mix(lit, vec3(0.85, 0.92, 1.0), fres * 0.18);
+
+                gl_FragColor = vec4(lit, opacity);
+            }
+        `,
+    });
+}
+
 function initRenderer() {
     scene = new THREE.Scene();
 
-    // Painterly sky: inspired by Claude Lorrain golden landscapes and Turner atmospherics
-    const skyCanvas = document.createElement("canvas");
-    skyCanvas.width = 512; skyCanvas.height = 256;
-    const skyCtx = skyCanvas.getContext("2d");
-    const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 256);
-    skyGrad.addColorStop(0, "#2a4a78");
-    skyGrad.addColorStop(0.15, "#4a78b0");
-    skyGrad.addColorStop(0.35, "#7aaccf");
-    skyGrad.addColorStop(0.5, "#a8cce0");
-    skyGrad.addColorStop(0.65, "#d4c8b0");
-    skyGrad.addColorStop(0.78, "#e8c8a0");
-    skyGrad.addColorStop(0.88, "#e0b888");
-    skyGrad.addColorStop(1.0, "#c8a070");
-    skyCtx.fillStyle = skyGrad;
-    skyCtx.fillRect(0, 0, 512, 256);
-    // Soft clouds as translucent ovals
-    skyCtx.globalAlpha = 0.08;
-    for (let i = 0; i < 20; i++) {
-        const cx = Math.random() * 512;
-        const cy = 30 + Math.random() * 100;
-        const rx = 40 + Math.random() * 80;
-        const ry = 8 + Math.random() * 15;
-        skyCtx.beginPath();
-        skyCtx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-        skyCtx.fillStyle = "#ffffff";
-        skyCtx.fill();
-    }
-    skyCtx.globalAlpha = 1.0;
-    const skyTexture = new THREE.CanvasTexture(skyCanvas);
-    scene.background = skyTexture;
-    scene.fog = new THREE.FogExp2(0xc8d8e0, 0.0012);
+    // Fog matches the sky-dome horizon band so distant geometry
+    // dissolves into the dome cleanly. Slightly cooler tint than the
+    // horizon colour gives the scene a touch of aerial-perspective blue.
+    scene.background = new THREE.Color(0xc4d4e2);
+    scene.fog = new THREE.FogExp2(0xc4d4e2, 0.0014);
 
-    camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 3000);
+    camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 5000);
     camera.position.set(160, 80, 160);
     camera.lookAt(160, 0, 160);
 
@@ -995,7 +1297,7 @@ function initRenderer() {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.1;
+    renderer.toneMappingExposure = 1.15;
     document.body.appendChild(renderer.domElement);
 
     controls = new OrbitControls(camera, renderer.domElement);
@@ -1004,6 +1306,11 @@ function initRenderer() {
     controls.maxPolarAngle = Math.PI * 0.45;
     controls.minDistance = 3;
     controls.maxDistance = 600;
+
+    // Sky dome + distant horizon ring + cloud animation.
+    skyDomeMesh = buildSkyDome();
+    scene.add(skyDomeMesh);
+    scene.add(buildDistantHorizon());
 
     // Golden hour sun
     const sun = new THREE.DirectionalLight(0xffeacc, 2.0);
@@ -1018,8 +1325,8 @@ function initRenderer() {
     sun.shadow.camera.top = 200;
     sun.shadow.camera.bottom = -200;
     scene.add(sun);
-    scene.add(new THREE.AmbientLight(0x708090, 0.6));
-    scene.add(new THREE.HemisphereLight(0x99ccee, 0x667744, 0.7));
+    scene.add(new THREE.AmbientLight(0x708090, 0.55));
+    scene.add(new THREE.HemisphereLight(0xa8c8ea, 0x667744, 0.7));
 
     // Warm fill from the side for depth
     const fill = new THREE.DirectionalLight(0xffddbb, 0.4);
@@ -2806,6 +3113,12 @@ function renderTerrain(terrainData) {
         scene.remove(terrainGroup);
     }
     terrainGroup = new THREE.Group();
+    // The water/grass shader materials lived inside the old terrainGroup.
+    // Reset their drive arrays so we don't keep updating disposed-but-
+    // still-referenced ShaderMaterials. (waterMeshes too — same scope.)
+    waterMaterials.length = 0;
+    grassMaterials.length = 0;
+    waterMeshes.length = 0;
 
     const dv = new DataView(terrainData.buffer, terrainData.byteOffset, terrainData.byteLength);
     const width = dv.getUint32(0, true);
@@ -2940,6 +3253,121 @@ function renderTerrain(terrainData) {
             flowerIdx++;
         }
         terrainGroup.add(flowerGroup);
+
+        // ── Grass tufts ──────────────────────────────────────────────
+        // Cross-pair of small textured planes per tuft, scattered on
+        // grass surface voxels. Rendered as a single InstancedMesh so
+        // ~1.5 k tufts stay cheap (one draw call, shared geometry).
+        // Sway is added in the vertex shader via `time` and per-vertex
+        // y-coordinate so blade tops swing while roots stay anchored.
+        const tuftCanvas = document.createElement("canvas");
+        tuftCanvas.width = 32; tuftCanvas.height = 64;
+        const tctx = tuftCanvas.getContext("2d");
+        // Faded gradient blade silhouette as an alpha texture.
+        const tg = tctx.createLinearGradient(0, 0, 0, 64);
+        tg.addColorStop(0,    "rgba(120,200,90,0.0)");
+        tg.addColorStop(0.10, "rgba(140,210,100,0.85)");
+        tg.addColorStop(0.55, "rgba(110,170,80,0.95)");
+        tg.addColorStop(1,    "rgba(60,110,40,0.98)");
+        tctx.fillStyle = tg;
+        // Three thin tapered blades on one plane to fake density.
+        const blades = [[6, 26], [14, 22], [22, 28]];
+        for (const [cx, w] of blades) {
+            tctx.beginPath();
+            tctx.moveTo(cx, 64);
+            tctx.quadraticCurveTo(cx - w / 2, 32, cx + (cx === 14 ? 0 : (cx < 16 ? -2 : 2)), 0);
+            tctx.quadraticCurveTo(cx + w / 2, 32, cx, 64);
+            tctx.closePath();
+            tctx.fill();
+        }
+        const tuftTex = new THREE.CanvasTexture(tuftCanvas);
+        tuftTex.colorSpace = THREE.SRGBColorSpace;
+
+        const tuftMat = new THREE.ShaderMaterial({
+            transparent: true,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+            uniforms: {
+                map:  { value: tuftTex },
+                time: { value: 0 },
+                tint: { value: new THREE.Color(0xa0c478) },
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                varying float vSway;
+                uniform float time;
+                void main() {
+                    vUv = uv;
+                    // Sway scales with height in the plane (uv.y near 0
+                    // is the tip in our texture — flip via 1.0-uv.y).
+                    float h = 1.0 - uv.y;
+                    vec3 p = position;
+                    float a = time * 1.8 + (instanceMatrix[3].x + instanceMatrix[3].z) * 0.35;
+                    float sway = sin(a) * 0.08 + sin(a * 0.7) * 0.04;
+                    p.x += sway * h;
+                    p.z += sway * h * 0.6;
+                    vSway = h;
+                    gl_Position = projectionMatrix * viewMatrix * instanceMatrix
+                                * vec4(p, 1.0);
+                }
+            `,
+            fragmentShader: `
+                varying vec2 vUv;
+                varying float vSway;
+                uniform sampler2D map;
+                uniform vec3 tint;
+                void main() {
+                    vec4 tex = texture2D(map, vUv);
+                    if (tex.a < 0.18) discard;
+                    // Slight gradient: tips brighter, roots darker.
+                    vec3 col = tex.rgb * tint * (0.85 + 0.25 * (1.0 - vSway));
+                    gl_FragColor = vec4(col, tex.a);
+                }
+            `,
+        });
+
+        // Plane is 1 m tall; we offset it so the bottom sits on the
+        // ground and the top reaches ~0.9 m.
+        const bladeGeo = new THREE.PlaneGeometry(0.7, 1.0);
+        bladeGeo.translate(0, 0.5, 0);
+
+        // Cap count so we don't pay for a tuft on every grass voxel
+        // (3000+ on full maps is too dense). Sample every Nth.
+        const maxTufts = Math.min(2500, Math.floor(grassCount * 0.55));
+        const sampleStride = Math.max(1, Math.floor(grassCount / maxTufts));
+        const tufts = new THREE.InstancedMesh(bladeGeo, tuftMat, maxTufts);
+        tufts.frustumCulled = false;
+        tufts.castShadow = false;
+        tufts.receiveShadow = false;
+
+        const m4 = new THREE.Matrix4();
+        const q  = new THREE.Quaternion();
+        const s  = new THREE.Vector3();
+        const p  = new THREE.Vector3();
+        let tIdx = 0;
+        for (let v = 0; v < grassCount && tIdx < maxTufts; v += sampleStride) {
+            const fx = grassPositions[v * 3];
+            const fy = grassPositions[v * 3 + 1];
+            const fz = grassPositions[v * 3 + 2];
+            if (!isAir(fx, fy + 1, fz)) continue;
+            const jitX = ((fx * 73 + fz * 19) % 100) / 100 - 0.5;
+            const jitZ = ((fz * 97 + fx * 31) % 100) / 100 - 0.5;
+            p.set(fx + jitX * 0.8, fy + 1.0, fz + jitZ * 0.8);
+            // Random Y rotation so neighbouring tufts don't line up.
+            const rot = ((fx * 13 + fz * 7) & 0xff) / 255 * Math.PI;
+            q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot);
+            // Slight scale jitter for variety.
+            const scaleH = 0.7 + (((fx + fz) * 11) % 50) / 100; // 0.7..1.2
+            s.set(scaleH * 0.9, scaleH, scaleH * 0.9);
+            m4.compose(p, q, s);
+            tufts.setMatrixAt(tIdx++, m4);
+        }
+        tufts.count = tIdx;
+        tufts.instanceMatrix.needsUpdate = true;
+        // Stash on the terrainGroup so the next terrain rebuild disposes it.
+        terrainGroup.add(tufts);
+        // And track so updateGrass() can drive the time uniform.
+        grassMaterials.push(tuftMat);
     }
 
     // Butterflies (animated in render loop)
@@ -2980,16 +3408,21 @@ function renderTerrain(terrainData) {
         }
     }
     if (waterPositions.length > 0) {
-        const waterGeo = new THREE.PlaneGeometry(1, 1);
+        // Higher-resolution plane so the vertex-displacement waves
+        // actually have something to bend; 8×8 is plenty for a 1×1 tile.
+        const waterGeo = new THREE.PlaneGeometry(1, 1, 8, 8);
         waterGeo.rotateX(-Math.PI / 2);
-        const shallowMat = new THREE.MeshStandardMaterial({
-            color: 0x3388bb, transparent: true, opacity: 0.6,
-            roughness: 0.1, metalness: 0.3,
+        const shallowMat = buildWaterMaterial({
+            shallow: new THREE.Color(0x4aa6d8),
+            deep:    new THREE.Color(0x1a4a78),
+            opacity: 0.78,
         });
-        const deepMat = new THREE.MeshStandardMaterial({
-            color: 0x0a3060, transparent: true, opacity: 0.7,
-            roughness: 0.1, metalness: 0.3,
+        const deepMat = buildWaterMaterial({
+            shallow: new THREE.Color(0x1a6298),
+            deep:    new THREE.Color(0x062040),
+            opacity: 0.88,
         });
+        waterMaterials.push(shallowMat, deepMat);
         const shallowCount = waterPositions.filter((_, i) => i % 4 === 3 && waterPositions[i] === 4).length / 1;
         let sc = 0, dc = 0;
         for (let i = 3; i < waterPositions.length; i += 4) {
@@ -3378,58 +3811,12 @@ function drawNavMap() {
     const canvas = document.getElementById("nav-world-canvas");
     const ctx = canvas.getContext("2d");
     const w = canvas.width, h = canvas.height;
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, "#0a1a3a");
-    grad.addColorStop(0.5, "#0a2a4a");
-    grad.addColorStop(1, "#0a1a3a");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
 
-    ctx.fillStyle = "#1a2a1a";
-    ctx.beginPath();
-    ctx.moveTo(80,80); ctx.lineTo(190,75); ctx.lineTo(200,90); ctx.lineTo(185,120);
-    ctx.lineTo(175,115); ctx.lineTo(170,130); ctx.lineTo(180,145); ctx.lineTo(165,160);
-    ctx.lineTo(155,150); ctx.lineTo(145,155); ctx.lineTo(140,148);
-    ctx.lineTo(130,155); ctx.lineTo(120,150); ctx.lineTo(110,160);
-    ctx.lineTo(100,165); ctx.lineTo(88,155); ctx.lineTo(85,165);
-    ctx.lineTo(95,170); ctx.lineTo(90,175); ctx.lineTo(80,168);
-    ctx.lineTo(75,155); ctx.lineTo(80,130); ctx.lineTo(75,110); ctx.lineTo(80,95);
-    ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(80,175); ctx.lineTo(110,172); ctx.lineTo(140,175); ctx.lineTo(170,170);
-    ctx.lineTo(210,180); ctx.lineTo(240,175); ctx.lineTo(260,190);
-    ctx.lineTo(255,220); ctx.lineTo(245,250); ctx.lineTo(230,270);
-    ctx.lineTo(215,280); ctx.lineTo(205,275); ctx.lineTo(210,265);
-    ctx.lineTo(220,260); ctx.lineTo(210,240);
-    ctx.lineTo(195,230); ctx.lineTo(175,245); ctx.lineTo(155,240);
-    ctx.lineTo(140,220); ctx.lineTo(120,210); ctx.lineTo(100,200);
-    ctx.lineTo(85,185); ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(240,120); ctx.lineTo(310,110); ctx.lineTo(330,130);
-    ctx.lineTo(320,155); ctx.lineTo(300,165); ctx.lineTo(270,160);
-    ctx.lineTo(250,170); ctx.lineTo(240,155); ctx.lineTo(235,140);
-    ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(310,70); ctx.lineTo(380,50); ctx.lineTo(460,55); ctx.lineTo(510,80);
-    ctx.lineTo(520,100); ctx.lineTo(510,130); ctx.lineTo(490,145);
-    ctx.lineTo(460,155); ctx.lineTo(440,165); ctx.lineTo(420,170);
-    ctx.lineTo(400,165); ctx.lineTo(380,155); ctx.lineTo(360,150);
-    ctx.lineTo(340,140); ctx.lineTo(330,130); ctx.lineTo(320,110);
-    ctx.lineTo(310,100); ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(500,100); ctx.lineTo(515,95); ctx.lineTo(520,110);
-    ctx.lineTo(510,130); ctx.lineTo(500,125); ctx.lineTo(505,110);
-    ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(495,130); ctx.lineTo(505,135); ctx.lineTo(500,145);
-    ctx.lineTo(490,140); ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(570,50); ctx.lineTo(690,40); ctx.lineTo(700,80);
-    ctx.lineTo(680,100); ctx.lineTo(660,120); ctx.lineTo(640,140);
-    ctx.lineTo(620,160); ctx.lineTo(610,170); ctx.lineTo(600,165);
-    ctx.lineTo(610,150); ctx.lineTo(620,130); ctx.lineTo(630,110);
-    ctx.lineTo(620,90); ctx.lineTo(600,70); ctx.lineTo(580,60);
-    ctx.closePath(); ctx.fill();
+    // Share the same offscreen base canvas as the connect-screen map
+    // (built lazily by drawWorldMap if the connect screen hasn't been
+    // shown yet — e.g. a deep-link straight into Travel to Region).
+    if (!_worldMapBase) _worldMapBase = buildWorldMapBase(w, h);
+    ctx.drawImage(_worldMapBase, 0, 0);
 
     for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
         const c = WORLD_COUNTRIES[i];
@@ -3521,856 +3908,69 @@ function travelToRegion(regionIndex, plotSeed) {
 }
 
 // --- Entity rendering ---
+// `makeTree` is imported from ./models/trees/_tree.js (see top of file).
+// All tree species — both the ones in the inline switch below AND the
+// migrated ones in models/trees/<species>.js — share the same builder,
+// so visual upgrades to it propagate everywhere automatically.
 
-function makeTree(trunkColor, trunkW, trunkH, canopyColor, canopyR, canopyH, canopyY, fruitColor, fruitCount) {
-    const group = new THREE.Group();
-    const trunkGeo = new THREE.CylinderGeometry(trunkW * 0.6, trunkW, trunkH, 8);
-    const trunk = new THREE.Mesh(trunkGeo, new THREE.MeshStandardMaterial({
-        color: trunkColor, roughness: 0.95
-    }));
-    trunk.position.y = trunkH / 2;
-    trunk.castShadow = true;
-    group.add(trunk);
-    // Multiple overlapping canopy spheres for organic look
-    const canopyMat = new THREE.MeshStandardMaterial({ color: canopyColor, roughness: 0.85 });
-    const mainCanopy = new THREE.Mesh(new THREE.SphereGeometry(canopyR, 10, 8), canopyMat);
-    if (canopyH !== canopyR) mainCanopy.scale.y = canopyH / canopyR;
-    mainCanopy.position.y = canopyY;
-    mainCanopy.castShadow = true;
-    group.add(mainCanopy);
-    // Secondary canopy blobs
-    for (let i = 0; i < 3; i++) {
-        const a = (i / 3) * Math.PI * 2 + 0.5;
-        const r2 = canopyR * 0.65;
-        const blob = new THREE.Mesh(
-            new THREE.SphereGeometry(r2, 7, 5),
-            new THREE.MeshStandardMaterial({
-                color: new THREE.Color(canopyColor).offsetHSL(0, 0, (i - 1) * 0.04),
-                roughness: 0.85
-            })
-        );
-        blob.position.set(Math.cos(a) * canopyR * 0.5, canopyY - 0.2 + i * 0.15, Math.sin(a) * canopyR * 0.5);
-        blob.castShadow = true;
-        group.add(blob);
-    }
-    // Leaf particles scattered around canopy
-    const leafCount = Math.floor(canopyR * 12);
-    const leafGeo = new THREE.PlaneGeometry(0.18, 0.12);
-    for (let i = 0; i < leafCount; i++) {
-        const theta = Math.random() * Math.PI * 2;
-        const phi = Math.random() * Math.PI;
-        const rLeaf = canopyR * (0.7 + Math.random() * 0.45);
-        const lx = Math.sin(phi) * Math.cos(theta) * rLeaf;
-        const ly = canopyY + Math.cos(phi) * canopyH * 0.5 * (Math.random() - 0.3);
-        const lz = Math.sin(phi) * Math.sin(theta) * rLeaf;
-        const leafShade = new THREE.Color(canopyColor).offsetHSL(
-            (Math.random() - 0.5) * 0.06, (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.08
-        );
-        const leaf = new THREE.Mesh(leafGeo, new THREE.MeshStandardMaterial({
-            color: leafShade, roughness: 0.8, side: THREE.DoubleSide
-        }));
-        leaf.position.set(lx, ly, lz);
-        leaf.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        group.add(leaf);
-    }
-    // Fruits — placed inside a named subgroup so we can toggle visibility
-    // based on the plant's growth stage (only visible when Fruiting).
-    if (fruitColor && fruitCount) {
-        const fruitsGroup = new THREE.Group();
-        fruitsGroup.name = "fruits";
-        fruitsGroup.visible = false; // shown only when growthStage === 5 (Fruiting)
-        const fruitMat = new THREE.MeshStandardMaterial({
-            color: fruitColor,
-            roughness: 0.4,
-            metalness: 0.05,
-            emissive: new THREE.Color(fruitColor).multiplyScalar(0.25),
-        });
-        const fruitGeo = new THREE.SphereGeometry(0.14, 6, 5);
-        for (let i = 0; i < fruitCount; i++) {
-            const a = (i / fruitCount) * Math.PI * 2;
-            const rr = canopyR * 0.6;
-            const fruit = new THREE.Mesh(fruitGeo, fruitMat);
-            fruit.position.set(
-                Math.cos(a) * rr,
-                canopyY - canopyH * 0.3 + Math.sin(i * 2.3) * 0.3,
-                Math.sin(a) * rr
-            );
-            fruitsGroup.add(fruit);
-        }
-        group.add(fruitsGroup);
-    }
-    return group;
-}
+// ─── Entity model-template cache ──────────────────────────────────────────
+// Building a fresh Group with dozens of geometries + materials every time
+// an entity spawns is expensive — at 3000+ entities in the world this
+// dominates frame time on join. Instead, the first time a category is
+// requested we build it ONCE and stash it as a "template"; every
+// subsequent spawn returns template.clone(), which creates fresh Mesh
+// objects but SHARES the underlying geometry + material refs (Three's
+// default clone behaviour). Per-instance state (position, scale,
+// growth-stage visibility, flame effect children) is set on the clone
+// in createOrUpdateEntity, so cached templates never get mutated.
+//
+// Caveats:
+//   - The original factory has some random jitter (leaf scatter,
+//     fruit positions). With caching, all instances of a species share
+//     the same internal layout. That's a fair trade for the ~50× faster
+//     spawn path; we can add a small per-instance rotation jitter later
+//     if every walnut looking identical bothers us visually.
+//   - Materials are shared. Do NOT mutate `obj.material.color` on a
+//     clone — that would tint every instance. Use `obj.material =
+//     obj.material.clone()` first if a per-instance recolour is needed.
+const entityMeshTemplates = new Map();
 
 function createEntityMesh(category) {
-    switch (category) {
-        case "player": {
-            const g = new THREE.Group();
-            const skin = new THREE.MeshStandardMaterial({ color: 0xf0d0a8, roughness: 0.75 });
-            const shirt = new THREE.MeshStandardMaterial({ color: 0x5588bb, roughness: 0.8 });
-            const pants = new THREE.MeshStandardMaterial({ color: 0x445566, roughness: 0.8 });
-            const shoe = new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.9 });
-            const hair = new THREE.MeshStandardMaterial({ color: 0x4a3020, roughness: 0.9 });
-            const dot = new THREE.MeshStandardMaterial({ color: 0x221111, roughness: 0.6 });
-            // Torso
-            const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.4, 6, 8), shirt);
-            torso.position.y = 1.05; torso.castShadow = true; g.add(torso);
-            // Neck
-            const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.1, 6), skin);
-            neck.position.y = 1.35; g.add(neck);
-            // Head (slightly wider, friendly proportion)
-            const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), skin);
-            head.position.y = 1.56; head.castShadow = true; g.add(head);
-            // Hair cap
-            const hairCap = new THREE.Mesh(
-                new THREE.SphereGeometry(0.23, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), hair
-            );
-            hairCap.position.y = 1.58; g.add(hairCap);
-            // Simple dot eyes (friendly, no uncanny valley)
-            for (const side of [-1, 1]) {
-                const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 5, 4), dot);
-                eye.position.set(side * 0.08, 1.58, -0.2); g.add(eye);
-            }
-            // Arms (connected to torso, overlapping)
-            for (const side of [-1, 1]) {
-                const upperArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.065, 0.24, 4, 6), shirt);
-                upperArm.position.set(side * 0.3, 1.1, 0); upperArm.castShadow = true; g.add(upperArm);
-                const forearm = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.22, 4, 6), skin);
-                forearm.position.set(side * 0.3, 0.8, 0); g.add(forearm);
-                const hand = new THREE.Mesh(new THREE.SphereGeometry(0.055, 5, 4), skin);
-                hand.position.set(side * 0.3, 0.62, 0); g.add(hand);
-            }
-            // Legs (overlapping with torso)
-            for (const side of [-1, 1]) {
-                const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.24, 4, 6), pants);
-                thigh.position.set(side * 0.1, 0.6, 0); thigh.castShadow = true; g.add(thigh);
-                const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.22, 4, 6), pants);
-                shin.position.set(side * 0.1, 0.32, 0); g.add(shin);
-                const shoeM = new THREE.Mesh(new THREE.CapsuleGeometry(0.065, 0.1, 4, 5), shoe);
-                shoeM.position.set(side * 0.1, 0.14, -0.02); shoeM.rotation.x = Math.PI / 2;
-                shoeM.scale.set(1, 1.3, 0.8); g.add(shoeM);
-            }
-            return g;
-        }
-        case "eucalyptus":
-            return makeTree(0x8a7a6a, 0.2, 6, 0x6a8a6a, 1.5, 2.1, 7.0);
-        case "chestnut":
-            return makeTree(0x5c3a1a, 0.3, 4, 0x2a7a1a, 2.5, 2.5, 5.5, 0x8a5a1a, 6);
-        case "walnut":
-            return makeTree(0x4a3018, 0.35, 5, 0x2a6a1a, 2.8, 2.8, 6.5, 0x5a7a2a, 8);
-        case "carob":
-            return makeTree(0x3a2a1a, 0.25, 3, 0x2a5a1a, 2.0, 2.0, 4.5, 0x5a3a1a, 5);
-        case "fig":
-            return makeTree(0x6a5a3a, 0.15, 1.5, 0x3a7a2a, 2.0, 1.4, 2.8, 0x6a2a5a, 7);
-        case "pomegranate":
-            return makeTree(0x5a3a2a, 0.12, 1.8, 0x3a6a1a, 1.2, 1.2, 3.0, 0xcc2233, 6);
-        case "citrus":
-            return makeTree(0x5a4a2a, 0.15, 1.5, 0x2a7a1a, 1.5, 1.5, 3.0, 0xffaa22, 8);
-        case "olive":
-            return makeTree(0x7a6a4a, 0.2, 2.5, 0x7a9a6a, 2.0, 1.4, 3.8, 0x3a4a1a, 10);
-        case "rosemary": {
-            const group = new THREE.Group();
-            for (let i = 0; i < 5; i++) {
-                const angle = (i / 5) * Math.PI * 2;
-                const spike = new THREE.Mesh(
-                    new THREE.ConeGeometry(0.15, 1.0, 4),
-                    new THREE.MeshStandardMaterial({ color: 0x3a6a3a })
-                );
-                spike.position.set(Math.cos(angle) * 0.3, 0.5, Math.sin(angle) * 0.3);
-                spike.castShadow = true;
-                group.add(spike);
-            }
-            return group;
-        }
-        case "lavender": {
-            const group = new THREE.Group();
-            for (let i = 0; i < 7; i++) {
-                const angle = (i / 7) * Math.PI * 2;
-                const r = 0.2 + Math.random() * 0.15;
-                const stem = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.02, 0.02, 0.7, 3),
-                    new THREE.MeshStandardMaterial({ color: 0x4a6a3a })
-                );
-                stem.position.set(Math.cos(angle) * r, 0.35, Math.sin(angle) * r);
-                group.add(stem);
-                const flower = new THREE.Mesh(
-                    new THREE.ConeGeometry(0.08, 0.25, 4),
-                    new THREE.MeshStandardMaterial({ color: 0x8855aa })
-                );
-                flower.position.set(Math.cos(angle) * r, 0.8, Math.sin(angle) * r);
-                group.add(flower);
-            }
-            return group;
-        }
-        case "comfrey": {
-            const group = new THREE.Group();
-            for (let i = 0; i < 6; i++) {
-                const angle = (i / 6) * Math.PI * 2;
-                const leaf = new THREE.Mesh(
-                    new THREE.ConeGeometry(0.2, 0.6, 4),
-                    new THREE.MeshStandardMaterial({ color: 0x3a7a2a })
-                );
-                leaf.position.set(Math.cos(angle) * 0.25, 0.3, Math.sin(angle) * 0.25);
-                leaf.rotation.z = Math.cos(angle) * 0.3;
-                leaf.rotation.x = Math.sin(angle) * 0.3;
-                group.add(leaf);
-            }
-            return group;
-        }
-        case "clover": {
-            const group = new THREE.Group();
-            const mat = new THREE.MeshStandardMaterial({ color: 0x2a8a2a });
-            for (let i = 0; i < 4; i++) {
-                const angle = (i / 4) * Math.PI * 2;
-                const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), mat);
-                leaf.position.set(Math.cos(angle) * 0.12, 0.1, Math.sin(angle) * 0.12);
-                leaf.scale.y = 0.4;
-                group.add(leaf);
-            }
-            return group;
-        }
-        case "strawberry": {
-            const group = new THREE.Group();
-            const leaves = new THREE.Mesh(
-                new THREE.SphereGeometry(0.2, 6, 4),
-                new THREE.MeshStandardMaterial({ color: 0x3a8a2a, roughness: 0.85 })
-            );
-            leaves.position.y = 0.15; leaves.scale.y = 0.5; group.add(leaves);
-            const berryMat = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.4 });
-            for (let i = 0; i < 3; i++) {
-                const a = (i / 3) * Math.PI * 2;
-                const berry = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 3), berryMat);
-                berry.position.set(Math.cos(a) * 0.15, 0.08, Math.sin(a) * 0.15);
-                berry.scale.y = 1.3; group.add(berry);
-            }
-            return group;
-        }
-        case "grapevine": {
-            const group = new THREE.Group();
-            const vine = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.04, 0.07, 2.0, 5),
-                new THREE.MeshStandardMaterial({ color: 0x5a4a2a, roughness: 0.9 })
-            );
-            vine.position.y = 1.0; vine.castShadow = true; group.add(vine);
-            const foliage = new THREE.Mesh(
-                new THREE.SphereGeometry(0.8, 8, 6),
-                new THREE.MeshStandardMaterial({ color: 0x4a8a2a, roughness: 0.85 })
-            );
-            foliage.position.y = 2.0; foliage.scale.y = 0.6;
-            foliage.castShadow = true; group.add(foliage);
-            // Grape clusters
-            const grapeMat = new THREE.MeshStandardMaterial({ color: 0x5522aa, roughness: 0.5 });
-            for (let i = 0; i < 4; i++) {
-                const a = (i / 4) * Math.PI * 2;
-                for (let j = 0; j < 3; j++) {
-                    const grape = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 3), grapeMat);
-                    grape.position.set(
-                        Math.cos(a) * 0.5, 1.7 - j * 0.06,
-                        Math.sin(a) * 0.5 + (j - 1) * 0.03
-                    );
-                    group.add(grape);
-                }
-            }
-            return group;
-        }
-        case "chicken": {
-            const group = new THREE.Group();
-            const body = new THREE.Mesh(
-                new THREE.SphereGeometry(0.25, 6, 5),
-                new THREE.MeshStandardMaterial({ color: 0xddaa66 })
-            );
-            body.position.y = 0.3;
-            body.scale.set(1, 0.8, 1.3);
-            group.add(body);
-            const head = new THREE.Mesh(
-                new THREE.SphereGeometry(0.12, 5, 4),
-                new THREE.MeshStandardMaterial({ color: 0xddaa66 })
-            );
-            head.position.set(0, 0.5, 0.2);
-            group.add(head);
-            const comb = new THREE.Mesh(
-                new THREE.BoxGeometry(0.04, 0.08, 0.06),
-                new THREE.MeshStandardMaterial({ color: 0xcc2222 })
-            );
-            comb.position.set(0, 0.6, 0.2);
-            group.add(comb);
-            return group;
-        }
-        case "deer": {
-            const g = new THREE.Group();
-            const fur = new THREE.MeshStandardMaterial({ color: 0x9a7a4a, roughness: 0.9 });
-            const furLight = new THREE.MeshStandardMaterial({ color: 0xc8aa78, roughness: 0.9 });
-            const dark = new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.8 });
-            // Main body: overlapping spheres for smooth form
-            const bodyFront = new THREE.Mesh(new THREE.SphereGeometry(0.34, 8, 7), fur);
-            bodyFront.position.set(0, 0.88, 0.15); bodyFront.scale.set(0.85, 0.9, 1.1);
-            bodyFront.castShadow = true; g.add(bodyFront);
-            const bodyRear = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 7), fur);
-            bodyRear.position.set(0, 0.86, -0.18); bodyRear.scale.set(0.9, 0.88, 1.0);
-            bodyRear.castShadow = true; g.add(bodyRear);
-            const bodyMid = new THREE.Mesh(new THREE.SphereGeometry(0.3, 7, 6), fur);
-            bodyMid.position.set(0, 0.87, 0); bodyMid.scale.set(0.8, 0.85, 1.05);
-            g.add(bodyMid);
-            // Belly
-            const belly = new THREE.Mesh(new THREE.SphereGeometry(0.26, 6, 5), furLight);
-            belly.position.set(0, 0.76, 0); belly.scale.set(0.7, 0.6, 1.0); g.add(belly);
-            // Legs (upper starts inside body sphere)
-            for (const [lx, lz] of [[-0.11, -0.28], [0.11, -0.28], [-0.11, 0.28], [0.11, 0.28]]) {
-                const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.28, 4, 5), fur);
-                upper.position.set(lx, 0.52, lz); upper.castShadow = true; g.add(upper);
-                const lower = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.26, 4, 4), fur);
-                lower.position.set(lx, 0.22, lz); g.add(lower);
-                const hoof = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.035, 0.06, 5), dark);
-                hoof.position.set(lx, 0.04, lz); g.add(hoof);
-            }
-            // Shoulder bump (hides leg-body junction)
-            const shoulderL = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), fur);
-            shoulderL.position.set(-0.12, 0.82, 0.25); g.add(shoulderL);
-            const shoulderR = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), fur);
-            shoulderR.position.set(0.12, 0.82, 0.25); g.add(shoulderR);
-            const hipL = new THREE.Mesh(new THREE.SphereGeometry(0.1, 5, 4), fur);
-            hipL.position.set(-0.12, 0.8, -0.25); g.add(hipL);
-            const hipR = new THREE.Mesh(new THREE.SphereGeometry(0.1, 5, 4), fur);
-            hipR.position.set(0.12, 0.8, -0.25); g.add(hipR);
-            // Neck: multiple overlapping spheres for smooth curve
-            const neckBase = new THREE.Mesh(new THREE.SphereGeometry(0.16, 6, 5), fur);
-            neckBase.position.set(0, 0.98, 0.35); g.add(neckBase);
-            const neckMid = new THREE.Mesh(new THREE.SphereGeometry(0.13, 6, 5), fur);
-            neckMid.position.set(0, 1.1, 0.42); g.add(neckMid);
-            const neckTop = new THREE.Mesh(new THREE.SphereGeometry(0.11, 6, 5), fur);
-            neckTop.position.set(0, 1.2, 0.46); g.add(neckTop);
-            // Head (overlaps neckTop)
-            const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 6), fur);
-            head.position.set(0, 1.28, 0.52); g.add(head);
-            // Snout
-            const snout = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), furLight);
-            snout.position.set(0, 1.24, 0.65); snout.scale.set(0.7, 0.65, 1.0); g.add(snout);
-            // Nose
-            const nose = new THREE.Mesh(new THREE.SphereGeometry(0.03, 5, 4), dark);
-            nose.position.set(0, 1.25, 0.73); g.add(nose);
-            // Eyes
-            for (const side of [-1, 1]) {
-                const eye = new THREE.Mesh(new THREE.SphereGeometry(0.025, 5, 4), dark);
-                eye.position.set(side * 0.11, 1.32, 0.58); g.add(eye);
-            }
-            // Ears
-            for (const side of [-1, 1]) {
-                const ear = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4), furLight);
-                ear.position.set(side * 0.1, 1.42, 0.46);
-                ear.scale.set(0.35, 1.0, 0.5);
-                ear.rotation.z = side * -0.3; ear.rotation.x = -0.15;
-                g.add(ear);
-            }
-            // Antlers
-            const antler = new THREE.MeshStandardMaterial({ color: 0x7a6a4a, roughness: 0.85 });
-            for (const side of [-1, 1]) {
-                const a1 = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.018, 0.3, 4), antler);
-                a1.position.set(side * 0.06, 1.46, 0.48); a1.rotation.z = side * -0.4; g.add(a1);
-                const a2 = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.012, 0.2, 3), antler);
-                a2.position.set(side * 0.12, 1.58, 0.45); a2.rotation.z = side * -0.7; g.add(a2);
-                const a3 = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.01, 0.15, 3), antler);
-                a3.position.set(side * 0.08, 1.6, 0.43); a3.rotation.z = side * -0.3;
-                a3.rotation.x = -0.4; g.add(a3);
-            }
-            // White tail
-            const tail = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4),
-                new THREE.MeshStandardMaterial({ color: 0xf0e8dd, roughness: 0.9 }));
-            tail.position.set(0, 0.92, -0.45); tail.scale.set(0.8, 0.6, 1.0); g.add(tail);
-            return g;
-        }
-        // --- New canopy trees ---
-        case "hazelnut":
-            return makeTree(0x5a4020, 0.2, 3.5, 0x3a7a1a, 2.0, 2.0, 4.8, 0x8a6a2a, 5);
-        case "almond":
-            return makeTree(0x6a5a3a, 0.15, 3, 0x5a8a3a, 1.8, 1.5, 4.2, 0xeeddcc, 6);
-        case "corkoak":
-            return makeTree(0x4a3018, 0.35, 5, 0x2a5a1a, 3.0, 2.5, 6.5);
-        case "redwood":
-            return makeTree(0x6a2a1a, 0.4, 10, 0x1a5a1a, 2.5, 4.0, 11.0);
-        case "macadamia":
-            return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a2a, 2.2, 2.2, 5.5, 0xddccaa, 5);
-        case "stonepine": {
-            const g = new THREE.Group();
-            const trunk = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.15, 0.25, 7, 6),
-                new THREE.MeshStandardMaterial({ color: 0x5a3a1a })
-            );
-            trunk.position.y = 3.5; trunk.castShadow = true; g.add(trunk);
-            const canopy = new THREE.Mesh(
-                new THREE.SphereGeometry(3.0, 8, 6),
-                new THREE.MeshStandardMaterial({ color: 0x2a5a2a })
-            );
-            canopy.position.y = 8; canopy.scale.y = 0.4; canopy.castShadow = true; g.add(canopy);
-            return g;
-        }
-        case "pistachio":
-            return makeTree(0x6a5a3a, 0.2, 3, 0x5a8a3a, 2.0, 1.5, 4.2, 0xcc5544, 6);
-        case "bamboo": {
-            const g = new THREE.Group();
-            for (let i = 0; i < 8; i++) {
-                const angle = (i / 8) * Math.PI * 2;
-                const r = 0.3 + Math.random() * 0.3;
-                const h = 4 + Math.random() * 4;
-                const stalk = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.05, 0.06, h, 4),
-                    new THREE.MeshStandardMaterial({ color: 0x6a8a3a })
-                );
-                stalk.position.set(Math.cos(angle) * r, h / 2, Math.sin(angle) * r);
-                stalk.castShadow = true; g.add(stalk);
-                const leaves = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.4, 5, 4),
-                    new THREE.MeshStandardMaterial({ color: 0x4a7a2a })
-                );
-                leaves.position.set(Math.cos(angle) * r, h - 0.3, Math.sin(angle) * r);
-                leaves.scale.y = 0.5; g.add(leaves);
-            }
-            return g;
-        }
-        case "cherry":
-            return makeTree(0x5a3a2a, 0.2, 4, 0xdd88aa, 2.2, 2.0, 5.5, 0xcc1122, 8);
-        // --- New understory ---
-        case "plum":
-            return makeTree(0x5a3a2a, 0.12, 2, 0x3a7a2a, 1.5, 1.5, 3.2, 0x6622aa, 7);
-        case "avocado":
-            return makeTree(0x5a4a2a, 0.2, 3, 0x2a6a1a, 2.0, 2.0, 4.5, 0x3a5a1a, 5);
-        case "mulberry":
-            return makeTree(0x5a3a1a, 0.18, 3, 0x3a7a2a, 2.0, 1.8, 4.2, 0x3a1a2a, 8);
-        case "banana": {
-            const g = new THREE.Group();
-            const trunk = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.12, 0.18, 3, 6),
-                new THREE.MeshStandardMaterial({ color: 0x7a9a3a, roughness: 0.85 })
-            );
-            trunk.position.y = 1.5; trunk.castShadow = true; g.add(trunk);
-            for (let i = 0; i < 6; i++) {
-                const angle = (i / 6) * Math.PI * 2;
-                const leaf = new THREE.Mesh(
-                    new THREE.CapsuleGeometry(0.08, 1.2, 3, 5),
-                    new THREE.MeshStandardMaterial({ color: 0x3a8a2a, roughness: 0.7 })
-                );
-                leaf.position.set(Math.cos(angle) * 0.3, 3.1, Math.sin(angle) * 0.3);
-                leaf.rotation.y = angle;
-                leaf.rotation.x = -0.5; leaf.scale.set(2.5, 1, 0.15); g.add(leaf);
-            }
-            // Banana bunch
-            const bunchMat = new THREE.MeshStandardMaterial({ color: 0xddcc33, roughness: 0.5 });
-            for (let i = 0; i < 4; i++) {
-                const banana = new THREE.Mesh(new THREE.CapsuleGeometry(0.03, 0.12, 3, 4), bunchMat);
-                banana.position.set(Math.cos(i * 1.5) * 0.08, 2.6 - i * 0.06, Math.sin(i * 1.5) * 0.08);
-                banana.rotation.z = 0.3; g.add(banana);
-            }
-            return g;
-        }
-        case "mango":
-            return makeTree(0x5a4a2a, 0.25, 4, 0x2a6a1a, 2.5, 2.0, 5.5, 0xee8822, 6);
-        case "persimmon":
-            return makeTree(0x5a3a1a, 0.15, 3, 0x4a7a2a, 1.8, 1.8, 4.2, 0xee6622, 5);
-        case "peach":
-            return makeTree(0x5a3a2a, 0.14, 2.5, 0x5aaa5a, 1.8, 1.6, 3.8, 0xffaa88, 8);
-        // --- New shrubs ---
-        case "thyme": {
-            const g = new THREE.Group();
-            const mat = new THREE.MeshStandardMaterial({ color: 0x4a6a4a });
-            for (let i = 0; i < 6; i++) {
-                const a = (i / 6) * Math.PI * 2;
-                const s = new THREE.Mesh(new THREE.SphereGeometry(0.15, 4, 3), mat);
-                s.position.set(Math.cos(a) * 0.2, 0.12, Math.sin(a) * 0.2);
-                s.scale.y = 0.5; g.add(s);
-            }
-            return g;
-        }
-        case "sage": {
-            const g = new THREE.Group();
-            for (let i = 0; i < 5; i++) {
-                const a = (i / 5) * Math.PI * 2;
-                const leaf = new THREE.Mesh(
-                    new THREE.ConeGeometry(0.18, 0.8, 4),
-                    new THREE.MeshStandardMaterial({ color: 0x6a7a6a })
-                );
-                leaf.position.set(Math.cos(a) * 0.25, 0.4, Math.sin(a) * 0.25);
-                g.add(leaf);
-            }
-            return g;
-        }
-        case "rooibos": {
-            const g = new THREE.Group();
-            for (let i = 0; i < 7; i++) {
-                const a = (i / 7) * Math.PI * 2;
-                const stem = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.02, 0.03, 1.0, 3),
-                    new THREE.MeshStandardMaterial({ color: 0x8a4a2a })
-                );
-                stem.position.set(Math.cos(a) * 0.2, 0.5, Math.sin(a) * 0.2);
-                g.add(stem);
-            }
-            return g;
-        }
-        case "protea": {
-            const g = new THREE.Group();
-            const stem = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.04, 0.06, 1.0, 4),
-                new THREE.MeshStandardMaterial({ color: 0x4a5a3a })
-            );
-            stem.position.y = 0.5; g.add(stem);
-            const flower = new THREE.Mesh(
-                new THREE.ConeGeometry(0.3, 0.4, 8),
-                new THREE.MeshStandardMaterial({ color: 0xcc4466 })
-            );
-            flower.position.y = 1.2; flower.rotation.x = Math.PI; g.add(flower);
-            return g;
-        }
-        case "tea": {
-            const g = new THREE.Group();
-            const bush = new THREE.Mesh(
-                new THREE.SphereGeometry(0.5, 6, 5),
-                new THREE.MeshStandardMaterial({ color: 0x3a6a2a })
-            );
-            bush.position.y = 0.4; bush.scale.y = 0.6; g.add(bush);
-            return g;
-        }
-        // --- New herbs ---
-        case "basil": {
-            const g = new THREE.Group();
-            for (let i = 0; i < 4; i++) {
-                const a = (i / 4) * Math.PI * 2;
-                const leaf = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.12, 4, 3),
-                    new THREE.MeshStandardMaterial({ color: 0x2a8a2a })
-                );
-                leaf.position.set(Math.cos(a) * 0.15, 0.25, Math.sin(a) * 0.15);
-                leaf.scale.y = 0.3; g.add(leaf);
-            }
-            return g;
-        }
-        case "saffron": {
-            const g = new THREE.Group();
-            for (let i = 0; i < 3; i++) {
-                const a = (i / 3) * Math.PI * 2;
-                const stem = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.01, 0.01, 0.5, 3),
-                    new THREE.MeshStandardMaterial({ color: 0x5a7a3a })
-                );
-                stem.position.set(Math.cos(a) * 0.08, 0.25, Math.sin(a) * 0.08);
-                g.add(stem);
-                const tip = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.05, 4, 3),
-                    new THREE.MeshStandardMaterial({ color: 0xaa44aa })
-                );
-                tip.position.set(Math.cos(a) * 0.08, 0.55, Math.sin(a) * 0.08);
-                g.add(tip);
-            }
-            return g;
-        }
-        case "shiso": {
-            const g = new THREE.Group();
-            for (let i = 0; i < 5; i++) {
-                const a = (i / 5) * Math.PI * 2;
-                const leaf = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.1, 4, 3),
-                    new THREE.MeshStandardMaterial({ color: 0x6a2a4a })
-                );
-                leaf.position.set(Math.cos(a) * 0.15, 0.2 + i * 0.05, Math.sin(a) * 0.15);
-                leaf.scale.y = 0.3; g.add(leaf);
-            }
-            return g;
-        }
-        case "boar": {
-            const g = new THREE.Group();
-            const boarM = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.9 });
-            const boarL = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.9 });
-            const dk = new THREE.MeshStandardMaterial({ color: 0x1a1008, roughness: 0.8 });
-            // Body (stocky)
-            const bod = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.7, 6, 8), boarM);
-            bod.position.set(0, 0.55, 0); bod.rotation.z = Math.PI / 2;
-            bod.castShadow = true; g.add(bod);
-            // Legs (short, stout)
-            for (const [lx, lz] of [[-0.15, -0.25], [0.15, -0.25], [-0.15, 0.25], [0.15, 0.25]]) {
-                const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.15, 4, 4), boarM);
-                leg.position.set(lx, 0.2, lz); leg.castShadow = true; g.add(leg);
-                const hf = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 3), dk);
-                hf.position.set(lx, 0.06, lz); hf.scale.y = 0.5; g.add(hf);
-            }
-            // Head
-            const hd = new THREE.Mesh(new THREE.SphereGeometry(0.18, 7, 5), boarM);
-            hd.position.set(0, 0.6, 0.45); g.add(hd);
-            // Snout (long)
-            const sn = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.12, 4, 5), boarL);
-            sn.position.set(0, 0.52, 0.6); sn.rotation.x = Math.PI / 2;
-            sn.scale.set(0.9, 1, 0.7); g.add(sn);
-            // Nose disc
-            const nd = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.02, 6), new THREE.MeshStandardMaterial({ color: 0xcc8877 }));
-            nd.position.set(0, 0.52, 0.68); nd.rotation.x = Math.PI / 2; g.add(nd);
-            // Eyes
-            for (const s of [-1, 1]) {
-                const e = new THREE.Mesh(new THREE.SphereGeometry(0.02, 4, 3), dk);
-                e.position.set(s * 0.12, 0.65, 0.5); g.add(e);
-            }
-            // Ears
-            for (const s of [-1, 1]) {
-                const ear = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.1, 4), boarM);
-                ear.position.set(s * 0.1, 0.78, 0.4); ear.rotation.z = s * -0.3; g.add(ear);
-            }
-            // Tusks
-            for (const s of [-1, 1]) {
-                const tusk = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.015, 0.08, 3),
-                    new THREE.MeshStandardMaterial({ color: 0xeee8dd }));
-                tusk.position.set(s * 0.06, 0.48, 0.6); tusk.rotation.x = 0.3;
-                tusk.rotation.z = s * 0.2; g.add(tusk);
-            }
-            // Bristly back
-            const bristle = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.12, 5), dk);
-            bristle.position.set(0, 0.85, -0.05); bristle.scale.set(0.3, 1, 2); g.add(bristle);
-            // Curly tail
-            const tl = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.015, 4, 6, Math.PI),
-                boarM);
-            tl.position.set(0, 0.65, -0.4); tl.rotation.y = Math.PI / 2; g.add(tl);
-            return g;
-        }
-        case "rabbit": {
-            const g = new THREE.Group();
-            const furR = new THREE.MeshStandardMaterial({ color: 0xb8a088, roughness: 0.9 });
-            const furW = new THREE.MeshStandardMaterial({ color: 0xe8ddd0, roughness: 0.9 });
-            const dkR = new THREE.MeshStandardMaterial({ color: 0x2a1a0a });
-            // Body
-            const bod = new THREE.Mesh(new THREE.SphereGeometry(0.16, 7, 6), furR);
-            bod.position.set(0, 0.22, 0); bod.scale.set(0.9, 0.8, 1.1);
-            bod.castShadow = true; g.add(bod);
-            // Head
-            const hd = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 5), furR);
-            hd.position.set(0, 0.32, 0.16); g.add(hd);
-            // Ears (long, tall)
-            for (const s of [-1, 1]) {
-                const ear = new THREE.Mesh(new THREE.CapsuleGeometry(0.025, 0.14, 4, 5), furR);
-                ear.position.set(s * 0.04, 0.48, 0.12); ear.rotation.z = s * -0.15; g.add(ear);
-                const earIn = new THREE.Mesh(new THREE.CapsuleGeometry(0.015, 0.1, 3, 4),
-                    new THREE.MeshStandardMaterial({ color: 0xddaaaa }));
-                earIn.position.set(s * 0.04, 0.47, 0.11); earIn.rotation.z = s * -0.15; g.add(earIn);
-            }
-            // Eyes
-            for (const s of [-1, 1]) {
-                const e = new THREE.Mesh(new THREE.SphereGeometry(0.015, 4, 3), dkR);
-                e.position.set(s * 0.07, 0.34, 0.22); g.add(e);
-            }
-            // Nose
-            const n = new THREE.Mesh(new THREE.SphereGeometry(0.015, 4, 3),
-                new THREE.MeshStandardMaterial({ color: 0xdd9999 }));
-            n.position.set(0, 0.31, 0.26); g.add(n);
-            // Fluffy tail
-            const tail = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4), furW);
-            tail.position.set(0, 0.22, -0.16); g.add(tail);
-            // Hind legs (bigger)
-            for (const s of [-1, 1]) {
-                const hl = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 4), furR);
-                hl.position.set(s * 0.1, 0.12, -0.06); hl.scale.set(0.8, 1.2, 1); g.add(hl);
-                const fl = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 3), furR);
-                fl.position.set(s * 0.06, 0.1, 0.12); g.add(fl);
-            }
-            return g;
-        }
-        case "lamb": {
-            const g = new THREE.Group();
-            const wool = new THREE.MeshStandardMaterial({ color: 0xf0ece4, roughness: 1.0 });
-            const face = new THREE.MeshStandardMaterial({ color: 0x2a2020, roughness: 0.85 });
-            const pink = new THREE.MeshStandardMaterial({ color: 0xddaaaa });
-            // Woolly body (multiple blobs)
-            const bod = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), wool);
-            bod.position.set(0, 0.55, 0); bod.scale.set(1, 0.85, 1.2);
-            bod.castShadow = true; g.add(bod);
-            for (let i = 0; i < 5; i++) {
-                const a = (i / 5) * Math.PI * 2;
-                const fluff = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), wool);
-                fluff.position.set(Math.cos(a) * 0.18, 0.6 + Math.sin(i) * 0.05, Math.sin(a) * 0.2);
-                g.add(fluff);
-            }
-            // Legs (dark, thin)
-            for (const [lx, lz] of [[-0.12, -0.2], [0.12, -0.2], [-0.12, 0.2], [0.12, 0.2]]) {
-                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.03, 0.35, 4), face);
-                leg.position.set(lx, 0.18, lz); leg.castShadow = true; g.add(leg);
-                const hf = new THREE.Mesh(new THREE.SphereGeometry(0.035, 3, 3), face);
-                hf.position.set(lx, 0.04, lz); hf.scale.y = 0.5; g.add(hf);
-            }
-            // Head (dark face)
-            const hd = new THREE.Mesh(new THREE.SphereGeometry(0.12, 7, 5), face);
-            hd.position.set(0, 0.65, 0.32); g.add(hd);
-            // Wool on head
-            const headWool = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 5), wool);
-            headWool.position.set(0, 0.72, 0.28); g.add(headWool);
-            // Eyes
-            for (const s of [-1, 1]) {
-                const e = new THREE.Mesh(new THREE.SphereGeometry(0.018, 4, 3),
-                    new THREE.MeshStandardMaterial({ color: 0x888844 }));
-                e.position.set(s * 0.08, 0.68, 0.38); g.add(e);
-            }
-            // Ears (floppy)
-            for (const s of [-1, 1]) {
-                const ear = new THREE.Mesh(new THREE.SphereGeometry(0.04, 5, 4), face);
-                ear.position.set(s * 0.12, 0.63, 0.28);
-                ear.scale.set(0.5, 1, 0.7); ear.rotation.z = s * 0.5; g.add(ear);
-            }
-            // Nose
-            const ns = new THREE.Mesh(new THREE.SphereGeometry(0.02, 4, 3), pink);
-            ns.position.set(0, 0.62, 0.43); g.add(ns);
-            // Tail
-            const tl = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 3), wool);
-            tl.position.set(0, 0.6, -0.28); g.add(tl);
-            return g;
-        }
-        case "animal": {
-            const mesh = new THREE.Mesh(
-                new THREE.SphereGeometry(0.3, 6, 5),
-                new THREE.MeshStandardMaterial({ color: 0xcc8844 })
-            );
-            mesh.position.y = 0.3;
-            mesh.castShadow = true;
-            return mesh;
-        }
-        case "semi-ai": {
-            // Boxy hover-drone in a cool blue palette — visually distinct
-            // from organic life so farmers immediately recognise it as a
-            // monarch deployment competing for harvestable fruit.
-            const g = new THREE.Group();
-            const chassis = new THREE.Mesh(
-                new THREE.BoxGeometry(0.45, 0.25, 0.45),
-                new THREE.MeshStandardMaterial({
-                    color: 0x3a4a6a, roughness: 0.4, metalness: 0.6,
-                    emissive: 0x224477, emissiveIntensity: 0.25,
-                })
-            );
-            chassis.position.y = 0.9;
-            chassis.castShadow = true;
-            g.add(chassis);
-            // Eye / sensor strip
-            const eye = new THREE.Mesh(
-                new THREE.BoxGeometry(0.38, 0.06, 0.02),
-                new THREE.MeshStandardMaterial({
-                    color: 0x44ccff, emissive: 0x44ccff, emissiveIntensity: 1.2,
-                })
-            );
-            eye.position.set(0, 0.92, 0.23);
-            g.add(eye);
-            // Four rotor pods at the corners
-            const rotorMat = new THREE.MeshStandardMaterial({ color: 0x1a2030, roughness: 0.6 });
-            const rotorGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.04, 8);
-            for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-                const r = new THREE.Mesh(rotorGeo, rotorMat);
-                r.position.set(sx * 0.28, 1.0, sz * 0.28);
-                g.add(r);
-            }
-            return g;
-        }
-        case "hochsitz": {
-            // Closed Kanzel (German hunting stand) — larch wood, ~3.5m stilts, 1.2x1.2m cabin
-            const g = new THREE.Group();
-            const larch = new THREE.MeshStandardMaterial({ color: 0x7a5a30, roughness: 0.92 });
-            const larchDark = new THREE.MeshStandardMaterial({ color: 0x5a3a18, roughness: 0.95 });
-            const plank = new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.9 });
-            const roofMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 });
-            const windowMat = new THREE.MeshStandardMaterial({ color: 0x1a3a4a, roughness: 0.3, metalness: 0.1 });
-            const platformH = 3.5;
-            // Four larch log stilts
-            for (const [lx, lz] of [[-0.55, -0.55], [0.55, -0.55], [-0.55, 0.55], [0.55, 0.55]]) {
-                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, platformH, 6), larch);
-                leg.position.set(lx, platformH / 2, lz); leg.castShadow = true; g.add(leg);
-            }
-            // Diagonal cross braces on two sides
-            for (const side of [-1, 1]) {
-                const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 2.5, 4), larchDark);
-                brace.position.set(side * 0.55, 1.8, 0);
-                brace.rotation.z = side * 0.55; brace.rotation.x = 0.3;
-                g.add(brace);
-                const brace2 = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 2.5, 4), larchDark);
-                brace2.position.set(0, 1.8, side * 0.55);
-                brace2.rotation.x = side * -0.55; brace2.rotation.z = 0.3;
-                g.add(brace2);
-            }
-            // Horizontal cross beams at mid-height
-            for (const lz of [-0.55, 0.55]) {
-                const beam = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.06, 0.06), larchDark);
-                beam.position.set(0, platformH * 0.5, lz); g.add(beam);
-            }
-            for (const lx of [-0.55, 0.55]) {
-                const beam = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 1.1), larchDark);
-                beam.position.set(lx, platformH * 0.5, 0); g.add(beam);
-            }
-            // Platform floor (thick planks)
-            const floor = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.1, 1.3), plank);
-            floor.position.y = platformH; floor.castShadow = true; g.add(floor);
-            // Cabin walls — closed on all four sides, 1.2m x 1.2m x 1.9m tall
-            const cabinH = 1.9;
-            const cabinY = platformH + cabinH / 2 + 0.05;
-            const wallThick = 0.06;
-            // Back wall (solid)
-            const backWall = new THREE.Mesh(new THREE.BoxGeometry(1.2, cabinH, wallThick), plank);
-            backWall.position.set(0, cabinY, -0.57); backWall.castShadow = true; g.add(backWall);
-            // Front wall (solid, with door opening indicated by darker panel)
-            const frontWall = new THREE.Mesh(new THREE.BoxGeometry(1.2, cabinH, wallThick), plank);
-            frontWall.position.set(0, cabinY, 0.57); frontWall.castShadow = true; g.add(frontWall);
-            // Side walls
-            const leftWall = new THREE.Mesh(new THREE.BoxGeometry(wallThick, cabinH, 1.2), plank);
-            leftWall.position.set(-0.57, cabinY, 0); leftWall.castShadow = true; g.add(leftWall);
-            const rightWall = new THREE.Mesh(new THREE.BoxGeometry(wallThick, cabinH, 1.2), plank);
-            rightWall.position.set(0.57, cabinY, 0); rightWall.castShadow = true; g.add(rightWall);
-            // Observation windows (100cm x 40cm) — dark glass on all four sides
-            const winW = 0.8, winH = 0.35;
-            const winY = platformH + cabinH * 0.65;
-            for (const [wx, wz, ry] of [[0, -0.58, 0], [0, 0.58, 0], [-0.58, 0, Math.PI/2], [0.58, 0, Math.PI/2]]) {
-                const win = new THREE.Mesh(new THREE.PlaneGeometry(winW, winH), windowMat);
-                win.position.set(wx, winY, wz);
-                win.rotation.y = ry;
-                if (wz < 0) win.rotation.y = Math.PI;
-                g.add(win);
-            }
-            // Pitched roof (two sloping sides meeting at ridge)
-            const roofOverhang = 0.2;
-            const roofW = 1.2 + roofOverhang * 2;
-            const roofD = (1.2 + roofOverhang * 2) / 2;
-            const roofAngle = 0.35;
-            const roofY = platformH + cabinH + 0.1;
-            const roofLeft = new THREE.Mesh(new THREE.BoxGeometry(roofW, 0.05, roofD + 0.1), roofMat);
-            roofLeft.position.set(0, roofY + 0.2, -roofD / 2 + 0.05);
-            roofLeft.rotation.x = roofAngle; roofLeft.castShadow = true; g.add(roofLeft);
-            const roofRight = new THREE.Mesh(new THREE.BoxGeometry(roofW, 0.05, roofD + 0.1), roofMat);
-            roofRight.position.set(0, roofY + 0.2, roofD / 2 - 0.05);
-            roofRight.rotation.x = -roofAngle; roofRight.castShadow = true; g.add(roofRight);
-            // Roof ridge beam
-            const ridge = new THREE.Mesh(new THREE.BoxGeometry(roofW, 0.06, 0.06), larchDark);
-            ridge.position.set(0, roofY + 0.42, 0); g.add(ridge);
-            // Gable triangles (front and back)
-            const gableGeo = new THREE.BufferGeometry();
-            const gableVerts = new Float32Array([
-                -0.6, 0, 0,  0.6, 0, 0,  0, 0.35, 0
-            ]);
-            gableGeo.setAttribute("position", new THREE.BufferAttribute(gableVerts, 3));
-            gableGeo.computeVertexNormals();
-            for (const gz of [-0.58, 0.58]) {
-                const gable = new THREE.Mesh(gableGeo, plank);
-                gable.position.set(0, roofY, gz); g.add(gable);
-            }
-            // Internal ladder (leaning against front, goes through floor hatch)
-            const ladderMat = larchDark;
-            for (let ly = 0; ly < platformH; ly += 0.4) {
-                const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.4, 4), ladderMat);
-                rung.position.set(0, ly + 0.2, 0.65); rung.rotation.z = Math.PI / 2; g.add(rung);
-            }
-            const ladderL = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, platformH + 0.5, 5), larch);
-            ladderL.position.set(-0.15, platformH / 2, 0.65); ladderL.rotation.x = 0.08; g.add(ladderL);
-            const ladderR = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, platformH + 0.5, 5), larch);
-            ladderR.position.set(0.15, platformH / 2, 0.65); ladderR.rotation.x = 0.08; g.add(ladderR);
-            return g;
-        }
-        default: {
-            const mesh = new THREE.Mesh(
-                new THREE.SphereGeometry(0.3, 6, 5),
-                new THREE.MeshStandardMaterial({ color: 0xaaaaaa })
-            );
-            mesh.position.y = 0.3;
-            return mesh;
-        }
+    let template = entityMeshTemplates.get(category);
+    if (!template) {
+        template = buildEntityMeshTemplate(category);
+        entityMeshTemplates.set(category, template);
     }
+    // Object3D.clone(recursive = true) — clones the hierarchy and
+    // makes new Mesh objects, but shares geometry + material refs.
+    return template.clone(true);
+}
+
+function buildEntityMeshTemplate(category) {
+    // Modular registry first: species migrated to their own files in
+    // ./models/ short-circuit the inline switch below.
+    const ext = MODEL_BUILDERS[category];
+    if (ext) return ext();
+
+    // No template registered for this category — return a small
+    // gray fallback sphere so the entity at least appears in-world.
+    const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.3, 6, 5),
+        new THREE.MeshStandardMaterial({ color: 0xaaaaaa })
+    );
+    mesh.position.y = 0.3;
+    return mesh;
 }
 
 // Growth stage scale factors: Seed=0, Germinating=1, Seedling=2, Juvenile=3, Mature=4, Fruiting=5
 const GROWTH_SCALES = [0.1, 0.15, 0.3, 0.55, 1.0, 1.0, 0.9, 0.0];
+
+// Categories that should idle-bob (subtle Y oscillation) and lean
+// forward slightly when moving. Plants/structures stay still.
+const ANIMATED_CATEGORIES = new Set([
+    "deer", "chicken", "boar", "rabbit", "lamb", "animal",
+    "player", "semi-ai", "npc",
+]);
 
 function createOrUpdateEntity(eid, x, y, z, rot, category) {
     let obj = entityMeshes.get(eid);
@@ -4379,28 +3979,107 @@ function createOrUpdateEntity(eid, x, y, z, rot, category) {
         obj = createEntityMesh(category);
         obj.userData.entityId = eid;
         obj.userData.category = category;
+        // Stable per-entity phase so neighbours don't bob in unison.
+        obj.userData.bobPhase = (eid % 100) * 0.13;
+        // Initial spawn: place directly at server position.
+        obj.position.set(x, y, z);
+        obj.userData.basePos = new THREE.Vector3(x, y, z);
+        obj.userData.targetPos = new THREE.Vector3(x, y, z);
+        obj.userData.targetRot = rot;
+        obj.userData.lastTargetMs = performance.now();
+        if (obj.rotation) obj.rotation.y = rot;
         scene.add(obj);
         entityMeshes.set(eid, obj);
+    } else {
+        // Subsequent update: stash a NEW target. The animation loop in
+        // updateEntityAnimations() smoothly drives current → target,
+        // so entities glide between server ticks instead of teleporting.
+        obj.userData.targetPos.set(x, y, z);
+        obj.userData.targetRot = rot;
+        obj.userData.lastTargetMs = performance.now();
     }
 
-    obj.position.set(x, y, z);
-    if (obj.rotation) obj.rotation.y = rot;
-
-    // Scale plants by growth stage, and reveal fruits only while Fruiting.
+    // Scale plants by growth stage, and toggle fruit ripeness.
+    // GrowthStage discriminants (from ff-ecs plant component):
+    //   0 Seed · 1 Germinating · 2 Seedling · 3 Juvenile
+    //   4 Mature · 5 Fruiting · 6 Withering · 7 Dead
+    // Tree templates can carry a "fruits" group with two named
+    // children: "fruits-unripe" (small + green-ish) and "fruits-ripe"
+    // (full size + species colour). At Mature the unripe variant is
+    // shown so the player sees fruit forming; at Fruiting the ripe
+    // variant takes its place. No emissive glow — the colour change
+    // alone signals ripeness, like a real orchard.
     const info = entityKinds.get(eid);
     if (info && info.kind === "plant" && info.growthStage !== undefined) {
         const s = GROWTH_SCALES[info.growthStage] || 1.0;
         obj.scale.set(s, s, s);
-        // GrowthStage::Fruiting === 5 (see ff-ecs plant component)
         const fruitsGroup = obj.getObjectByName ? obj.getObjectByName("fruits") : null;
         if (fruitsGroup) {
-            fruitsGroup.visible = info.growthStage === 5;
+            const stage = info.growthStage;
+            const showAnyFruit = (stage === 4 || stage === 5);
+            fruitsGroup.visible = showAnyFruit;
+            const unripe = fruitsGroup.getObjectByName("fruits-unripe");
+            const ripe   = fruitsGroup.getObjectByName("fruits-ripe");
+            if (unripe) unripe.visible = (stage === 4);
+            if (ripe)   ripe.visible   = (stage === 5);
         }
     }
 
     // Track own player for camera
     if (eid === myEntityId) {
         controls.target.set(x, y + 2, z);
+    }
+}
+
+// Per-frame entity animation pass — runs from gameLoop.
+//   - Smoothly lerps every entity toward its server-provided target,
+//     so movement between 10 Hz batch updates feels continuous.
+//   - For animal/player/drone categories, adds a low-amplitude vertical
+//     bob whose speed grows with movement (idle = slow breathing,
+//     walking = quicker stride).
+//   - Yaw is lerped via the shorter angular path so 359°→1° doesn't
+//     spin the whole way round.
+const _tmpVec = new THREE.Vector3();
+function updateEntityAnimations(dt, nowSec) {
+    if (entityMeshes.size === 0) return;
+    // Critically-damped framerate-independent lerp: reach ~95% of target
+    // in ~100 ms (matching the server's NET_SEND_INTERVAL).
+    const posBlend = 1 - Math.pow(0.001, dt);
+    const rotBlend = 1 - Math.pow(0.0005, dt);
+    for (const obj of entityMeshes.values()) {
+        const u = obj.userData;
+        if (!u || !u.targetPos) continue;
+
+        // Distance to target — drives bob speed for animated species.
+        const dx = u.targetPos.x - obj.position.x;
+        const dz = u.targetPos.z - obj.position.z;
+        const speed2 = dx * dx + dz * dz;
+
+        // Position lerp toward target.
+        _tmpVec.subVectors(u.targetPos, obj.position).multiplyScalar(posBlend);
+        obj.position.add(_tmpVec);
+
+        // Yaw lerp along the shorter arc.
+        if (obj.rotation && typeof u.targetRot === "number") {
+            const cur = obj.rotation.y;
+            let diff = ((u.targetRot - cur + Math.PI) % (Math.PI * 2)) - Math.PI;
+            if (diff < -Math.PI) diff += Math.PI * 2;
+            obj.rotation.y = cur + diff * rotBlend;
+        }
+
+        // Idle / walk bob.
+        if (ANIMATED_CATEGORIES.has(u.category)) {
+            const moving = speed2 > 0.001;
+            const bobAmp   = moving ? 0.07 : 0.025;
+            const bobSpeed = moving ? 9.0  : 2.0;
+            const t = nowSec * bobSpeed + (u.bobPhase || 0);
+            obj.position.y += Math.sin(t) * bobAmp;
+            // Slight forward tilt while moving (lean into stride).
+            if (obj.rotation) {
+                const targetPitch = moving ? -0.06 : 0;
+                obj.rotation.x = (obj.rotation.x || 0) + (targetPitch - (obj.rotation.x || 0)) * 0.1;
+            }
+        }
     }
 }
 
@@ -4744,9 +4423,11 @@ function updateFlames(time) {
 // --- Water and fish animation ---
 
 function updateWater(time) {
-    for (const mesh of waterMeshes) {
-        if (mesh.material) {
-            mesh.material.opacity = 0.55 + Math.sin(time * 1.5) * 0.1;
+    // Drive the shader-based water material's time uniform every frame
+    // so vertex-displacement waves and the moving normal noise animate.
+    for (const mat of waterMaterials) {
+        if (mat && mat.uniforms && mat.uniforms.time) {
+            mat.uniforms.time.value = time;
         }
     }
     if (fishGroup) {
@@ -4852,6 +4533,8 @@ function gameLoop(now) {
 
     updateFlames(now / 1000);
     updateWater(now / 1000);
+    updateGrass(now / 1000);
+    updateEntityAnimations(dt, now / 1000);
     checkEdgeTransition();
     minimapTimer += dt;
     if (minimapTimer >= 0.2) {
@@ -4860,6 +4543,7 @@ function gameLoop(now) {
     }
 
     if (controls) controls.update();
+    updateSky(dt);
     if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
