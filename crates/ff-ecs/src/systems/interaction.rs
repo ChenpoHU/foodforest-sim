@@ -582,6 +582,91 @@ pub fn process_action(
             ActionResult::Success(format!("Broadcast sent ({} chars)", trimmed.chars().count()))
         }
 
+        ActionKind::AscendToMonarch => {
+            // Farmer-only: spend a fixed pile of coins, gain the
+            // Monarch component. We can't add the component here
+            // because `world.spawn` / `world.insert_one` would need
+            // exclusive access while we hold borrows; ws.rs handles the
+            // insert + role-change broadcast after seeing
+            // `ActionResult::Success("ascend ...")`. The ECS layer
+            // owns the coin charge so the wallet check is atomic.
+            if world.get::<&crate::components::player::Monarch>(player_entity).is_ok() {
+                return ActionResult::Failure("You are already a Tech Monarch".into());
+            }
+            if resources.game_mode != ff_common::GameMode::Realistic {
+                return ActionResult::Failure(
+                    "Ascension is only available in Realistic mode".into(),
+                );
+            }
+            let mut wallet = match world.get::<&mut crate::components::player::Wallet>(player_entity) {
+                Ok(w) => w,
+                Err(_) => return ActionResult::Failure("Wallet unavailable".into()),
+            };
+            if wallet.0 < crate::components::player::MONARCH_ASCENSION_COST {
+                return ActionResult::Failure(format!(
+                    "Need {} coins to ascend (you have {})",
+                    crate::components::player::MONARCH_ASCENSION_COST,
+                    wallet.0
+                ));
+            }
+            wallet.0 = wallet
+                .0
+                .saturating_sub(crate::components::player::MONARCH_ASCENSION_COST);
+            // Magic prefix lets ws.rs identify this success path without
+            // peeking back at the action.
+            ActionResult::Success(format!(
+                "ascend ok — paid {} coins to become Tech Monarch",
+                crate::components::player::MONARCH_ASCENSION_COST
+            ))
+        }
+
+        ActionKind::Revolt { target_monarch_id } => {
+            // Farmer-only: cast a no-confidence vote against a Monarch.
+            // Self-target, double-vote, and target-not-a-Monarch are
+            // rejected. Each successful revolt bumps discontent; the
+            // demotion threshold check is run by tick.rs every second,
+            // not here — keeps the per-action path cheap.
+            if world.get::<&crate::components::player::Monarch>(player_entity).is_ok() {
+                return ActionResult::Failure(
+                    "Tech Monarchs cannot revolt — abdicate via the dashboard instead".into(),
+                );
+            }
+            // Find the target's player entity.
+            let mut target_entity = None;
+            for (e, p) in world.query::<&crate::components::player::Player>().iter() {
+                if p.player_id.0 == *target_monarch_id {
+                    target_entity = Some(e);
+                    break;
+                }
+            }
+            let Some(te) = target_entity else {
+                return ActionResult::Failure("Target is not connected".into());
+            };
+            let mut monarch = match world
+                .get::<&mut crate::components::player::Monarch>(te)
+            {
+                Ok(m) => m,
+                Err(_) => return ActionResult::Failure("Target is not a Monarch".into()),
+            };
+            // Each farmer votes at most once per Monarch instance.
+            // (If the Monarch is later re-promoted, the vote list is
+            // reset by ws.rs at that time.)
+            let actor_id = player_id.0;
+            if monarch.revolt_voters.contains(&actor_id) {
+                return ActionResult::Failure(
+                    "You've already revolted against this Monarch".into(),
+                );
+            }
+            monarch.revolt_voters.push(actor_id);
+            monarch.discontent = (monarch.discontent
+                + crate::components::player::DISCONTENT_PER_REVOLT)
+                .min(crate::components::player::DISCONTENT_DEMOTION_THRESHOLD);
+            let pct = monarch.discontent
+                / crate::components::player::DISCONTENT_DEMOTION_THRESHOLD
+                * 100.0;
+            ActionResult::Success(format!("Revolted (discontent now {:.0}%)", pct))
+        }
+
         ActionKind::DeploySemiAI { position } => {
             // Tech-Monarch only. The action does nothing for Farmer players.
             let mut monarch = match world.get::<&mut crate::components::player::Monarch>(player_entity) {
@@ -600,6 +685,12 @@ pub fn process_action(
             }
             monarch.compute -= 20.0;
             monarch.deployments = monarch.deployments.saturating_add(1);
+            // Each deployment edges the AI fleet's collective
+            // intelligence up. Hitting AI_TAKEOVER_THRESHOLD will be
+            // caught by the politics tick and trigger a takeover.
+            monarch.ai_intelligence = (monarch.ai_intelligence
+                + crate::components::player::AI_INT_PER_DEPLOY)
+                .min(crate::components::player::AI_TAKEOVER_THRESHOLD);
             drop(monarch);
 
             let y = terrain.spawn_height(x, z);

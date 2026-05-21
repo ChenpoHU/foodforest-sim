@@ -146,6 +146,12 @@ pub fn tick_semi_ai_workers(world: &mut hecs::World, resources: &Resources) {
             if let Ok(mut m) = world.get::<&mut Monarch>(player_entity) {
                 m.influence = (m.influence + INFLUENCE_PER_HARVEST).min(INFLUENCE_CAP);
                 m.jobs_cut = m.jobs_cut.saturating_add(1);
+                // Every successful auto-harvest nudges the AI's
+                // intelligence — the more the fleet works, the closer
+                // the takeover becomes.
+                m.ai_intelligence = (m.ai_intelligence
+                    + crate::components::player::AI_INT_PER_HARVEST)
+                    .min(crate::components::player::AI_TAKEOVER_THRESHOLD);
             }
         }
     }

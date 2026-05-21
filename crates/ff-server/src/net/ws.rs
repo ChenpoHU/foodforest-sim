@@ -591,6 +591,55 @@ async fn handle_message(
                     }
                 }
 
+                // AscendToMonarch: ECS handler charged the wallet. Now
+                // attach the Monarch component server-side and broadcast
+                // the role change so every client (including the
+                // ascending one) flips their toolbar.
+                if success {
+                    if let ff_protocol::messages::ActionKind::AscendToMonarch = &action.action {
+                        let _ = shard.ecs_world.insert_one(
+                            pe,
+                            ff_ecs::components::player::Monarch::default(),
+                        );
+                        let player_name = shard
+                            .sessions
+                            .get(&player_id)
+                            .map(|s| s.player_name.clone())
+                            .unwrap_or_default();
+                        let change = ff_protocol::messages::ServerRoleChanged {
+                            player_id,
+                            player_name,
+                            new_role: 1,
+                            reason: ff_protocol::messages::RoleChangeReason::Ascended,
+                        };
+                        if let Ok(buf) = encode(MessageType::ServerRoleChanged, &change) {
+                            for session in shard.sessions.values() {
+                                session.send(buf.clone());
+                            }
+                        }
+                        // Push fresh state so the ascending player's HUD
+                        // flips to Monarch instantly (compute meter
+                        // appears with the default 100/100).
+                        tick::send_player_state(&mut shard, player_id);
+                    }
+                }
+
+                // Revolt: ECS handler already bumped discontent. The
+                // tick.rs threshold check will demote the target if the
+                // bar fills. Just push fresh state to the target so the
+                // bar moves on their HUD without waiting 1 s for the
+                // politics broadcast.
+                if success {
+                    if let ff_protocol::messages::ActionKind::Revolt { target_monarch_id } =
+                        &action.action
+                    {
+                        tick::send_player_state(
+                            &mut shard,
+                            ff_common::PlayerId(*target_monarch_id),
+                        );
+                    }
+                }
+
                 // IssueTask: ECS handler escrowed reward + charged
                 // Influence. Now register the task in the shard's
                 // active_tasks map and broadcast it to every session.
@@ -928,5 +977,7 @@ fn action_tag(action: &ff_protocol::messages::ActionKind) -> String {
             };
             format!("issued task: {kind} ×{target} (🪙{reward})")
         }
+        AscendToMonarch => "ascending".into(),
+        Revolt { .. } => "revolting".into(),
     }
 }

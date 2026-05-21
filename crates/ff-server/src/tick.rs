@@ -167,6 +167,156 @@ fn broadcast_updates(shard: &mut Shard) {
     if tick.0 % 20 == 0 {
         broadcast_surveillance(shard);
     }
+
+    // 1 Hz politics broadcast — public roster of every Monarch with
+    // their discontent + AI-intelligence meters, so Farmers can pick
+    // revolt targets. Also runs the threshold checks that auto-demote
+    // monarchs (overthrow / AI takeover) — those need to fire
+    // server-side without waiting for a player action.
+    if tick.0 % 20 == 0 {
+        check_political_thresholds(shard);
+        broadcast_politics(shard);
+    }
+}
+
+/// Walk every connected Monarch and trigger demotion when one crosses
+/// the discontent or AI-intelligence threshold. Used by the tick loop;
+/// safe to call when no monarchs are online (it just returns fast).
+fn check_political_thresholds(shard: &mut Shard) {
+    use ff_ecs::components::player::{
+        AI_TAKEOVER_THRESHOLD, DISCONTENT_DEMOTION_THRESHOLD,
+    };
+    // Snapshot decisions so we don't mutate the ECS world while iterating it.
+    struct Outcome {
+        entity: hecs::Entity,
+        player_id: ff_common::PlayerId,
+        reason: ff_protocol::messages::RoleChangeReason,
+        deployments: u32,
+        jobs_cut: u32,
+    }
+    let mut outcomes: Vec<Outcome> = Vec::new();
+    for (entity, (player, monarch)) in shard
+        .ecs_world
+        .query::<(
+            &ff_ecs::components::player::Player,
+            &ff_ecs::components::player::Monarch,
+        )>()
+        .iter()
+    {
+        // AI takeover wins ties (it's the more dramatic outcome).
+        if monarch.ai_intelligence >= AI_TAKEOVER_THRESHOLD {
+            outcomes.push(Outcome {
+                entity,
+                player_id: player.player_id,
+                reason: ff_protocol::messages::RoleChangeReason::AiTakeover,
+                deployments: monarch.deployments,
+                jobs_cut: monarch.jobs_cut,
+            });
+        } else if monarch.discontent >= DISCONTENT_DEMOTION_THRESHOLD {
+            outcomes.push(Outcome {
+                entity,
+                player_id: player.player_id,
+                reason: ff_protocol::messages::RoleChangeReason::Overthrown,
+                deployments: monarch.deployments,
+                jobs_cut: monarch.jobs_cut,
+            });
+        }
+    }
+    for o in outcomes {
+        // Remove the Monarch component → demotes to Farmer.
+        let _ = shard
+            .ecs_world
+            .remove_one::<ff_ecs::components::player::Monarch>(o.entity);
+        // Cancel any tasks they had issued (no escrow to refund).
+        let cancelled: Vec<u32> = shard
+            .active_tasks
+            .iter()
+            .filter(|(_, t)| t.monarch_id == o.player_id)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &cancelled {
+            shard.active_tasks.remove(id);
+            shard
+                .task_progress
+                .retain(|(tid, _), _| *tid != *id);
+        }
+        let player_name = shard
+            .sessions
+            .get(&o.player_id)
+            .map(|s| s.player_name.clone())
+            .unwrap_or_else(|| "?".into());
+        // ServerRoleChanged → tells everyone, including the demoted
+        // player whose client flips their toolbar back to Farmer.
+        let change = ff_protocol::messages::ServerRoleChanged {
+            player_id: o.player_id,
+            player_name: player_name.clone(),
+            new_role: 0,
+            reason: o.reason,
+        };
+        if let Ok(buf) = encode(MessageType::ServerRoleChanged, &change) {
+            for session in shard.sessions.values() {
+                session.send(buf.clone());
+            }
+        }
+        // For AI takeover specifically, also send the dramatic banner.
+        if o.reason == ff_protocol::messages::RoleChangeReason::AiTakeover {
+            let bc = ff_protocol::messages::ServerAiTakeover {
+                former_monarch_id: o.player_id,
+                former_monarch_name: player_name,
+                deployments: o.deployments,
+                jobs_cut: o.jobs_cut,
+            };
+            if let Ok(buf) = encode(MessageType::ServerAiTakeover, &bc) {
+                for session in shard.sessions.values() {
+                    session.send(buf.clone());
+                }
+            }
+        }
+        // Refresh the now-Farmer's HUD so coins/role flip instantly.
+        send_player_state(shard, o.player_id);
+    }
+}
+
+/// Build the public politics roster and push it to every session at 1 Hz.
+fn broadcast_politics(shard: &mut Shard) {
+    let mut monarchs: Vec<ff_protocol::messages::PoliticsRow> = Vec::new();
+    for (_e, (player, monarch)) in shard
+        .ecs_world
+        .query::<(
+            &ff_ecs::components::player::Player,
+            &ff_ecs::components::player::Monarch,
+        )>()
+        .iter()
+    {
+        // Only surface Monarchs whose session is actually connected —
+        // dangling components from a crashed flow would otherwise
+        // pollute the list.
+        if !shard.sessions.contains_key(&player.player_id) {
+            continue;
+        }
+        let name = shard
+            .sessions
+            .get(&player.player_id)
+            .map(|s| s.player_name.clone())
+            .unwrap_or_default();
+        monarchs.push(ff_protocol::messages::PoliticsRow {
+            player_id: player.player_id,
+            player_name: name,
+            discontent: monarch.discontent,
+            ai_intelligence: monarch.ai_intelligence,
+            deployments: monarch.deployments,
+            jobs_cut: monarch.jobs_cut,
+        });
+    }
+    let msg = ff_protocol::messages::ServerPoliticsUpdate {
+        tick: shard.resources.calendar.tick,
+        monarchs,
+    };
+    if let Ok(buf) = encode(MessageType::ServerPoliticsUpdate, &msg) {
+        for session in shard.sessions.values() {
+            session.send(buf.clone());
+        }
+    }
 }
 
 /// Build the Monarch surveillance roster and push it to every connected
@@ -318,13 +468,16 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             .unwrap_or(0);
         // If the player has a Monarch component, they're a Tech Monarch.
         // Otherwise they're a Farmer with zero monarch resources.
-        let monarch = shard
+        // Snapshot the Monarch component (which now contains a Vec and
+        // can't be Copy'd) into a small plain tuple. The borrow is
+        // released before we touch the player state builder.
+        let monarch_snap = shard
             .ecs_world
             .get::<&ff_ecs::components::player::Monarch>(entity)
             .ok()
-            .map(|m| *m);
-        let (role, m_compute, m_influence, m_deployments, m_jobs_cut) = match monarch {
-            Some(m) => (1u8, m.compute, m.influence, m.deployments, m.jobs_cut),
+            .map(|m| (m.compute, m.influence, m.deployments, m.jobs_cut));
+        let (role, m_compute, m_influence, m_deployments, m_jobs_cut) = match monarch_snap {
+            Some((c, i, d, j)) => (1u8, c, i, d, j),
             None => (0u8, 0.0, 0.0, 0u32, 0u32),
         };
         payload = Some(ServerPlayerState {

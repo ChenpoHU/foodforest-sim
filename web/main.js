@@ -625,6 +625,20 @@ function rebuildToolbar() {
         "<span id='toolbar-coin-chip' style='background:rgba(255,200,80,0.18); color:#ffd966; border:1px solid #c9a45a; border-radius:10px; padding:1px 8px; font-size:11px; font-weight:bold; margin-left:2px;'>🪙 0</span>";
     toolbar.appendChild(propBtn);
 
+    // Politics button — Realistic mode only. Opens the modal where a
+    // Farmer can ascend (if they've saved 500 coins) or revolt against
+    // any active Monarch.
+    if (selectedGameMode === 1) {
+        const polBtn = document.createElement("button");
+        polBtn.dataset.action = "politics";
+        polBtn.id = "toolbar-politics-btn";
+        polBtn.style.cssText = "display:flex; align-items:center; gap:6px; padding:6px 10px;";
+        polBtn.innerHTML =
+            "<span style='font-size:18px;'>🗳️</span>" +
+            "<span style='font-size:11px;'>Politics</span>";
+        toolbar.appendChild(polBtn);
+    }
+
     const tools = [
         { action: "build-swale", label: "Swale" },
         { action: "build-hugel", label: "Hugel" },
@@ -669,6 +683,10 @@ function rebuildToolbar() {
             }
             if (action === "property") {
                 openPropertyMenu();
+                return;
+            }
+            if (action === "politics") {
+                openPoliticsMenu();
                 return;
             }
             toolbar.querySelectorAll("button").forEach(b => b.classList.remove("active"));
@@ -798,6 +816,11 @@ document.getElementById("monarch-dashboard-close").addEventListener("click", clo
 document.getElementById("monarch-dashboard").addEventListener("click", (e) => {
     if (e.target.id === "monarch-dashboard") closeMonarchDashboard();
 });
+document.getElementById("politics-close").addEventListener("click", closePoliticsMenu);
+document.getElementById("politics-menu").addEventListener("click", (e) => {
+    if (e.target.id === "politics-menu") closePoliticsMenu();
+});
+document.getElementById("politics-ascend").addEventListener("click", sendAscend);
 
 // Propaganda composer: hooked up once at module load. The Send button
 // fires the ClientAction; the optimistic UI feedback comes from the
@@ -914,6 +937,8 @@ document.addEventListener("keydown", (e) => {
         if (prop && prop.style.display === "flex") { closePropertyMenu(); return; }
         const dash = document.getElementById("monarch-dashboard");
         if (dash && dash.style.display === "flex") { closeMonarchDashboard(); return; }
+        const pol = document.getElementById("politics-menu");
+        if (pol && pol.style.display === "flex") { closePoliticsMenu(); return; }
     }
 });
 
@@ -1243,9 +1268,169 @@ function handleServerMessage(data) {
         case 0x010F: handleStateBroadcast(payload); break;
         case 0x0110: handleTaskBroadcast(payload); break;
         case 0x0111: handleTaskComplete(payload); break;
+        case 0x0112: handleRoleChanged(payload); break;
+        case 0x0113: handleAiTakeover(payload); break;
+        case 0x0114: handlePoliticsUpdate(payload); break;
         default:
             console.log("Unknown msg 0x" + msgType.toString(16), payloadLen, "bytes");
     }
+}
+
+// --- Politics state cache ------------------------------------------------
+// Populated by ServerPoliticsUpdate at 1 Hz. Drives the politics modal
+// and the per-Monarch revolt buttons.
+let politicsState = { tick: 0, monarchs: [] };
+// Track which Monarchs this client has already revolted against, so we
+// can hide the Revolt button after a successful vote (server enforces
+// the constraint too).
+const revoltedAgainst = new Set();
+
+function handlePoliticsUpdate(payload) {
+    const r = new BincodeReader(payload);
+    const tick = r.readU64();
+    const count = r.readVarint();
+    const monarchs = [];
+    for (let i = 0; i < count; i++) {
+        const player_id = r.readU64();
+        const player_name = r.readString();
+        const discontent = r.readF32();
+        const ai_intelligence = r.readF32();
+        const deployments = r.readU32();
+        const jobs_cut = r.readU32();
+        monarchs.push({
+            player_id, player_name, discontent, ai_intelligence,
+            deployments, jobs_cut,
+        });
+    }
+    politicsState = { tick, monarchs };
+    // Refresh both panels live if they're open.
+    const m = document.getElementById("politics-menu");
+    if (m && m.style.display === "flex") {
+        renderPoliticsModal();
+    }
+    const dash = document.getElementById("monarch-dashboard");
+    if (dash && dash.style.display === "flex") {
+        renderMonarchDashboard();
+    }
+}
+
+function handleRoleChanged(payload) {
+    const r = new BincodeReader(payload);
+    const player_id = r.readU64();
+    const player_name = r.readString();
+    const new_role = r.readU8();
+    const reason = r.readVarint(); // RoleChangeReason enum tag
+    const reasonStr = reason === 0 ? "ascended"
+                    : reason === 1 ? "overthrown"
+                    : reason === 2 ? "replaced by AI"
+                    : "changed";
+
+    if (player_id === myPlayerId) {
+        // It's *me*. Flip role, rebuild toolbar, push a personal banner.
+        playerRoleLive = new_role;
+        // If I just ascended, forget any old revolt history (fresh slate
+        // as a Monarch; but the server is authoritative).
+        if (new_role === 1) {
+            revoltedAgainst.clear();
+        }
+        rebuildToolbar();
+        renderHudRole();
+        showRoleBanner(new_role, reason, player_name);
+    } else {
+        // Someone else's role flipped. Chat line + optional banner if
+        // they were overthrown/AI-replaced (dramatic enough to deserve
+        // global notice).
+        const verb = new_role === 1 ? "ascended to Tech Monarch"
+                                    : "fell to Farmer (" + reasonStr + ")";
+        appendStateChatLine("STATE", new_role === 1 ? 0 : 2, player_name + " " + verb);
+        // Clear our memory of having revolted against this player if
+        // they're no longer a Monarch — if they come back, we can vote
+        // again.
+        if (new_role === 0) {
+            revoltedAgainst.delete(player_id);
+        }
+    }
+    // Always refresh the politics modal if it's open.
+    const m = document.getElementById("politics-menu");
+    if (m && m.style.display === "flex") {
+        renderPoliticsModal();
+    }
+}
+
+function handleAiTakeover(payload) {
+    const r = new BincodeReader(payload);
+    const former_monarch_id = r.readU64();
+    const former_monarch_name = r.readString();
+    const deployments = r.readU32();
+    const jobs_cut = r.readU32();
+    // Dramatic global banner. Distinct red/purple gradient so even
+    // a player who skipped previous banners notices the era change.
+    const banner = document.getElementById("state-banner");
+    const title = document.getElementById("state-banner-title");
+    const body = document.getElementById("state-banner-message");
+    const sender = document.getElementById("state-banner-sender");
+    if (banner && title && body && sender) {
+        banner.style.background = "linear-gradient(180deg, rgba(180,40,140,0.96), rgba(60,10,80,0.96))";
+        banner.style.borderBottom = "2px solid #ff6cdc";
+        banner.style.color = "#ffe1f6";
+        title.textContent = "⚙️ AI TAKEOVER";
+        body.textContent = "The machines have replaced " + former_monarch_name;
+        sender.textContent = deployments + " drones · " + jobs_cut + " jobs cut · the AI now rules";
+        banner.style.display = "block";
+        if (stateBannerHideTimer) clearTimeout(stateBannerHideTimer);
+        stateBannerHideTimer = setTimeout(() => {
+            banner.style.display = "none";
+            stateBannerHideTimer = null;
+        }, 10000);
+    }
+    // Chat archive.
+    appendStateChatLine("⚙️ AI", 2,
+        "AI takeover: " + former_monarch_name + " demoted (" +
+        deployments + " drones, " + jobs_cut + " jobs cut)");
+}
+
+// Personal banner shown to the player whose role just changed.
+function showRoleBanner(newRole, reason, name) {
+    const banner = document.getElementById("state-banner");
+    const title = document.getElementById("state-banner-title");
+    const body = document.getElementById("state-banner-message");
+    const sender = document.getElementById("state-banner-sender");
+    if (!banner || !title || !body || !sender) return;
+    let cfg, titleText, bodyText, senderText;
+    if (newRole === 1) {
+        cfg = PROP_TONES[1]; // Rally
+        titleText = "ASCENDED";
+        bodyText = "You are now a Tech Monarch.";
+        senderText = "Use the dashboard to deploy AI, issue bounties, and pay UBI.";
+    } else if (reason === 1) {
+        // Overthrown
+        cfg = PROP_TONES[2]; // Crisis
+        titleText = "OVERTHROWN";
+        bodyText = "The Farmers have demoted you.";
+        senderText = "You are now a Farmer again.";
+    } else if (reason === 2) {
+        cfg = { bg: "linear-gradient(180deg, rgba(180,40,140,0.96), rgba(60,10,80,0.96))", border: "#ff6cdc", text: "#ffe1f6" };
+        titleText = "REPLACED BY THE AI";
+        bodyText = "Your fleet's intelligence exceeded you.";
+        senderText = "You are now a Farmer again. The AI rules the world.";
+    } else {
+        cfg = PROP_TONES[0];
+        titleText = "ROLE CHANGED";
+        bodyText = name;
+        senderText = "";
+    }
+    banner.style.background = cfg.bg;
+    banner.style.borderBottom = "2px solid " + cfg.border;
+    banner.style.color = cfg.text;
+    title.textContent = titleText;
+    body.textContent = bodyText;
+    sender.textContent = senderText;
+    banner.style.display = "block";
+    if (stateBannerHideTimer) clearTimeout(stateBannerHideTimer);
+    stateBannerHideTimer = setTimeout(() => {
+        banner.style.display = "none";
+        stateBannerHideTimer = null;
+    }, 8000);
 }
 
 // --- Active Monarch tasks ------------------------------------------------
@@ -1830,6 +2015,33 @@ function handleActionResult(payload) {
             fb.textContent = message;
         }
     }
+    if (message.startsWith("ascend ok") || message.includes("Tech Monarch")
+        || message.includes("Realistic mode") || message.includes("ascend")
+        || message.includes("coins to ascend")) {
+        const fb = document.getElementById("politics-self-feedback");
+        if (fb) {
+            fb.style.color = success ? "#ffd966" : "#ff9a6a";
+            fb.textContent = message;
+        }
+    }
+    if (message.startsWith("Revolted") || message.includes("revolt") || message.includes("Revolt")) {
+        const fb = document.getElementById("politics-self-feedback");
+        if (fb) {
+            fb.style.color = success ? "#ffaa77" : "#ff9a6a";
+            fb.textContent = message;
+        }
+    }
+    // Mark the revolt target locally on success so we hide the button
+    // next render. Clears the seq → target map either way.
+    const revoltedId = pendingRevoltTargetBySeq.get(seq);
+    if (revoltedId !== undefined) {
+        pendingRevoltTargetBySeq.delete(seq);
+        if (success) {
+            revoltedAgainst.add(revoltedId);
+            const m = document.getElementById("politics-menu");
+            if (m && m.style.display === "flex") renderPoliticsModal();
+        }
+    }
 
     const chatLog = document.getElementById("chat-log");
     const line = document.createElement("div");
@@ -2064,12 +2276,31 @@ function renderMonarchDashboard() {
         );
     }
 
+    // Pull this Monarch's political stats from the politics roster
+    // (the 1 Hz broadcast every client receives). Falls back to 0 if
+    // we haven't received one yet.
+    let myDiscontent = 0;
+    let myAiIntel = 0;
+    for (const m of (politicsState.monarchs || [])) {
+        if (m.player_id === myPlayerId) {
+            myDiscontent = m.discontent;
+            myAiIntel = m.ai_intelligence;
+            break;
+        }
+    }
+
     let html = "";
     html += bar("Compute", monarchCompute, 100, "#3ec8ff",
         "Spend 20 per AI deployment. Regenerates ~0.5 / tick.");
     html += bar("Influence", monarchInfluence, 100,
         "linear-gradient(90deg, #c97a3e, #ffd966)",
         "+1 per successful AI auto-harvest. Soft prestige meter.");
+    html += bar("Discontent", myDiscontent, 100,
+        "linear-gradient(90deg, #aa3344, #ff6a6a)",
+        "+25 per Farmer revolt vote. Reach 100 → you are overthrown.");
+    html += bar("AI intelligence", myAiIntel, 100,
+        "linear-gradient(90deg, #4a6cff, #ff6cdc)",
+        "Grows with every drone deploy / auto-harvest. Reach 100 → the AI replaces you.");
     html += "<div style='margin-bottom:10px;'>" +
         "<div style='font-size:12px; color:#cfe; margin-bottom:3px;'>FoFo Coin balance</div>" +
         "<div style='font-size:22px; font-weight:bold; color:#ffd966;'>🪙 " + playerCoins + "</div>" +
@@ -2180,6 +2411,145 @@ function renderSurveillance() {
             sel.value = prev;
         }
     }
+}
+
+// --- Politics modal ------------------------------------------------------
+
+function openPoliticsMenu() {
+    renderPoliticsModal();
+    const fb = document.getElementById("politics-self-feedback");
+    if (fb) fb.textContent = "";
+    document.getElementById("politics-menu").style.display = "flex";
+}
+
+function closePoliticsMenu() {
+    document.getElementById("politics-menu").style.display = "none";
+}
+
+const MONARCH_ASCENSION_COST = 500; // Mirror of the server constant.
+
+function renderPoliticsModal() {
+    const selfEl = document.getElementById("politics-self-text");
+    const ascendBtn = document.getElementById("politics-ascend");
+    if (selfEl) {
+        const youAre = playerRoleLive === 1 ? "👑 Tech Monarch" : "🧑‍🌾 Farmer";
+        selfEl.innerHTML =
+            "<div><span style='color:#cfe; font-size:13px; font-weight:bold;'>" + youAre + "</span></div>" +
+            "<div style='color:#779; font-size:11px; margin-top:2px;'>" +
+                escapeHtml(playerName) + " · 🪙 " + playerCoins +
+            "</div>";
+    }
+    if (ascendBtn) {
+        if (playerRoleLive === 0 && playerCoins >= MONARCH_ASCENSION_COST) {
+            ascendBtn.style.display = "block";
+            ascendBtn.disabled = false;
+            ascendBtn.style.opacity = "1";
+            ascendBtn.style.cursor = "pointer";
+            ascendBtn.textContent = "👑 Ascend for " + MONARCH_ASCENSION_COST + " 🪙";
+        } else if (playerRoleLive === 0) {
+            ascendBtn.style.display = "block";
+            ascendBtn.disabled = true;
+            ascendBtn.style.opacity = "0.5";
+            ascendBtn.style.cursor = "not-allowed";
+            ascendBtn.textContent = "Need " + MONARCH_ASCENSION_COST + " 🪙 (have " + playerCoins + ")";
+        } else {
+            ascendBtn.style.display = "none";
+        }
+    }
+    const list = document.getElementById("politics-monarchs");
+    const meta = document.getElementById("politics-monarchs-meta");
+    if (!list) return;
+    const monarchs = politicsState.monarchs || [];
+    if (meta) {
+        meta.textContent = monarchs.length === 0
+            ? "No monarchs in power"
+            : monarchs.length + " active · tick " + politicsState.tick;
+    }
+    if (monarchs.length === 0) {
+        list.innerHTML =
+            "<div style='color:#557; font-style:italic; padding:8px 0;'>No Tech Monarchs are connected. Be the first to ascend, if you can afford it.</div>";
+        return;
+    }
+    let html = "";
+    for (const m of monarchs) {
+        const isMe = m.player_id === myPlayerId;
+        const alreadyRevolted = revoltedAgainst.has(m.player_id);
+        const discontentPct = Math.max(0, Math.min(100, m.discontent));
+        const aiPct = Math.max(0, Math.min(100, m.ai_intelligence));
+        const discontentColor = discontentPct > 75 ? "#ff6a6a"
+                              : discontentPct > 50 ? "#ff9a6a"
+                              : "#ffd966";
+        const aiColor = aiPct > 75 ? "#ff6cdc"
+                      : aiPct > 50 ? "#c294ff"
+                      : "#8ccdff";
+        let actionCell;
+        if (isMe) {
+            actionCell = "<span style='color:#557; font-size:11px;'>(this is you)</span>";
+        } else if (playerRoleLive === 1) {
+            actionCell = "<span style='color:#557; font-size:11px;'>Monarchs cannot revolt</span>";
+        } else if (alreadyRevolted) {
+            actionCell = "<span style='color:#779; font-size:11px;'>✓ Vote cast</span>";
+        } else {
+            actionCell = "<button data-revolt='" + m.player_id + "' style='background:#5a1a1a; color:#ffaa77; border:1px solid #aa4444; border-radius:4px; padding:3px 12px; cursor:pointer; font-size:11px;'>Revolt</button>";
+        }
+        html +=
+            "<div style='background:rgba(20,10,30,0.5); border:1px solid #2a1a4a; border-radius:6px; padding:10px 12px; margin-bottom:8px;'>" +
+              "<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;'>" +
+                "<div><span style='color:#c294ff; font-size:13px; font-weight:bold;'>👑 " + escapeHtml(m.player_name) + "</span>" +
+                  "<span style='color:#557; font-size:10px; margin-left:8px;'>" + m.deployments + " drones · " + m.jobs_cut + " jobs cut</span>" +
+                "</div>" +
+                actionCell +
+              "</div>" +
+              "<div style='display:flex; gap:14px; font-size:10px; color:#789;'>" +
+                "<div style='flex:1;'>" +
+                  "<div style='display:flex; justify-content:space-between; margin-bottom:2px;'><span>DISCONTENT</span><span style='color:" + discontentColor + ";'>" + Math.round(discontentPct) + "%</span></div>" +
+                  "<div style='width:100%; height:6px; background:#0a0610; border:1px solid #1a0a26; border-radius:3px;'><div style='height:100%; width:" + discontentPct + "%; background:" + discontentColor + ";'></div></div>" +
+                "</div>" +
+                "<div style='flex:1;'>" +
+                  "<div style='display:flex; justify-content:space-between; margin-bottom:2px;'><span>AI INTELLIGENCE</span><span style='color:" + aiColor + ";'>" + Math.round(aiPct) + "%</span></div>" +
+                  "<div style='width:100%; height:6px; background:#0a0610; border:1px solid #1a0a26; border-radius:3px;'><div style='height:100%; width:" + aiPct + "%; background:" + aiColor + ";'></div></div>" +
+                "</div>" +
+              "</div>" +
+            "</div>";
+    }
+    list.innerHTML = html;
+    list.querySelectorAll("button[data-revolt]").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const targetId = btn.getAttribute("data-revolt");
+            sendRevolt(targetId);
+        });
+    });
+}
+
+function sendAscend() {
+    const fb = document.getElementById("politics-self-feedback");
+    if (!ws || ws.readyState !== 1) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Not connected."; }
+        return;
+    }
+    if (playerCoins < MONARCH_ASCENSION_COST) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Need " + MONARCH_ASCENSION_COST + " coins."; }
+        return;
+    }
+    ws.send(buildActionMessage(encodeAscendAction()));
+    if (fb) { fb.style.color = "#ffd966"; fb.textContent = "Ascending…"; }
+}
+
+// Most-recent Revolt target by seq, so when the matching success
+// arrives we can mark this monarch as already-revolted-against locally.
+const pendingRevoltTargetBySeq = new Map();
+
+function sendRevolt(targetMonarchId) {
+    const fb = document.getElementById("politics-self-feedback");
+    if (!ws || ws.readyState !== 1) {
+        if (fb) { fb.style.color = "#ff9a6a"; fb.textContent = "Not connected."; }
+        return;
+    }
+    const id = Number(targetMonarchId) || 0;
+    if (id === 0) return;
+    ws.send(buildActionMessage(encodeRevoltAction(id)));
+    pendingRevoltTargetBySeq.set(inputSeq, id);
+    if (fb) { fb.style.color = "#ffaa77"; fb.textContent = "Casting vote against monarch…"; }
 }
 
 function escapeHtml(s) {
@@ -4222,6 +4592,19 @@ function encodeIssueTaskAction(tone, message, taskKind, target, reward) {
         taskKind & 0xff,
         ...encodeVarint(target),
         ...encodeVarint(reward),
+    ];
+}
+
+function encodeAscendAction() {
+    // AscendToMonarch — variant 20, no fields.
+    return [...encodeVarint(20)];
+}
+
+function encodeRevoltAction(targetMonarchId) {
+    // Revolt { target_monarch_id: u64 } — variant 21
+    return [
+        ...encodeVarint(21),
+        ...encodeVarint(targetMonarchId),
     ];
 }
 

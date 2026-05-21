@@ -79,21 +79,45 @@ pub struct Wallet(pub u32);
 /// Realistic mode). The Monarch does not farm directly; instead they
 /// pay `compute` to deploy semi-AI workers that harvest fruiting plants
 /// in their place, accruing `influence` per successful harvest.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Monarch {
     /// 0..100. Spent to deploy AI workers (20 per deployment). Regenerates
     /// passively (~0.5 per tick = 10/s).
     pub compute: f32,
     /// 0..100. Soft prestige meter — each successful AI harvest grants +1.
-    /// Currently informational; future decisions (price manipulation, mass
-    /// layoffs) will be gated on minimum influence.
     pub influence: f32,
     /// Lifetime count of AI workers this monarch has deployed.
     pub deployments: u32,
     /// Lifetime count of plants auto-harvested by this monarch's AI fleet
     /// — i.e. "jobs cut" from the farmer player perspective.
     pub jobs_cut: u32,
+    /// 0..100. Each Farmer revolt vote adds `DISCONTENT_PER_REVOLT`.
+    /// Reaching `DISCONTENT_DEMOTION_THRESHOLD` triggers automatic
+    /// demotion back to Farmer.
+    pub discontent: f32,
+    /// 0..100. Grows with deployments and successful auto-harvests by
+    /// this monarch's drones. Reaching `AI_TAKEOVER_THRESHOLD` triggers
+    /// an AI takeover — the Monarch is demoted to Farmer and a global
+    /// announcement is broadcast.
+    pub ai_intelligence: f32,
+    /// PlayerIds (as u64) of every Farmer who has already revolted
+    /// against this Monarch — prevents one player from grinding
+    /// discontent up alone.
+    pub revolt_voters: Vec<u64>,
 }
+
+/// Coin cost a Farmer must pay (and lose) to ascend to Tech-Monarch.
+pub const MONARCH_ASCENSION_COST: u32 = 500;
+/// Discontent points added per Farmer revolt vote.
+pub const DISCONTENT_PER_REVOLT: f32 = 25.0;
+/// Discontent reading that triggers automatic demotion.
+pub const DISCONTENT_DEMOTION_THRESHOLD: f32 = 100.0;
+/// AI-intelligence reading that triggers an AI takeover.
+pub const AI_TAKEOVER_THRESHOLD: f32 = 100.0;
+/// Per-deployment intelligence bump.
+pub const AI_INT_PER_DEPLOY: f32 = 4.0;
+/// Per-auto-harvest intelligence bump (drone successfully harvested).
+pub const AI_INT_PER_HARVEST: f32 = 1.0;
 
 impl Default for Monarch {
     fn default() -> Self {
@@ -102,6 +126,9 @@ impl Default for Monarch {
             influence: 0.0,
             deployments: 0,
             jobs_cut: 0,
+            discontent: 0.0,
+            ai_intelligence: 0.0,
+            revolt_voters: Vec::new(),
         }
     }
 }

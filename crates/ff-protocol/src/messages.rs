@@ -42,6 +42,18 @@ pub enum MessageType {
     /// Sent when an active task is claimed by a winning player. Both the
     /// winner and the issuing Monarch use this for HUD feedback.
     ServerTaskComplete = 0x0111,
+    /// Sent to a player whose role just changed (ascended, demoted, or
+    /// replaced by AI). Also broadcast to all sessions so other players
+    /// learn who's now a Monarch / who fell.
+    ServerRoleChanged = 0x0112,
+    /// Pushed to all players when a Monarch's deployed AI fleet exceeds
+    /// the intelligence threshold and "takes over" — the former Monarch
+    /// is demoted to Farmer, and a global banner is shown.
+    ServerAiTakeover = 0x0113,
+    /// 1 Hz public roster of every connected Monarch with their
+    /// political stats (discontent, AI intelligence). Sent to every
+    /// session so Farmers can decide who to revolt against.
+    ServerPoliticsUpdate = 0x0114,
 
     // Shard Manager <-> Server
     ShardRegister = 0x0201,
@@ -135,6 +147,65 @@ pub enum ActionKind {
         target: u32,
         reward: u32,
     },
+    /// Farmer-only: spend a fixed pile of coins to be promoted to
+    /// Tech-Monarch. Cost is set on the server side
+    /// (`MONARCH_ASCENSION_COST`). Realistic mode only.
+    AscendToMonarch,
+    /// Farmer-only: cast a vote of no-confidence against the given
+    /// Monarch. Each Farmer may only revolt against the same Monarch
+    /// once per session. Enough revolts → automatic demotion.
+    Revolt { target_monarch_id: u64 },
+}
+
+/// Reason carried on a `ServerRoleChanged` so the client can pick the
+/// right banner copy/colour. Numeric repr is part of the wire protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum RoleChangeReason {
+    /// Farmer voluntarily ascended after paying the ascension cost.
+    Ascended = 0,
+    /// Monarch was overthrown by enough Farmers' revolt votes.
+    Overthrown = 1,
+    /// Monarch's deployed AI fleet hit the intelligence threshold and
+    /// "took over" — they're demoted to Farmer, the AI symbolically
+    /// becomes the new ruler.
+    AiTakeover = 2,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerRoleChanged {
+    pub player_id: PlayerId,
+    pub player_name: String,
+    /// 0 = Farmer, 1 = TechMonarch.
+    pub new_role: u8,
+    pub reason: RoleChangeReason,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerAiTakeover {
+    pub former_monarch_id: PlayerId,
+    pub former_monarch_name: String,
+    pub deployments: u32,
+    pub jobs_cut: u32,
+}
+
+/// One row in the 1 Hz politics feed — a single connected Monarch's
+/// public stats. Used by the Farmer's Politics modal to pick a revolt
+/// target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoliticsRow {
+    pub player_id: PlayerId,
+    pub player_name: String,
+    pub discontent: f32,
+    pub ai_intelligence: f32,
+    pub deployments: u32,
+    pub jobs_cut: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerPoliticsUpdate {
+    pub tick: Tick,
+    pub monarchs: Vec<PoliticsRow>,
 }
 
 /// A Monarch-issued task pushed to every player. The client shows it as
