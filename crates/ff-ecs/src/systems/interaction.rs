@@ -667,6 +667,74 @@ pub fn process_action(
             ActionResult::Success(format!("Revolted (discontent now {:.0}%)", pct))
         }
 
+        ActionKind::Research { topic } => {
+            // Innovator only. Accumulate knowledge in the chosen
+            // topic. Topic codes: 0=Climate, 1=Medicine, 2=Defense,
+            // 3=Food. The current ECS doesn't yet split knowledge per
+            // topic (just one f32 — the chosen topic is stored as
+            // `focus_topic` for HUD display), but the protocol carries
+            // the topic so we can split it later without a wire change.
+            let mut inv = match world.get::<&mut crate::components::player::Innovator>(player_entity) {
+                Ok(i) => i,
+                Err(_) => return ActionResult::Failure("Only Innovators can research".into()),
+            };
+            if *topic > 3 {
+                return ActionResult::Failure("Invalid research topic".into());
+            }
+            inv.focus_topic = *topic;
+            inv.knowledge = (inv.knowledge + crate::components::player::RESEARCH_GAIN)
+                .min(crate::components::player::KNOWLEDGE_CAP);
+            let topic_name = match topic {
+                0 => "Climate", 1 => "Medicine", 2 => "Defense",
+                3 => "Food",   _ => "?",
+            };
+            ActionResult::Success(format!(
+                "Researched {topic_name} (+{:.0} → {:.0} Knowledge)",
+                crate::components::player::RESEARCH_GAIN, inv.knowledge,
+            ))
+        }
+
+        ActionKind::DeployBreakthrough { kind } => {
+            // Innovator only. Spend BREAKTHROUGH_COST knowledge to end
+            // the active catastrophe IFF kind matches. Mismatched
+            // breakthroughs would waste knowledge — easier UX to
+            // reject upfront. ws.rs picks up the success and calls
+            // catastrophe::resolve_active.
+            let inv_kind = *kind;
+            let cat_active_kind = resources.catastrophe.kind as u8;
+            if cat_active_kind == 0 {
+                return ActionResult::Failure(
+                    "No active catastrophe — save your research for later".into(),
+                );
+            }
+            // catastrophe kind discriminant 1..=5 in CatastropheKind matches
+            // breakthrough kind 0..=4 (with a +1 offset). We use that mapping.
+            // 0=Pandemic→1, 1=SolarFlare→2, 2=Drought→3, 3=Nuclear→4, 4=Asteroid→5
+            let needed_breakthrough_for_active = cat_active_kind.saturating_sub(1);
+            if inv_kind != needed_breakthrough_for_active {
+                return ActionResult::Failure(format!(
+                    "Wrong breakthrough — the active catastrophe needs a #{needed_breakthrough_for_active} breakthrough"
+                ));
+            }
+            let mut inv = match world.get::<&mut crate::components::player::Innovator>(player_entity) {
+                Ok(i) => i,
+                Err(_) => return ActionResult::Failure("Only Innovators can deploy breakthroughs".into()),
+            };
+            if inv.knowledge < crate::components::player::BREAKTHROUGH_COST {
+                return ActionResult::Failure(format!(
+                    "Need {:.0} Knowledge (you have {:.0})",
+                    crate::components::player::BREAKTHROUGH_COST, inv.knowledge,
+                ));
+            }
+            inv.knowledge -= crate::components::player::BREAKTHROUGH_COST;
+            inv.breakthroughs = inv.breakthroughs.saturating_add(1);
+            // The ECS handler can't end the catastrophe here without a
+            // mut borrow of resources.catastrophe alongside a mut borrow
+            // of player_entity's component — but ws.rs runs the
+            // resolve step after seeing the success message prefix.
+            ActionResult::Success("breakthrough deployed — catastrophe averted".into())
+        }
+
         ActionKind::DeploySemiAI { position } => {
             // Tech-Monarch only. The action does nothing for Farmer players.
             let mut monarch = match world.get::<&mut crate::components::player::Monarch>(player_entity) {

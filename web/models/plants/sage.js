@@ -1,14 +1,20 @@
-// models/plants/sage.js — ring of upright sage cones.
+// models/plants/sage.js
+// Small soft-grey-green herb with long narrow leaves.
 import * as THREE from "three";
+import { generateCanopyPoints, buildLeafCloud } from "../trees/_canopy.js";
 
 export function buildSage() {
     const g = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: 0x6a7a6a });
-    for (let i = 0; i < 5; i++) {
-        const a = (i / 5) * Math.PI * 2;
-        const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.8, 4), mat);
-        leaf.position.set(Math.cos(a) * 0.25, 0.4, Math.sin(a) * 0.25);
-        g.add(leaf);
-    }
+    const positions = generateCanopyPoints(
+        new THREE.Vector3(0, 0.22, 0),
+        0.25, 30,
+        { ySquash: 0.85, shellBias: 0.45 },
+    );
+    g.add(buildLeafCloud(positions, {
+        leafSize: 0.16,
+        sizeJitter: 0.45,
+        color: new THREE.Color(0x7a8a6a),
+        aspectW: 0.35, aspectH: 1.6,
+    }));
     return g;
 }

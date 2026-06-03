@@ -1,14 +1,21 @@
-// models/plants/shiso.js — spiral of deep-purple leaves.
+// models/plants/shiso.js
+// Purple-leafed Japanese herb. Small cluster of deep-purple-red
+// leaves shaped like crinkled hearts.
 import * as THREE from "three";
+import { generateCanopyPoints, buildLeafCloud } from "../trees/_canopy.js";
 
 export function buildShiso() {
     const g = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: 0x6a2a4a });
-    for (let i = 0; i < 5; i++) {
-        const a = (i / 5) * Math.PI * 2;
-        const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.1, 4, 3), mat);
-        leaf.position.set(Math.cos(a) * 0.15, 0.2 + i * 0.05, Math.sin(a) * 0.15);
-        leaf.scale.y = 0.3; g.add(leaf);
-    }
+    const positions = generateCanopyPoints(
+        new THREE.Vector3(0, 0.22, 0),
+        0.22, 25,
+        { ySquash: 0.95, shellBias: 0.5 },
+    );
+    g.add(buildLeafCloud(positions, {
+        leafSize: 0.14,
+        sizeJitter: 0.45,
+        color: new THREE.Color(0x6a2a4a),
+        aspectW: 0.85, aspectH: 1.2,
+    }));
     return g;
 }

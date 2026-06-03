@@ -1,16 +1,13 @@
 // models/trees/citrus.js
-// Citrus (orange / lemon family). Short slim trunk + low wide
-// glossy-dark-green leaf canopy + bright-orange fruit globes. The
-// orange-against-dark-green contrast is the strongest ripeness
-// signal in the game — easy to spot from a distance.
+// Citrus (orange / lemon family). Short trunk + dense low branch-and-
+// leaf crown in glossy dark green, with bright-orange fruit globes —
+// the strongest ripeness signal in the game.
 
 import * as THREE from "three";
-import { generateCanopyPoints, buildLeafCloud, buildFruitCluster } from "./_canopy.js";
+import { buildBranchyCanopy, buildFruitCluster } from "./_canopy.js";
 
 export function buildCitrus() {
     const g = new THREE.Group();
-
-    // Short trunk
     const barkMat = new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.95 });
     const trunkH = 1.6;
     const trunk = new THREE.Mesh(
@@ -18,39 +15,31 @@ export function buildCitrus() {
     );
     trunk.position.y = trunkH / 2; trunk.castShadow = true; g.add(trunk);
 
-    // Canopy — flat & wide, dense dark-green leaves
-    const canopyY = trunkH + 1.05;
-    const canopyRadius = 1.7;
-    const canopyHeightHalf = 1.2;
-    const leafCount = 520;
-    const leafPositions = generateCanopyPoints(
-        new THREE.Vector3(0, canopyY, 0),
-        canopyRadius, leafCount,
-        { ySquash: canopyHeightHalf / canopyRadius, shellBias: 0.55 },
-    );
-    const canopy = buildLeafCloud(leafPositions, {
-        leafSize: 0.24,
-        sizeJitter: 0.4,
-        color: new THREE.Color(0x244c1c),
-    });
-    g.add(canopy);
+    // Citrus topology: short trunk, dense low rounded crown. Boughs
+    // spring out wide and fork densely close to the trunk.
+    g.add(buildBranchyCanopy({
+        base: new THREE.Vector3(0, trunkH - 0.1, 0),
+        spread: 1.7, rise: 1.4, branches: 5,
+        barkColor: 0x5a4030, leafColor: 0x244c1c,
+        boughRadius: 0.08, leafSize: 0.15,
+        clusterRadius: 0.78, leavesPerCluster: 85,
+        startElevation: 0.55, splay: 0.6, depth: 2, curve: 0.32, upBias: 0.12,
+    }));
 
-    // Oranges: pale green (unripe) → bright orange (ripe). Bigger
-    // than other fruits so they read at distance — citrus's
-    // signature look.
+    // Oranges: pale green (unripe) → bright orange (ripe). Big so they
+    // read at distance.
     const fruitPositions = [];
     for (let i = 0; i < 14; i++) {
         const a = (i / 14) * Math.PI * 2 + Math.random() * 0.4;
-        const r = canopyRadius * (0.7 + Math.random() * 0.25);
+        const r = 1.7 * (0.6 + Math.random() * 0.3);
         fruitPositions.push(new THREE.Vector3(
             Math.cos(a) * r,
-            canopyY + (Math.random() - 0.5) * canopyHeightHalf * 1.4,
+            trunkH + 1.0 + (Math.random() - 0.5) * 1.2,
             Math.sin(a) * r,
         ));
     }
     g.add(buildFruitCluster(fruitPositions, 0xff8c1f, {
-        size: 0.20,
-        unripeColor: 0xa6c468,
+        size: 0.20, unripeColor: 0xa6c468,
     }));
 
     return g;

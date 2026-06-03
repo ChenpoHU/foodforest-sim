@@ -54,6 +54,11 @@ pub const NET_SEND_INTERVAL: u32 = 2; // 10 Hz
 /// Maximum players per shard instance.
 pub const MAX_PLAYERS_PER_SHARD: u32 = 500;
 
+/// Coin cost charged when a player travels to a different region.
+/// Server enforces this; client previews it in the Travel modal and
+/// disables the Travel button when the wallet can't cover the trip.
+pub const TRAVEL_COST: u32 = 25;
+
 /// Voxels per chunk side (horizontal).
 pub const CHUNK_SIZE: u32 = 16;
 
@@ -97,29 +102,41 @@ impl From<u8> for GameMode {
 /// - `TechMonarch`: tech-oligarch role only unlockable in `Realistic` mode. Doesn't
 ///   farm directly; deploys semi-AI workers that automate harvesting, accruing
 ///   Compute and Influence resources used to issue further "decisions."
+/// - `Innovator`: distributed-human-brain counterweight to the monolithic AI.
+///   Unlockable in Realistic + Survival. Accumulates Knowledge in a chosen
+///   research Topic (climate, medicine, defense, food). Spends Knowledge on
+///   Breakthroughs that resolve active global catastrophes (pandemic, solar
+///   flare, drought, nuclear contamination, asteroid impact) — things the
+///   AI Monarch can't simply automate away because each crisis needs a
+///   different specialised insight.
 /// The numeric repr is part of the wire protocol — do not renumber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum PlayerRole {
     Farmer = 0,
     TechMonarch = 1,
+    Innovator = 2,
 }
 
 impl From<u8> for PlayerRole {
     fn from(v: u8) -> Self {
         match v {
             1 => Self::TechMonarch,
+            2 => Self::Innovator,
             _ => Self::Farmer,
         }
     }
 }
 
 impl PlayerRole {
-    /// Tech Monarch is only allowed in Realistic mode. Any other request
-    /// (or in any other mode) is silently downgraded to Farmer.
+    /// Tech Monarch is only allowed in Realistic. Innovator is allowed
+    /// in Realistic OR Survival (where catastrophes are most likely
+    /// and the role earns its keep). Anything else downgrades to Farmer.
     pub fn validate_for_mode(self, mode: GameMode) -> Self {
         match (self, mode) {
             (Self::TechMonarch, GameMode::Realistic) => Self::TechMonarch,
+            (Self::Innovator, GameMode::Realistic) => Self::Innovator,
+            (Self::Innovator, GameMode::Survival)  => Self::Innovator,
             _ => Self::Farmer,
         }
     }

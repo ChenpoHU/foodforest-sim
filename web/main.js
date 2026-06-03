@@ -5,6 +5,32 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 // haven't been migrated yet still fall through to the inline switch.
 import { MODEL_BUILDERS, makeTreePositional as makeTree } from "./models/index.js";
 
+// Surface any uncaught runtime / promise error as a visible red banner
+// instead of failing silently to a blank screen. Without this, a single
+// throw during connect-screen setup leaves only the static HTML on
+// screen with no clue why.
+function _showFatal(msg) {
+    let box = document.getElementById("fatal-error");
+    if (!box) {
+        box = document.createElement("div");
+        box.id = "fatal-error";
+        box.style.cssText = [
+            "position:fixed", "top:0", "left:0", "right:0", "z-index:99999",
+            "background:#7a1010", "color:#fff", "padding:10px 16px",
+            "font:12px/1.5 monospace", "white-space:pre-wrap",
+            "box-shadow:0 2px 10px rgba(0,0,0,0.6)",
+        ].join(";");
+        (document.body || document.documentElement).appendChild(box);
+    }
+    box.textContent = "⚠️ Runtime error (screenshot this):\n" + msg;
+}
+window.addEventListener("error", (e) => {
+    _showFatal((e.message || "error") + (e.filename ? "\n" + e.filename + ":" + e.lineno : ""));
+});
+window.addEventListener("unhandledrejection", (e) => {
+    _showFatal("Promise: " + ((e.reason && e.reason.message) || e.reason || "rejection"));
+});
+
 let ws = null;
 let connected = false;
 let playerName = "Farmer";
@@ -40,7 +66,15 @@ document.getElementById("connect-btn").addEventListener("click", () => {
         // chance to confirm or downgrade (Tech Monarch outside Realistic
         // is silently downgraded server-side; the next ServerPlayerState
         // will correct us if so).
-        playerRoleLive = selectedGameMode === 1 ? selectedRole : 0;
+        // Optimistic role display until ServerPlayerState confirms.
+        // Monarch needs Realistic; Innovator needs Realistic OR Survival.
+        if (selectedRole === 1 && selectedGameMode === 1) {
+            playerRoleLive = 1;
+        } else if (selectedRole === 2 && (selectedGameMode === 1 || selectedGameMode === 2)) {
+            playerRoleLive = 2;
+        } else {
+            playerRoleLive = 0;
+        }
         rebuildToolbar();
         init(serverUrl);
     } catch (err) {
@@ -75,6 +109,12 @@ let monarchCompute = 0;
 let monarchInfluence = 0;
 let monarchDeployments = 0;
 let monarchJobsCut = 0;
+// Innovator state mirrors Monarch's structure.
+let innovatorKnowledge = 0;
+let innovatorBreakthroughs = 0;
+let innovatorFocusTopic = 0;
+// Active server-side catastrophe (kind=0 means none).
+let activeCatastrophe = { kind: 0, intensity: 0, ticksRemaining: 0, message: "" };
 // Append-only log of recent Monarch decisions for the dashboard.
 const monarchDecisions = [];
 function pushMonarchDecision(text, tone) {
@@ -85,16 +125,31 @@ function pushMonarchDecision(text, tone) {
 const roleDescriptions = {
     0: "Plant, harvest, and trade your own food forest.",
     1: "Deploy semi-AI workers to auto-harvest the world. Each AI run accrues FoFo and Influence, and cuts a job a farmer might have done.",
+    2: "The distributed human counterweight to centralised AI. Research Climate, Medicine, Defense, and Food — then deploy breakthroughs that resolve global catastrophes the AI can't solve alone.",
 };
 
 function refreshRoleVisibility() {
     const row = document.getElementById("role-row");
     if (!row) return;
-    // Tech Monarch is only legal in Realistic (mode 1). In other modes we
-    // force-reset the selection to Farmer so the connect button can't send
-    // an invalid role.
-    if (selectedGameMode === 1) {
+    // Tech Monarch is only legal in Realistic (mode 1).
+    // Innovator is legal in Realistic OR Survival (mode 2) — they're
+    // the role that earns its keep when catastrophes hit.
+    // Peaceful (mode 0): only Farmer.
+    const isRealistic = (selectedGameMode === 1);
+    const isSurvival  = (selectedGameMode === 2);
+    if (isRealistic || isSurvival) {
         row.style.display = "flex";
+        // Hide the TechMonarch button when not Realistic.
+        document.querySelectorAll(".role-btn").forEach(b => {
+            const r = parseInt(b.dataset.role);
+            if (r === 1) b.style.display = isRealistic ? "flex" : "none";
+        });
+        // If TechMonarch was selected and we just switched to Survival,
+        // drop back to Farmer so the connect button can't send invalid.
+        if (selectedRole === 1 && !isRealistic) {
+            selectedRole = 0;
+            applyRoleVisuals();
+        }
     } else {
         row.style.display = "none";
         if (selectedRole !== 0) {
@@ -429,6 +484,7 @@ const COUNTRY_PLANTS = {
         { action: "plant-clover", label: "Clover", sid: 500 },
     ],
     "Yunnan": [
+        { action: "plant-cherry", label: "Cherry", sid: 112 },
         { action: "plant-bamboo", label: "Bamboo", sid: 111 },
         { action: "plant-banana", label: "Banana", sid: 207 },
         { action: "plant-mango", label: "Mango", sid: 208 },
@@ -539,6 +595,66 @@ let selectedPlant = null; // { action, label, sid }
 function rebuildToolbar() {
     const toolbar = document.getElementById("toolbar");
     toolbar.innerHTML = "";
+
+    // --- Innovator toolbar ------------------------------------------------
+    // Distributed-human-brain counterweight to the AI Monarch. Toolbar
+    // exposes four Research topics + Deploy Breakthrough + Inspect +
+    // a live Knowledge chip. No planting/farming buttons — Innovators
+    // contribute via insight, not labour.
+    if (playerRoleLive === 2) {
+        const topics = [
+            { code: 0, icon: "🌡️", label: "Climate"  },
+            { code: 1, icon: "💊", label: "Medicine" },
+            { code: 2, icon: "🛡️", label: "Defense"  },
+            { code: 3, icon: "🌾", label: "Food"     },
+        ];
+        for (const t of topics) {
+            const b = document.createElement("button");
+            b.dataset.action = "research-" + t.code;
+            b.style.cssText = "display:flex; align-items:center; gap:6px; padding:6px 12px;";
+            b.innerHTML =
+                "<span style='font-size:18px;'>" + t.icon + "</span>" +
+                "<span style='font-size:11px;'>" + t.label + "</span>";
+            toolbar.appendChild(b);
+        }
+
+        const breakthroughBtn = document.createElement("button");
+        breakthroughBtn.dataset.action = "deploy-breakthrough";
+        breakthroughBtn.id = "toolbar-breakthrough-btn";
+        breakthroughBtn.style.cssText =
+            "display:flex; align-items:center; gap:6px; padding:6px 12px; background:#3a2a4a; border:1px solid #6a4a8a;";
+        breakthroughBtn.innerHTML =
+            "<span style='font-size:18px;'>💡</span>" +
+            "<span style='font-size:11px;'>Deploy Breakthrough</span>";
+        toolbar.appendChild(breakthroughBtn);
+
+        const inspectBtn = document.createElement("button");
+        inspectBtn.dataset.action = "inspect";
+        inspectBtn.style.cssText = "display:flex; align-items:center; gap:6px; padding:6px 12px;";
+        inspectBtn.innerHTML = "<span style='font-size:18px;'>?</span><span style='font-size:11px;'>Inspect</span>";
+        toolbar.appendChild(inspectBtn);
+
+        // Live Knowledge chip
+        const chips = document.createElement("div");
+        chips.style.cssText = "display:flex; align-items:center; gap:6px; margin-left:6px;";
+        chips.innerHTML =
+            "<span id='toolbar-knowledge-chip' style='background:rgba(216,181,255,0.18); color:#d8b5ff; border:1px solid #8a6ab8; border-radius:10px; padding:2px 8px; font-size:11px; font-weight:bold;'>🔬 0 Knowledge</span>";
+        toolbar.appendChild(chips);
+
+        toolbar.querySelectorAll("button").forEach(b => {
+            b.addEventListener("click", () => {
+                const action = b.dataset.action;
+                toolbar.querySelectorAll("button").forEach(x => x.classList.remove("active"));
+                b.classList.add("active");
+                selectedAction = action;
+                selectedPlant = null;
+            });
+        });
+
+        selectedAction = null;
+        refreshInnovatorHud();
+        return;
+    }
 
     // --- Tech Monarch toolbar ---------------------------------------------
     // Monarchs don't farm by hand. Their toolbar is just: deploy AI,
@@ -739,6 +855,8 @@ const PLANT_LAYERS = [
 ];
 
 function openPlantMenu() {
+    if (document.pointerLockElement) document.exitPointerLock();
+
     const modal = document.getElementById("plant-menu");
     const body = document.getElementById("plant-menu-body");
     const country = getCountryForRegion(selectedRegion);
@@ -1173,6 +1291,224 @@ function updateSky(dt) {
     }
 }
 
+// ── First-person controls ────────────────────────────────────────────
+// Minecraft-style. The camera sits at the player's eye height,
+// rotates with the mouse (pointer-locked), and moves with WASD in
+// camera-local space. The own-avatar mesh is hidden client-side —
+// other players still see the full body, only YOU see the floating
+// hand+tool viewmodel attached to the camera.
+const PLAYER_EYE_HEIGHT = 1.6;          // metres above the player's foot
+
+const fp = {
+    yaw:   0,                            // around Y (left-right), radians
+    pitch: 0,                            // around X (up-down), radians
+    pointerLocked: false,
+    lastUnlockMs: 0,                     // when we last lost lock (cooldown guard)
+    sensitivity: 0.0022,                 // radians per pixel of mouse motion
+    pitchLimit: Math.PI * 0.48,          // ~ ±86°, just under straight up/down
+    lastSentYaw: 0,                      // for sendInput throttling
+    // Viewmodel hand+tool — built lazily once the renderer exists.
+    viewmodel: null,
+    swing: 0,                            // 0..1 anim phase for tool swing
+    swingActive: false,
+};
+
+function buildViewmodel() {
+    // A small forearm + hand + tool attached as a child of the camera.
+    // Lives in front of and below the eye so it reads as "your arm"
+    // without obscuring the centre of the screen.
+    const group = new THREE.Group();
+
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xf0d0a8, roughness: 0.7 });
+    const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x5588bb, roughness: 0.8 });
+
+    // Sleeve / forearm
+    const sleeve = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.05, 0.20, 4, 6),
+        sleeveMat,
+    );
+    sleeve.position.set(0.0, -0.10, -0.05);
+    sleeve.rotation.z = 0.2;
+    group.add(sleeve);
+
+    // Hand
+    const hand = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 8, 6),
+        skinMat,
+    );
+    hand.position.set(0.04, -0.22, -0.18);
+    group.add(hand);
+
+    // Held tool — a small bound subgroup we can replace contents on
+    // when selectedAction changes.
+    const tool = new THREE.Group();
+    tool.name = "tool";
+    tool.position.set(0.07, -0.20, -0.30);
+    group.add(tool);
+
+    // Default tool: a wooden stick. rebuildViewmodelTool() will swap
+    // it out as the player picks new actions.
+    const stickGeo = new THREE.CylinderGeometry(0.012, 0.014, 0.30, 6);
+    const stickMat = new THREE.MeshStandardMaterial({ color: 0x7a5a30, roughness: 0.9 });
+    const stick = new THREE.Mesh(stickGeo, stickMat);
+    stick.rotation.x = Math.PI / 2;
+    tool.add(stick);
+
+    // Position the whole arm in the camera's lower-right. Tweaked so
+    // it reads as "yours" without intruding on the action point.
+    group.position.set(0.30, -0.30, -0.40);
+    group.rotation.set(-0.1, 0.18, 0.0);
+    group.renderOrder = 100;   // draw after world; mostly cosmetic
+    // The viewmodel should be lit by the scene but never cast shadows
+    // (it sits in front of everything anyway).
+    group.traverse(o => { if (o.isMesh) o.castShadow = false; });
+
+    return group;
+}
+
+/**
+ * Swap the held-tool subtree to match `selectedAction`. Kept cheap:
+ * just rebuild the tool group's contents.
+ */
+function rebuildViewmodelTool() {
+    if (!fp.viewmodel) return;
+    const tool = fp.viewmodel.getObjectByName("tool");
+    if (!tool) return;
+    while (tool.children.length) tool.remove(tool.children[0]);
+
+    const woodMat   = new THREE.MeshStandardMaterial({ color: 0x7a5a30, roughness: 0.9 });
+    const metalMat  = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.4, metalness: 0.7 });
+    const seedMat   = new THREE.MeshStandardMaterial({ color: 0xc8a266, roughness: 0.85 });
+    const waterMat  = new THREE.MeshStandardMaterial({
+        color: 0x4a8acc, roughness: 0.2, metalness: 0.1,
+        transparent: true, opacity: 0.7,
+    });
+    const droneMat  = new THREE.MeshStandardMaterial({
+        color: 0x3a4a6a, roughness: 0.4, metalness: 0.6,
+        emissive: 0x224477, emissiveIntensity: 0.4,
+    });
+
+    const a = selectedAction || "";
+    if (a === "harvest" || a === "cut-tree") {
+        // Hand axe — stout shaft + metallic head.
+        const shaft = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.012, 0.014, 0.30, 6), woodMat,
+        );
+        shaft.rotation.x = Math.PI / 2;
+        tool.add(shaft);
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.07, 0.03), metalMat);
+        head.position.set(0.05, 0, -0.12);
+        tool.add(head);
+    } else if (a === "water") {
+        // Watering can — small can body + spout.
+        const can = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.12, 8), metalMat);
+        can.position.set(0, -0.02, -0.10);
+        tool.add(can);
+        const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.13, 6), metalMat);
+        spout.position.set(0.08, -0.02, -0.16);
+        spout.rotation.z = -0.6;
+        tool.add(spout);
+        // Water droplet at the tip
+        const drop = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 5), waterMat);
+        drop.position.set(0.14, -0.04, -0.20);
+        drop.scale.y = 1.4;
+        tool.add(drop);
+    } else if (a && a.startsWith("plant-")) {
+        // A handful of seeds — cupped palm + small clustered spheres.
+        for (let i = 0; i < 5; i++) {
+            const ang = (i / 5) * Math.PI * 2;
+            const seed = new THREE.Mesh(new THREE.SphereGeometry(0.018, 5, 4), seedMat);
+            seed.position.set(Math.cos(ang) * 0.02, 0, Math.sin(ang) * 0.02 - 0.05);
+            seed.scale.y = 1.3;
+            tool.add(seed);
+        }
+    } else if (a === "build-swale" || a === "build-hugel" || a === "build-hochsitz") {
+        // Shovel — long shaft + flat metallic blade.
+        const shaft = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.011, 0.013, 0.40, 6), woodMat,
+        );
+        shaft.rotation.x = Math.PI / 2;
+        tool.add(shaft);
+        const blade = new THREE.Mesh(
+            new THREE.BoxGeometry(0.10, 0.16, 0.015), metalMat,
+        );
+        blade.position.set(0, 0, -0.24);
+        tool.add(blade);
+    } else if (a === "hunt") {
+        // Short bow — arc + string suggestion.
+        const bow = new THREE.Mesh(
+            new THREE.TorusGeometry(0.13, 0.012, 5, 12, Math.PI), woodMat,
+        );
+        bow.rotation.y = -Math.PI / 2;
+        bow.position.set(0, 0, -0.05);
+        tool.add(bow);
+    } else if (a === "deploy-ai") {
+        // Small drone egg — boxy chassis with a glowing sensor strip.
+        const drone = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.07, 0.10), droneMat);
+        drone.position.set(0, 0, -0.10);
+        tool.add(drone);
+    } else {
+        // Default empty hand — short stick prop so the hand reads.
+        const stick = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.012, 0.014, 0.30, 6), woodMat,
+        );
+        stick.rotation.x = Math.PI / 2;
+        tool.add(stick);
+    }
+}
+
+/**
+ * Trigger the tool swing animation. Called on every action click.
+ */
+function triggerToolSwing() {
+    fp.swing = 0;
+    fp.swingActive = true;
+}
+
+function updateFirstPerson(dt) {
+    // If the held tool changed (player picked a different action),
+    // rebuild the viewmodel's tool subgroup. Cheap: it only swaps a
+    // handful of meshes.
+    if (fp._lastAction !== selectedAction) {
+        fp._lastAction = selectedAction;
+        rebuildViewmodelTool();
+    }
+
+    // Track the player's interpolated position so the camera glides
+    // smoothly with movement updates from the server.
+    const playerObj = myEntityId && entityMeshes.get(myEntityId);
+    if (playerObj) {
+        camera.position.set(
+            playerObj.position.x,
+            playerObj.position.y + PLAYER_EYE_HEIGHT,
+            playerObj.position.z,
+        );
+    }
+    // Orient camera from yaw + pitch. Order matters: yaw first
+    // (around Y), then pitch (around the camera's local X).
+    camera.rotation.order = "YXZ";
+    camera.rotation.set(fp.pitch, fp.yaw, 0);
+
+    // Tool swing — ~0.35 s in, ~0.25 s out. Maps to a forward thrust
+    // + slight downward pitch of the viewmodel group.
+    if (fp.swingActive) {
+        fp.swing += dt / 0.55;
+        if (fp.swing >= 1) {
+            fp.swing = 0;
+            fp.swingActive = false;
+        }
+    }
+    if (fp.viewmodel) {
+        const s = fp.swingActive ? Math.sin(fp.swing * Math.PI) : 0;
+        fp.viewmodel.position.set(
+            0.30,
+            -0.30 - s * 0.06,
+            -0.40 - s * 0.18,
+        );
+        fp.viewmodel.rotation.x = -0.1 - s * 0.55;
+    }
+}
+
 // ── Water shader ─────────────────────────────────────────────────────
 // Replaces the static MeshStandardMaterial we used to render each
 // water voxel-tile with an animated ShaderMaterial:
@@ -1300,12 +1636,109 @@ function initRenderer() {
     renderer.toneMappingExposure = 1.15;
     document.body.appendChild(renderer.domElement);
 
-    controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.maxPolarAngle = Math.PI * 0.45;
-    controls.minDistance = 3;
-    controls.maxDistance = 600;
+    // First-person: no OrbitControls. The camera rides at the
+    // player's eye height, driven by mouse-look + WASD. We still
+    // keep the `controls` variable around as a stub so the rest of
+    // the codebase's `controls.update()` calls don't NPE — they
+    // become no-ops.
+    controls = { update() {}, target: new THREE.Vector3(), enabled: false };
+
+    // Camera must be added to the scene so its child meshes (the
+    // viewmodel hand) render. Three.js doesn't require this for the
+    // camera itself, but child meshes won't update otherwise.
+    scene.add(camera);
+    fp.viewmodel = buildViewmodel();
+    camera.add(fp.viewmodel);
+
+    // Helper: is any modal open right now? While a menu is up we
+    // suppress drag-look so menu interaction isn't hijacked.
+    function anyModalOpen() {
+        const ids = [
+            "plant-menu", "property-menu", "monarch-dashboard",
+            "politics-menu", "world-nav-overlay",
+        ];
+        for (const id of ids) {
+            const m = document.getElementById(id);
+            if (m && getComputedStyle(m).display !== "none") return true;
+        }
+        return false;
+    }
+
+    // ── Drag-to-look camera (best practice for web 3D sims) ──────────
+    // No pointer lock. The OS cursor is never hidden or trapped, so
+    // there's nothing to "escape" from. Standard scheme used by
+    // Sketchfab, three.js examples, most browser games:
+    //   • Press + drag on the world  → look around.
+    //   • Quick click (no drag)       → perform the selected action at
+    //                                    the clicked point.
+    //   • WASD                        → move relative to facing.
+    // Pointer capture keeps the drag alive even if the cursor leaves
+    // the window, and `pointercancel`/`pointerup` always release it,
+    // so the camera can never get "stuck".
+    const look = { dragging: false, moved: 0, downTime: 0, pointerId: null,
+                   downX: 0, downY: 0 };
+    renderer.domElement.style.cursor = "grab";
+
+    renderer.domElement.addEventListener("pointerdown", (e) => {
+        if (anyModalOpen()) return;
+        if (e.button !== 0) return;          // left button only
+        look.dragging = true;
+        look.moved = 0;
+        look.downTime = performance.now();
+        look.downX = e.clientX;
+        look.downY = e.clientY;
+        look.pointerId = e.pointerId;
+        try { renderer.domElement.setPointerCapture(e.pointerId); } catch (_) {}
+        renderer.domElement.style.cursor = "grabbing";
+    });
+
+    function endDrag(e) {
+        if (!look.dragging) return;
+        look.dragging = false;
+        renderer.domElement.style.cursor = "grab";
+        try { renderer.domElement.releasePointerCapture(look.pointerId); } catch (_) {}
+        // A short press that barely moved = a click → fire the action
+        // at the point the player clicked (raycast from cursor coords).
+        const dt = performance.now() - look.downTime;
+        if (look.moved < 6 && dt < 400) {
+            onWorldClick({ clientX: look.downX, clientY: look.downY });
+        }
+    }
+    renderer.domElement.addEventListener("pointerup", endDrag);
+    renderer.domElement.addEventListener("pointercancel", endDrag);
+
+    renderer.domElement.addEventListener("pointermove", (e) => {
+        if (!look.dragging) return;
+        // Clamp per-event deltas so a sudden large jump can't snap the
+        // view violently.
+        const dx = Math.max(-120, Math.min(120, e.movementX || 0));
+        const dy = Math.max(-120, Math.min(120, e.movementY || 0));
+        look.moved += Math.abs(dx) + Math.abs(dy);
+        fp.yaw   -= dx * fp.sensitivity;
+        fp.pitch -= dy * fp.sensitivity;
+        if (fp.pitch >  fp.pitchLimit) fp.pitch =  fp.pitchLimit;
+        if (fp.pitch < -fp.pitchLimit) fp.pitch = -fp.pitchLimit;
+    });
+
+    // Subtle persistent control hint.
+    const hint = document.createElement("div");
+    hint.id = "fp-hint";
+    hint.textContent = "Drag to look · WASD to move · Click to act";
+    hint.style.cssText = [
+        "position:fixed", "bottom:14px", "left:50%",
+        "transform:translateX(-50%)",
+        "padding:4px 12px",
+        "background:rgba(0,0,0,0.5)",
+        "color:#dde",
+        "border:1px solid rgba(180,200,220,0.25)",
+        "border-radius:6px",
+        "font:11px system-ui, sans-serif",
+        "letter-spacing:0.5px",
+        "pointer-events:none",
+        "z-index:201",
+        "opacity:0.7",
+    ].join(";");
+    document.body.appendChild(hint);
 
     // Sky dome + distant horizon ring + cloud animation.
     skyDomeMesh = buildSkyDome();
@@ -1338,8 +1771,10 @@ function initRenderer() {
     rim.position.set(-50, 200, -200);
     scene.add(rim);
 
-    // Raycaster for click interactions
-    renderer.domElement.addEventListener("click", onWorldClick);
+    // NOTE: world-click actions are dispatched from the drag-to-look
+    // `endDrag` handler above (a short press that didn't drag), NOT a
+    // raw "click" listener — otherwise a look-drag would also fire an
+    // action when it ended.
 
     window.addEventListener("resize", () => {
         camera.aspect = window.innerWidth / window.innerHeight;
@@ -1453,7 +1888,10 @@ function buildFramedMessage(msgType, payloadBytes) {
     return frame;
 }
 
-function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole) {
+// `traveling` is the trailing bool: true when this hello is a
+// Travel-to-Region reconnect from a player already in the world
+// (server then restores persistent state minus TRAVEL_COST coins).
+function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole, traveling) {
     const payload = new Uint8Array([
         ...encodeBincodeString(name),
         ...encodeBincodeString("dev-token"),
@@ -1462,6 +1900,7 @@ function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole) {
         regionIndex,
         ...encodeVarint(plotSeed),
         playerRole & 0xff,
+        traveling ? 1 : 0,
     ]);
     return buildFramedMessage(0x0001, payload);
 }
@@ -1534,7 +1973,8 @@ function connectWebSocket(url) {
     ws.onopen = () => {
         updateStatus("Connected! Sending hello...");
         connected = true;
-        ws.send(buildHelloMessage(playerName, selectedGameMode, selectedRegion, selectedPlotSeed, selectedRole));
+        // Fresh connect from the splash screen — no travel charge.
+        ws.send(buildHelloMessage(playerName, selectedGameMode, selectedRegion, selectedPlotSeed, selectedRole, false));
     };
 
     ws.onmessage = (event) => {
@@ -1578,9 +2018,70 @@ function handleServerMessage(data) {
         case 0x0112: handleRoleChanged(payload); break;
         case 0x0113: handleAiTakeover(payload); break;
         case 0x0114: handlePoliticsUpdate(payload); break;
+        case 0x0115: handleCatastrophe(payload); break;
         default:
             console.log("Unknown msg 0x" + msgType.toString(16), payloadLen, "bytes");
     }
+}
+
+// --- Global catastrophe banner -------------------------------------------
+// Decodes ServerCatastrophe and drives a persistent top-of-screen banner
+// while a catastrophe is active. The colour + icon vary by kind; the
+// banner also tells Innovators which Breakthrough resolves it.
+const CATASTROPHE_INFO = {
+    1: { icon: "🦠", name: "Pandemic",    color: "#7a3a8a", fix: "Vaccine" },
+    2: { icon: "☀️", name: "Solar Flare", color: "#c88a1a", fix: "Solar Shield" },
+    3: { icon: "🏜️", name: "Drought",     color: "#a8762a", fix: "Drought-resistant Seeds" },
+    4: { icon: "☢️", name: "Nuclear",     color: "#3a7a3a", fix: "Decontamination" },
+    5: { icon: "☄️", name: "Asteroid",    color: "#8a3a2a", fix: "Deflector" },
+};
+
+function handleCatastrophe(payload) {
+    const r = new BincodeReader(payload);
+    const kind = r.readU8();
+    const intensity = r.readF32();
+    const ticksRemaining = r.readU32();
+    const message = r.readString();
+    activeCatastrophe = { kind, intensity, ticksRemaining, message };
+    renderCatastropheBanner();
+    // The Deploy Breakthrough button readiness depends on the active
+    // catastrophe, so refresh the Innovator HUD too.
+    refreshInnovatorHud();
+}
+
+function renderCatastropheBanner() {
+    let banner = document.getElementById("catastrophe-banner");
+    if (activeCatastrophe.kind === 0) {
+        if (banner) banner.style.display = "none";
+        return;
+    }
+    const info = CATASTROPHE_INFO[activeCatastrophe.kind] || {
+        icon: "⚠️", name: "Catastrophe", color: "#888", fix: "?",
+    };
+    if (!banner) {
+        banner = document.createElement("div");
+        banner.id = "catastrophe-banner";
+        banner.style.cssText = [
+            "position:fixed", "top:0", "left:50%", "transform:translateX(-50%)",
+            "padding:8px 22px", "z-index:205", "pointer-events:none",
+            "font:13px system-ui, sans-serif", "font-weight:bold",
+            "border-radius:0 0 10px 10px", "text-align:center",
+            "box-shadow:0 3px 14px rgba(0,0,0,0.5)", "min-width:340px",
+        ].join(";");
+        document.body.appendChild(banner);
+    }
+    banner.style.display = "block";
+    banner.style.background = info.color;
+    banner.style.color = "#fff";
+    const pct = Math.round(activeCatastrophe.intensity);
+    const secs = Math.ceil(activeCatastrophe.ticksRemaining / 20);
+    // Innovators get an actionable hint; everyone else gets the warning.
+    const hint = (playerRoleLive === 2)
+        ? "<div style='font-size:10px; font-weight:normal; opacity:0.9; margin-top:2px;'>Deploy a <b>" + info.fix + "</b> breakthrough to end it</div>"
+        : "<div style='font-size:10px; font-weight:normal; opacity:0.9; margin-top:2px;'>An Innovator must intervene</div>";
+    banner.innerHTML =
+        "<div>" + info.icon + " " + info.name.toUpperCase() +
+        " — intensity " + pct + "% · ~" + secs + "s left</div>" + hint;
 }
 
 // --- Politics state cache ------------------------------------------------
@@ -2498,6 +2999,12 @@ function handlePlayerState(payload) {
         monarchDeployments = r.readU32();
         monarchJobsCut = r.readU32();
     } catch (_) { /* server doesn't speak monarch yet */ }
+    // Innovator fields trail Monarch's — optional for the same reason.
+    try {
+        innovatorKnowledge   = r.readF32();
+        innovatorBreakthroughs = r.readU32();
+        innovatorFocusTopic  = r.readU8();
+    } catch (_) { /* server doesn't speak innovator yet */ }
 
     // Log notable monarch transitions for the dashboard.
     if (playerRoleLive === 1) {
@@ -2526,6 +3033,7 @@ function handlePlayerState(payload) {
 
     refreshCoinChip();
     refreshMonarchHud();
+    refreshInnovatorHud();
     const modal = document.getElementById("property-menu");
     if (modal && modal.style.display === "flex") {
         renderPropertyMenu();
@@ -2551,9 +3059,27 @@ function refreshMonarchHud() {
     }
 }
 
+function refreshInnovatorHud() {
+    // Knowledge chip on the Innovator toolbar.
+    const chip = document.getElementById("toolbar-knowledge-chip");
+    if (chip) {
+        chip.textContent = "🔬 " + Math.floor(innovatorKnowledge) + " Knowledge";
+    }
+    // Highlight the Deploy Breakthrough button when a catastrophe is
+    // active AND the player has enough Knowledge to act.
+    const btn = document.getElementById("toolbar-breakthrough-btn");
+    if (btn) {
+        const ready = activeCatastrophe.kind > 0 && innovatorKnowledge >= 30;
+        btn.style.boxShadow = ready ? "0 0 10px rgba(216,181,255,0.8)" : "none";
+        btn.style.borderColor = ready ? "#c89aff" : "#6a4a8a";
+    }
+}
+
 // --- Monarch dashboard renderer ------------------------------------------
 
 function openMonarchDashboard() {
+    if (document.pointerLockElement) document.exitPointerLock();
+
     renderMonarchDashboard();
     document.getElementById("monarch-dashboard").style.display = "flex";
 }
@@ -2723,6 +3249,8 @@ function renderSurveillance() {
 // --- Politics modal ------------------------------------------------------
 
 function openPoliticsMenu() {
+    if (document.pointerLockElement) document.exitPointerLock();
+
     renderPoliticsModal();
     const fb = document.getElementById("politics-self-feedback");
     if (fb) fb.textContent = "";
@@ -2887,6 +3415,9 @@ function renderHudRole() {
     if (playerRoleLive === 1) {
         el.textContent = "👑 Tech Monarch";
         el.style.color = "#8ccdff";
+    } else if (playerRoleLive === 2) {
+        el.textContent = "🔬 Innovator";
+        el.style.color = "#d8b5ff";
     } else {
         el.textContent = "🧑‍🌾 Farmer";
         el.style.color = "#8fcf8f";
@@ -2945,6 +3476,8 @@ function priceOf(itemId) { return SELL_PRICES[itemId] || 0; }
 function nutritionOf(itemId) { return EAT_NUTRITION[itemId] || 0; }
 
 function openPropertyMenu() {
+    if (document.pointerLockElement) document.exitPointerLock();
+
     renderPropertyMenu();
     document.getElementById("property-menu").style.display = "flex";
 }
@@ -3763,12 +4296,44 @@ document.getElementById("minimap").style.pointerEvents = "all";
 let navSelectedCountry = 0;
 let navSelectedRegion = 0;
 
+// Mirror of ff-common::TRAVEL_COST. If you change the server-side
+// constant, change this too; server is still authoritative.
+const TRAVEL_COST = 25;
+
+function refreshTravelCostUI() {
+    const walletEl = document.getElementById("nav-cost-wallet");
+    const amountEl = document.getElementById("nav-cost-amount");
+    const btn = document.getElementById("nav-travel-btn");
+    const line = document.getElementById("nav-cost-line");
+    if (walletEl) walletEl.textContent = playerCoins;
+    if (amountEl) amountEl.textContent = TRAVEL_COST;
+    // Travelling to the region you're already in is a no-op (still
+    // costs coins server-side — block that out client-side).
+    const samePlace = (navSelectedRegion === selectedRegion);
+    const canAfford = playerCoins >= TRAVEL_COST;
+    if (btn) {
+        const enabled = canAfford && !samePlace;
+        btn.disabled = !enabled;
+        btn.style.cursor = enabled ? "pointer" : "not-allowed";
+        btn.style.opacity = enabled ? "1" : "0.5";
+        btn.textContent = samePlace
+            ? "Already here"
+            : (canAfford ? "Travel" : "Not enough coin");
+    }
+    if (line) {
+        line.style.color = canAfford ? "#ffd966" : "#ff9a6a";
+    }
+}
+
 function openWorldNav() {
+    if (document.pointerLockElement) document.exitPointerLock();
+
     navSelectedCountry = selectedCountryIdx;
     navSelectedRegion = selectedRegion;
     document.getElementById("world-nav-overlay").style.display = "flex";
     buildNavUI();
     drawNavMap();
+    refreshTravelCostUI();
 }
 
 function closeWorldNav() {
@@ -3787,6 +4352,7 @@ function buildNavUI() {
             navSelectedRegion = c.start;
             buildNavUI();
             drawNavMap();
+            refreshTravelCostUI();
         });
         bar.appendChild(btn);
     });
@@ -3802,9 +4368,13 @@ function buildNavUI() {
         btn.addEventListener("click", () => {
             navSelectedRegion = rIdx;
             buildNavUI();
+            refreshTravelCostUI();
         });
         regionList.appendChild(btn);
     }
+    // Same-place / not-enough-coin button text follows the current
+    // navSelectedRegion, so refresh after the lists are rebuilt.
+    refreshTravelCostUI();
 }
 
 function drawNavMap() {
@@ -3859,6 +4429,11 @@ document.getElementById("nav-world-canvas").addEventListener("click", (e) => {
 document.getElementById("world-nav-btn").addEventListener("click", openWorldNav);
 document.getElementById("nav-cancel-btn").addEventListener("click", closeWorldNav);
 document.getElementById("nav-travel-btn").addEventListener("click", () => {
+    // Belt-and-braces: button is also disabled in CSS when broke or
+    // same-place, but block here too in case a stale click slipped
+    // through.
+    if (playerCoins < TRAVEL_COST) return;
+    if (navSelectedRegion === selectedRegion) return;
     closeWorldNav();
     travelToRegion(navSelectedRegion, selectedPlotSeed);
 });
@@ -3892,7 +4467,9 @@ function travelToRegion(regionIndex, plotSeed) {
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
         connected = true;
-        ws.send(buildHelloMessage(playerName, selectedGameMode, regionIndex, plotSeed, selectedRole));
+        // Travel reconnect — server restores persistent state (wallet
+        // + inventory + Monarch role) minus TRAVEL_COST.
+        ws.send(buildHelloMessage(playerName, selectedGameMode, regionIndex, plotSeed, selectedRole, true));
     };
     ws.onmessage = (event) => {
         handleServerMessage(new Uint8Array(event.data));
@@ -4025,9 +4602,11 @@ function createOrUpdateEntity(eid, x, y, z, rot, category) {
         }
     }
 
-    // Track own player for camera
+    // Track own player for camera + hide the own-avatar mesh in
+    // first-person. Other clients still see the full body (their copy
+    // is a separate cloned template); only this client hides it.
     if (eid === myEntityId) {
-        controls.target.set(x, y + 2, z);
+        obj.visible = false;
     }
 }
 
@@ -4067,8 +4646,10 @@ function updateEntityAnimations(dt, nowSec) {
             obj.rotation.y = cur + diff * rotBlend;
         }
 
-        // Idle / walk bob.
-        if (ANIMATED_CATEGORIES.has(u.category)) {
+        // Idle / walk bob. Skipped for the local player — the
+        // first-person camera tracks this entity's position directly,
+        // and bob propagating to the eye would make the player seasick.
+        if (ANIMATED_CATEGORIES.has(u.category) && u.entityId !== myEntityId) {
             const moving = speed2 > 0.001;
             const bobAmp   = moving ? 0.07 : 0.025;
             const bobSpeed = moving ? 9.0  : 2.0;
@@ -4089,8 +4670,29 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 function onWorldClick(event) {
-    if (!selectedAction || !connected) return;
+    if (!connected) return;
+    if (!selectedAction) return;
 
+    // Non-spatial Innovator actions — fire immediately, no raycast.
+    if (selectedAction.startsWith("research-")) {
+        const topic = parseInt(selectedAction.split("-")[1], 10) || 0;
+        ws.send(buildActionMessage(encodeResearchAction(topic)));
+        triggerToolSwing();
+        return;
+    }
+    if (selectedAction === "deploy-breakthrough") {
+        // The breakthrough kind must match the active catastrophe.
+        // catastrophe.kind is 1..=5; breakthrough kind is 0..=4 (offset
+        // by one). Server rejects mismatches with a clear message.
+        const kind = activeCatastrophe.kind > 0 ? (activeCatastrophe.kind - 1) : 0;
+        ws.send(buildActionMessage(encodeDeployBreakthroughAction(kind)));
+        triggerToolSwing();
+        return;
+    }
+
+    // Drag-to-look means the cursor is visible — raycast from the exact
+    // point the player clicked, so they target the tree/tile under
+    // their cursor (more intuitive than a fixed centre crosshair).
     mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
@@ -4117,18 +4719,23 @@ function onWorldClick(event) {
         const eid = hitObj.userData.entityId;
         if (eid && selectedAction === "harvest") {
             ws.send(buildActionMessage(encodeHarvestAction(eid)));
+            triggerToolSwing();
             return;
         }
         if (eid && selectedAction === "cut-tree") {
             ws.send(buildActionMessage(encodeCutTreeAction(eid)));
+            triggerToolSwing();
             return;
         }
         if (eid && selectedAction === "hunt") {
             ws.send(buildActionMessage(encodeHuntAction(eid)));
+            triggerToolSwing();
             return;
         }
         if (eid && selectedAction === "inspect") {
             ws.send(buildActionMessage(encodeInspectAction(eid)));
+            // Inspect is a read-only query — no camera punch, keeps
+            // the player in their exploration view.
             return;
         }
     }
@@ -4142,28 +4749,32 @@ function onWorldClick(event) {
             const iy = Math.round(point.y);
             const iz = Math.round(point.z);
 
+            let dispatched = false;
             if (selectedAction.startsWith("plant-")) {
                 const country = getCountryForRegion(selectedRegion);
                 const plants = COUNTRY_PLANTS[country] || COUNTRY_PLANTS["Portugal"];
                 const found = plants.find(p => p.action === selectedAction);
                 const sid = found ? found.sid : 100;
-                const actionPayload = encodePlantAction(sid, ix, iy, iz);
-                ws.send(buildActionMessage(actionPayload));
+                ws.send(buildActionMessage(encodePlantAction(sid, ix, iy, iz)));
+                dispatched = true;
             } else if (selectedAction === "water") {
-                const actionPayload = encodeWaterAction(ix, iy, iz);
-                ws.send(buildActionMessage(actionPayload));
+                ws.send(buildActionMessage(encodeWaterAction(ix, iy, iz)));
+                dispatched = true;
             } else if (selectedAction === "build-swale") {
-                const actionPayload = encodeSwaleAction(ix, iy, iz);
-                ws.send(buildActionMessage(actionPayload));
+                ws.send(buildActionMessage(encodeSwaleAction(ix, iy, iz)));
+                dispatched = true;
             } else if (selectedAction === "build-hugel") {
-                const actionPayload = encodeHugelAction(ix, iy, iz);
-                ws.send(buildActionMessage(actionPayload));
+                ws.send(buildActionMessage(encodeHugelAction(ix, iy, iz)));
+                dispatched = true;
             } else if (selectedAction === "build-hochsitz") {
-                const actionPayload = encodeHochsitzAction(ix, iy, iz);
-                ws.send(buildActionMessage(actionPayload));
+                ws.send(buildActionMessage(encodeHochsitzAction(ix, iy, iz)));
+                dispatched = true;
             } else if (selectedAction === "deploy-ai") {
-                const actionPayload = encodeDeployAIAction(ix, iy, iz);
-                ws.send(buildActionMessage(actionPayload));
+                ws.send(buildActionMessage(encodeDeployAIAction(ix, iy, iz)));
+                dispatched = true;
+            }
+            if (dispatched) {
+                triggerToolSwing();
             }
         }
     }
@@ -4287,6 +4898,22 @@ function encodeRevoltAction(targetMonarchId) {
     ];
 }
 
+function encodeResearchAction(topic) {
+    // Research { topic: u8 } — variant 22
+    return [
+        ...encodeVarint(22),
+        topic & 0xff,
+    ];
+}
+
+function encodeDeployBreakthroughAction(kind) {
+    // DeployBreakthrough { kind: u8 } — variant 23
+    return [
+        ...encodeVarint(23),
+        kind & 0xff,
+    ];
+}
+
 function encodeHochsitzAction(x, y, z) {
     return [
         ...encodeVarint(13),
@@ -4323,23 +4950,47 @@ function sendInput() {
     const chatInput = document.getElementById("chat-input");
     if (document.activeElement === chatInput) return;
 
+    // First-person input model:
+    //   W / S → forward / back in camera-local Z
+    //   A / D → strafe left / right in camera-local X
+    // We rotate the local vector by fp.yaw to express it in world
+    // coordinates (which is what the server expects: vel.x = move[0],
+    // vel.z = move[1]).
+    const localForward = (keys.has("KeyW") || keys.has("ArrowUp"))   ? 1 : 0;
+    const localBack    = (keys.has("KeyS") || keys.has("ArrowDown")) ? 1 : 0;
+    const localLeft    = (keys.has("KeyA") || keys.has("ArrowLeft")) ? 1 : 0;
+    const localRight   = (keys.has("KeyD") || keys.has("ArrowRight"))? 1 : 0;
+    const lz = localBack - localForward; // +1 = back, -1 = forward
+    const lx = localRight - localLeft;   // +1 = right
+
     let mx = 0, mz = 0;
-    if (keys.has("KeyW") || keys.has("ArrowUp")) mz = -1;
-    if (keys.has("KeyS") || keys.has("ArrowDown")) mz = 1;
-    if (keys.has("KeyA") || keys.has("ArrowLeft")) mx = -1;
-    if (keys.has("KeyD") || keys.has("ArrowRight")) mx = 1;
+    if (lx !== 0 || lz !== 0) {
+        // Camera forward at yaw=0 is (0,0,-1).
+        //   forward_world = (-sin yaw, 0, -cos yaw)
+        //   right_world   = ( cos yaw, 0, -sin yaw)
+        // World velocity = (-lz)·forward_world + lx·right_world
+        // (lz=+1 means S = backward, so we negate to get forward.)
+        const s = Math.sin(fp.yaw), c = Math.cos(fp.yaw);
+        mx = lz * s + lx * c;     // = -lz·(-sin) + lx·cos
+        mz = lz * c - lx * s;     // = -lz·(-cos) + lx·(-sin)
+        const len = Math.sqrt(mx * mx + mz * mz);
+        if (len > 0) { mx /= len; mz /= len; }
+    }
 
     const jump = keys.has("Space");
     const sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
+    const yaw = fp.yaw;
 
     const isMoving = mx !== 0 || mz !== 0 || jump;
-    if (!isMoving && !wasMoving) return;
+    // Send whenever moving, OR yaw changed by more than ~3° since
+    // last send (so other players see us look around even while
+    // standing still). Falling-edge send keeps the server in sync
+    // when the player stops.
+    const yawDelta = Math.abs(yaw - fp.lastSentYaw);
+    if (!isMoving && !wasMoving && yawDelta < 0.05) return;
     wasMoving = isMoving;
+    fp.lastSentYaw = yaw;
 
-    const len = Math.sqrt(mx*mx + mz*mz);
-    if (len > 0) { mx /= len; mz /= len; }
-
-    const yaw = Math.atan2(-mx, -mz);
     const msg = buildInputMessage(mx, mz, yaw, jump, sprint);
     ws.send(msg);
 }
@@ -4535,6 +5186,7 @@ function gameLoop(now) {
     updateWater(now / 1000);
     updateGrass(now / 1000);
     updateEntityAnimations(dt, now / 1000);
+    updateFirstPerson(dt);
     checkEdgeTransition();
     minimapTimer += dt;
     if (minimapTimer >= 0.2) {

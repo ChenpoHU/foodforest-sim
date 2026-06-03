@@ -35,6 +35,20 @@ pub struct Shard {
     pub task_progress: HashMap<(u32, PlayerId), u32>,
     /// Monotonic ID generator for new tasks.
     pub next_task_id: u32,
+    /// Persistent player state, keyed by hello.player_name. Saved on
+    /// disconnect so a player who travels to a new region (or
+    /// reconnects under the same name) gets their wallet, inventory,
+    /// and Monarch role back. NOT cleared on shard restart in-memory;
+    /// nothing is written to disk (yet) — restart wipes it.
+    pub persistent_state: HashMap<String, PersistedPlayer>,
+}
+
+/// What we save per player between sessions.
+#[derive(Debug, Clone)]
+pub struct PersistedPlayer {
+    pub coins: u32,
+    pub inventory: Vec<(u16, u16)>, // (item_id, count)
+    pub monarch: Option<ff_ecs::components::player::Monarch>,
 }
 
 /// A live Monarch-issued task.
@@ -74,6 +88,7 @@ impl Shard {
             active_tasks: HashMap::new(),
             task_progress: HashMap::new(),
             next_task_id: 1,
+            persistent_state: HashMap::new(),
         };
 
         // Spawn some initial plants and animals
@@ -128,6 +143,11 @@ impl Shard {
 
     /// Remove a player from the shard.
     pub fn remove_player(&mut self, player_id: PlayerId) {
+        // Pop the session first so we know the origin_name for the
+        // persistent-state save below.
+        let origin_name = self.sessions
+            .get(&player_id)
+            .map(|s| s.origin_name.clone());
         self.sessions.remove(&player_id);
 
         // Find player entity (and capture wallet refund target before despawning).
@@ -135,6 +155,34 @@ impl Shard {
         for (entity, player) in self.ecs_world.query_mut::<&Player>() {
             if player.player_id == player_id {
                 to_despawn.push(entity);
+            }
+        }
+
+        // Snapshot the player's wallet/inventory/Monarch component
+        // into persistent_state — keyed by the original (pre-
+        // disambiguation) name they typed on the connect screen — so
+        // a Travel-to-Region reconnect can restore them, minus the
+        // travel cost. Done before despawning the entity.
+        if let Some(name) = origin_name {
+            for &e in &to_despawn {
+                let coins = self.ecs_world
+                    .get::<&ff_ecs::components::player::Wallet>(e)
+                    .map(|w| w.0)
+                    .unwrap_or(0);
+                let inventory: Vec<(u16, u16)> = self.ecs_world
+                    .get::<&ff_ecs::components::player::Inventory>(e)
+                    .map(|inv| inv.slots.iter().map(|s| (s.item_id, s.count)).collect())
+                    .unwrap_or_default();
+                let monarch = self.ecs_world
+                    .get::<&ff_ecs::components::player::Monarch>(e)
+                    .ok()
+                    .map(|m| (*m).clone());
+                self.persistent_state.insert(name.clone(), PersistedPlayer {
+                    coins,
+                    inventory,
+                    monarch,
+                });
+                break;
             }
         }
 

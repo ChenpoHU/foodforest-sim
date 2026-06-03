@@ -177,6 +177,31 @@ fn broadcast_updates(shard: &mut Shard) {
         check_political_thresholds(shard);
         broadcast_politics(shard);
     }
+
+    // Catastrophe broadcast — push the current state to everyone
+    // either every second OR whenever the catastrophe just changed
+    // (start / end / intensity flip).
+    let cat = shard.resources.catastrophe;
+    let dirty = cat.dirty;
+    let periodic = tick.0 % 20 == 0;
+    if dirty || periodic {
+        shard.resources.catastrophe.dirty = false;
+        shard.resources.catastrophe.last_broadcast_tick = tick.0;
+        let kind_u8 = cat.kind as u8;
+        let intensity = cat.intensity;
+        let ticks_remaining = cat.duration_ticks.saturating_sub(cat.ticks_elapsed);
+        let msg = ff_protocol::messages::ServerCatastrophe {
+            kind: kind_u8,
+            intensity,
+            ticks_remaining,
+            message: cat.kind.banner_message(intensity),
+        };
+        if let Ok(buf) = encode(MessageType::ServerCatastrophe, &msg) {
+            for session in shard.sessions.values() {
+                session.send(buf.clone());
+            }
+        }
+    }
 }
 
 /// Walk every connected Monarch and trigger demotion when one crosses
@@ -476,9 +501,22 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             .get::<&ff_ecs::components::player::Monarch>(entity)
             .ok()
             .map(|m| (m.compute, m.influence, m.deployments, m.jobs_cut));
-        let (role, m_compute, m_influence, m_deployments, m_jobs_cut) = match monarch_snap {
-            Some((c, i, d, j)) => (1u8, c, i, d, j),
-            None => (0u8, 0.0, 0.0, 0u32, 0u32),
+        let innovator_snap = shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Innovator>(entity)
+            .ok()
+            .map(|i| (i.knowledge, i.breakthroughs, i.focus_topic));
+        // Role precedence: Innovator > Monarch > Farmer. Role discriminants
+        // 0=Farmer, 1=TechMonarch, 2=Innovator.
+        let (role, m_compute, m_influence, m_deployments, m_jobs_cut) =
+            if let Some((c, i, d, j)) = monarch_snap {
+                (1u8, c, i, d, j)
+            } else {
+                (0u8, 0.0, 0.0, 0u32, 0u32)
+            };
+        let (role, inv_knowledge, inv_breakthroughs, inv_focus) = match innovator_snap {
+            Some((k, b, t)) => (2u8, k, b, t),
+            None => (role, 0.0, 0u32, 0u8),
         };
         payload = Some(ServerPlayerState {
             stamina: stamina.0,
@@ -494,6 +532,9 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             monarch_influence: m_influence,
             monarch_deployments: m_deployments,
             monarch_jobs_cut: m_jobs_cut,
+            innovator_knowledge: inv_knowledge,
+            innovator_breakthroughs: inv_breakthroughs,
+            innovator_focus_topic: inv_focus,
         });
         break;
     }

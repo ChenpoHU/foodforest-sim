@@ -9,6 +9,12 @@ pub struct PlayerSession {
     pub player_id: PlayerId,
     pub entity_id: EntityId,
     pub player_name: String,
+    /// The exact name the player typed on the connect screen, BEFORE
+    /// server-side disambiguation (e.g. when two "Farmer"s are online
+    /// at once and one is renamed to "Farmer #2"). Used as the key
+    /// for persistent state (wallet, inventory, role) so a traveling
+    /// player can pick up where they left off.
+    pub origin_name: String,
     /// Channel to send binary messages to this player's WebSocket.
     pub sender: mpsc::UnboundedSender<Vec<u8>>,
     /// Last input sequence number acknowledged.
@@ -24,12 +30,14 @@ impl PlayerSession {
         player_id: PlayerId,
         entity_id: EntityId,
         player_name: String,
+        origin_name: String,
         sender: mpsc::UnboundedSender<Vec<u8>>,
     ) -> Self {
         Self {
             player_id,
             entity_id,
             player_name,
+            origin_name,
             sender,
             last_acked_seq: 0,
             last_action: "joined".into(),

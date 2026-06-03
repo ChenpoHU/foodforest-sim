@@ -1,15 +1,19 @@
-// models/plants/clover.js — 4 small flat leaves.
+// models/plants/clover.js
+// Ground cover — small dense patch of tiny round leaves.
 import * as THREE from "three";
+import { generateCanopyPoints, buildLeafCloud } from "../trees/_canopy.js";
 
 export function buildClover() {
-    const group = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: 0x2a8a2a });
-    for (let i = 0; i < 4; i++) {
-        const angle = (i / 4) * Math.PI * 2;
-        const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 4), mat);
-        leaf.position.set(Math.cos(angle) * 0.12, 0.1, Math.sin(angle) * 0.12);
-        leaf.scale.y = 0.4;
-        group.add(leaf);
-    }
-    return group;
+    const g = new THREE.Group();
+    const positions = generateCanopyPoints(
+        new THREE.Vector3(0, 0.06, 0),
+        0.18, 24,
+        { ySquash: 0.30, shellBias: 0.5 },
+    );
+    g.add(buildLeafCloud(positions, {
+        leafSize: 0.08,
+        sizeJitter: 0.4,
+        color: new THREE.Color(0x2a8a2a),
+    }));
+    return g;
 }

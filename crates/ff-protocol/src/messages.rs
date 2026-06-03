@@ -54,6 +54,10 @@ pub enum MessageType {
     /// political stats (discontent, AI intelligence). Sent to every
     /// session so Farmers can decide who to revolt against.
     ServerPoliticsUpdate = 0x0114,
+    /// Sent to every player when a global catastrophe starts, ticks,
+    /// or ends. Drives the catastrophe banner + Innovator's deploy
+    /// hints.
+    ServerCatastrophe = 0x0115,
 
     // Shard Manager <-> Server
     ShardRegister = 0x0201,
@@ -73,6 +77,12 @@ pub struct ClientHello {
     /// `PlayerRole` discriminant. The server validates this against the
     /// chosen game mode and may downgrade (TechMonarch is Realistic-only).
     pub player_role: u8,
+    /// True when this hello is a "Travel to Region" reconnect from a
+    /// player already in the world. The server then looks up the
+    /// previous wallet/inventory/role state (keyed by player_name)
+    /// and charges `TRAVEL_COST` from the restored wallet. False on
+    /// a fresh login from the connect screen.
+    pub traveling: bool,
 }
 
 /// Sent every tick (50ms) with the player's movement input.
@@ -155,6 +165,28 @@ pub enum ActionKind {
     /// Monarch. Each Farmer may only revolt against the same Monarch
     /// once per session. Enough revolts → automatic demotion.
     Revolt { target_monarch_id: u64 },
+    /// Innovator-only: spend a tick of "lab time" to accumulate
+    /// Knowledge in `topic` (0=Climate, 1=Medicine, 2=Defense,
+    /// 3=Food).
+    Research { topic: u8 },
+    /// Innovator-only: spend BREAKTHROUGH_COST Knowledge to end the
+    /// active catastrophe — but only if `kind` matches the active
+    /// catastrophe's kind. Mismatched breakthroughs are rejected.
+    ///   kind: 0=Pandemic, 1=SolarFlare, 2=Drought, 3=Nuclear, 4=Asteroid
+    DeployBreakthrough { kind: u8 },
+}
+
+/// State of a global catastrophe pushed to every player.
+///   kind: 0=None, 1=Pandemic, 2=SolarFlare, 3=Drought, 4=Nuclear, 5=Asteroid
+///   intensity: 0..100 — drives the banner colour + the per-tick damage rate.
+///   ticks_remaining: rough countdown shown to the player.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerCatastrophe {
+    pub kind: u8,
+    pub intensity: f32,
+    pub ticks_remaining: u32,
+    /// Short human-readable message used as the banner text.
+    pub message: String,
 }
 
 /// Reason carried on a `ServerRoleChanged` so the client can pick the
@@ -356,11 +388,15 @@ pub struct ServerPlayerState {
     /// 0 = Farmer, 1 = Tech Monarch. Drives whether the Monarch dashboard
     /// renders on the client.
     pub role: u8,
-    /// Monarch resources. All zero for Farmer players.
+    /// Monarch resources. All zero for non-Monarch players.
     pub monarch_compute: f32,
     pub monarch_influence: f32,
     pub monarch_deployments: u32,
     pub monarch_jobs_cut: u32,
+    /// Innovator resources. All zero for non-Innovator players.
+    pub innovator_knowledge: f32,
+    pub innovator_breakthroughs: u32,
+    pub innovator_focus_topic: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

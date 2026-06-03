@@ -123,13 +123,68 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
             player_id,
             EntityId(0), // will be set below
             display_name.clone(),
+            hello.player_name.clone(), // origin_name — key for persistent state
             tx,
         );
         let (eid, entity) = shard.add_player(player_id, display_name, session);
-        if role == ff_common::PlayerRole::TechMonarch {
+
+        // Restore persistent state (wallet, inventory, Monarch) if we
+        // have any saved for this origin name. When `hello.traveling`
+        // is true, we charge TRAVEL_COST from the restored wallet — if
+        // the wallet can't cover it we still let them through (better
+        // UX than denying the connection mid-flight), but their coins
+        // saturate at zero. The client previews the cost before they
+        // ever get here and disables the Travel button when broke, so
+        // this branch is the safety net rather than the typical path.
+        let persisted = shard.persistent_state.remove(&hello.player_name);
+        let mut applied_travel_cost = 0u32;
+        if let Some(p) = &persisted {
+            // Wallet
+            if let Ok(mut w) = shard.ecs_world.get::<&mut ff_ecs::components::player::Wallet>(entity) {
+                w.0 = p.coins;
+                if hello.traveling {
+                    let cost = ff_common::TRAVEL_COST.min(w.0);
+                    w.0 -= cost;
+                    applied_travel_cost = cost;
+                }
+            }
+            // Inventory
+            if let Ok(mut inv) = shard.ecs_world.get::<&mut ff_ecs::components::player::Inventory>(entity) {
+                inv.slots.clear();
+                for &(item_id, count) in &p.inventory {
+                    inv.add(item_id, count);
+                }
+            }
+            // Monarch role (overrides the hello.player_role choice on
+            // reconnect — once a monarch, stays a monarch).
+            if let Some(m) = &p.monarch {
+                let _ = shard.ecs_world.insert_one(entity, m.clone());
+            }
+        }
+        // If we DIDN'T have persistent state for this player AND they
+        // asked for TechMonarch in hello, install a default Monarch.
+        if persisted.as_ref().and_then(|p| p.monarch.as_ref()).is_none()
+            && role == ff_common::PlayerRole::TechMonarch
+        {
             let _ = shard
                 .ecs_world
                 .insert_one(entity, ff_ecs::components::player::Monarch::default());
+        }
+        // Innovator role: install the component. We don't persist the
+        // Innovator's research yet (a TODO alongside the wallet/monarch
+        // persistence) — they start fresh on each connect for now.
+        if role == ff_common::PlayerRole::Innovator {
+            let _ = shard
+                .ecs_world
+                .insert_one(entity, ff_ecs::components::player::Innovator::default());
+        }
+        if hello.traveling {
+            info!(
+                "  → restored persistent state (traveling, -{} coins) for '{}'",
+                applied_travel_cost, hello.player_name
+            );
+        } else if persisted.is_some() {
+            info!("  → restored persistent state (rejoin) for '{}'", hello.player_name);
         }
 
         // Update entity_id in session
@@ -591,6 +646,33 @@ async fn handle_message(
                     }
                 }
 
+                // Innovator's DeployBreakthrough: ECS handler debited
+                // Knowledge + validated the kind. We end the active
+                // catastrophe here (the catastrophe lives on resources,
+                // and the ECS handler can't mutate that and a player
+                // component in the same borrow scope). The clear sets
+                // a `dirty` flag that tick.rs's catastrophe broadcaster
+                // picks up next pass.
+                if success {
+                    if let ff_protocol::messages::ActionKind::DeployBreakthrough { .. } =
+                        &action.action
+                    {
+                        ff_ecs::systems::catastrophe::resolve_active(&mut shard.resources);
+                        // Inform every connected player immediately so
+                        // they see the banner clear without waiting for
+                        // the 1 Hz broadcast tick.
+                        let cleared = ff_protocol::messages::ServerCatastrophe {
+                            kind: 0, intensity: 0.0, ticks_remaining: 0,
+                            message: "Breakthrough deployed — catastrophe averted".into(),
+                        };
+                        if let Ok(buf) = encode(MessageType::ServerCatastrophe, &cleared) {
+                            for session in shard.sessions.values() {
+                                session.send(buf.clone());
+                            }
+                        }
+                    }
+                }
+
                 // AscendToMonarch: ECS handler charged the wallet. Now
                 // attach the Monarch component server-side and broadcast
                 // the role change so every client (including the
@@ -979,5 +1061,19 @@ fn action_tag(action: &ff_protocol::messages::ActionKind) -> String {
         }
         AscendToMonarch => "ascending".into(),
         Revolt { .. } => "revolting".into(),
+        Research { topic } => {
+            let name = match topic {
+                0 => "Climate", 1 => "Medicine", 2 => "Defense",
+                3 => "Food",   _ => "Topic?"
+            };
+            format!("researching {name}")
+        }
+        DeployBreakthrough { kind } => {
+            let name = match kind {
+                0 => "Vaccine", 1 => "Solar Shield", 2 => "Drought-resistant Seeds",
+                3 => "Decontamination", 4 => "Deflector", _ => "Breakthrough"
+            };
+            format!("deploying {name}")
+        }
     }
 }

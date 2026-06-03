@@ -202,12 +202,42 @@
             cursor: crosshair;
             margin: 8px 0;
         }
+
+        /* Connect-screen country/region buttons.
+           The generic `#connect-screen button` rule (ID specificity)
+           was overriding the `.country-btn` / `.region-btn` class rules
+           (class specificity), tinting EVERY button solid green so you
+           couldn't tell which was selected. These container-scoped rules
+           (#id + .class) out-specify it, restoring the same muted look
+           as the mode/role buttons above: dark when inactive, a soft
+           green highlight only on the active one. */
+        #country-bar .country-btn,
+        #region-list .region-btn {
+            background: #1a2a1a;
+            color: #aaa;
+            border: 1px solid #444;
+            box-shadow: none;
+            font-weight: normal;
+        }
+        #country-bar .country-btn:hover,
+        #region-list .region-btn:hover {
+            background: #243424;
+            border-color: #4a4;
+        }
+        #country-bar .country-btn.active,
+        #region-list .region-btn.active {
+            background: #2a5a2a;
+            color: #cfc;
+            border-color: #4a4;
+            box-shadow: none;
+            font-weight: bold;
+        }
     </style>
     <script type="importmap">
     {
         "imports": {
-            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            "three": "./vendor/three/three.module.js",
+            "three/addons/": "./vendor/three/"
         }
     }
     </script>
@@ -234,6 +264,7 @@
             <div style="display:flex; gap:8px;">
                 <button class="role-btn active" data-role="0" style="background:#2a5a2a; color:#cfc; border:1px solid #4a4; border-radius:8px; padding:6px 14px; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;"><span style="font-size:14px;">🧑‍🌾</span> Farmer</button>
                 <button class="role-btn" data-role="1" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:6px 14px; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;"><span style="font-size:14px;">🤖</span> Tech Monarch</button>
+                <button class="role-btn" data-role="2" style="background:#1a2a1a; color:#aaa; border:1px solid #444; border-radius:8px; padding:6px 14px; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;"><span style="font-size:14px;">🔬</span> Innovator</button>
             </div>
             <p id="role-desc" style="color:#666; font-size:10px; margin:0; max-width:420px; text-align:center;">Plant, harvest, and trade your own food forest.</p>
         </div>
@@ -267,6 +298,9 @@
             <canvas id="nav-world-canvas" width="700" height="320" style="border:1px solid rgba(100,200,100,0.3); border-radius:8px; cursor:crosshair; margin-bottom:8px;"></canvas>
             <div id="nav-country-bar" style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin:8px 0; max-width:700px;"></div>
             <div id="nav-region-list" style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin:6px 0; max-width:600px;"></div>
+            <div id="nav-cost-line" style="color:#ffd966; font-size:13px; margin-top:8px; font-family:system-ui, sans-serif;">
+                Travel costs <span id="nav-cost-amount">25</span> 🪙 — your wallet: <span id="nav-cost-wallet">0</span> 🪙
+            </div>
             <div style="margin-top:10px; display:flex; gap:10px; justify-content:center;">
                 <button id="nav-travel-btn" style="background:#2a5a2a; color:#cfc; border:none; border-radius:8px; padding:10px 28px; font-size:15px; cursor:pointer;">Travel</button>
                 <button id="nav-cancel-btn" style="background:#333; color:#aaa; border:1px solid #555; border-radius:8px; padding:10px 28px; font-size:15px; cursor:pointer;">Cancel</button>
@@ -469,6 +503,6 @@
         <input id="chat-input" type="text" placeholder="Press Enter to chat..." />
     </div>
 
-    <script type="module" src="./main.js?v=leaves1"></script>
+    <script type="module" src="./main.js?v=trees4"></script>
 </body>
 </html>

@@ -1,19 +1,42 @@
-// models/plants/strawberry.js — leaf clump with 3 small red berries.
+// models/plants/strawberry.js
+// Low ground plant: small cluster of dark-green leaf planes hugging
+// the ground, plus visible berries that ripen from cream → bright
+// red. Real strawberries have trifoliate leaves — we fake the look
+// with small leaf planes scattered close to the ground.
+
 import * as THREE from "three";
+import { generateCanopyPoints, buildLeafCloud, buildFruitCluster } from "../trees/_canopy.js";
 
 export function buildStrawberry() {
-    const group = new THREE.Group();
-    const leaves = new THREE.Mesh(
-        new THREE.SphereGeometry(0.2, 6, 4),
-        new THREE.MeshStandardMaterial({ color: 0x3a8a2a, roughness: 0.85 })
+    const g = new THREE.Group();
+
+    // Tiny leaf cluster at ground level, wider than tall.
+    const positions = generateCanopyPoints(
+        new THREE.Vector3(0, 0.10, 0),
+        0.22, 30,
+        { ySquash: 0.45, shellBias: 0.4 },
     );
-    leaves.position.y = 0.15; leaves.scale.y = 0.5; group.add(leaves);
-    const berryMat = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.4 });
-    for (let i = 0; i < 3; i++) {
-        const a = (i / 3) * Math.PI * 2;
-        const berry = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 3), berryMat);
-        berry.position.set(Math.cos(a) * 0.15, 0.08, Math.sin(a) * 0.15);
-        berry.scale.y = 1.3; group.add(berry);
+    g.add(buildLeafCloud(positions, {
+        leafSize: 0.10,
+        sizeJitter: 0.45,
+        color: new THREE.Color(0x3a7a2e),
+    }));
+
+    // Berries — five small fruits scattered around the centre at
+    // ground level so they peek out from under the leaves.
+    const fruitPositions = [];
+    for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2 + Math.random() * 0.4;
+        const r = 0.10 + Math.random() * 0.07;
+        fruitPositions.push(new THREE.Vector3(
+            Math.cos(a) * r, 0.06, Math.sin(a) * r,
+        ));
     }
-    return group;
+    g.add(buildFruitCluster(fruitPositions, 0xd6232a, {
+        size: 0.05,
+        elongation: 1.4,           // berry-shape, taller than wide
+        unripeColor: 0xeae4c4,     // cream/pale yellow when unripe
+    }));
+
+    return g;
 }

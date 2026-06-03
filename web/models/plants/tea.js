@@ -1,12 +1,20 @@
-// models/plants/tea.js — small low-hugging tea bush.
+// models/plants/tea.js
+// Small bushy shrub of glossy dark-green leaves.
 import * as THREE from "three";
+import { generateCanopyPoints, buildLeafCloud } from "../trees/_canopy.js";
 
 export function buildTea() {
     const g = new THREE.Group();
-    const bush = new THREE.Mesh(
-        new THREE.SphereGeometry(0.5, 6, 5),
-        new THREE.MeshStandardMaterial({ color: 0x3a6a2a })
+    const positions = generateCanopyPoints(
+        new THREE.Vector3(0, 0.35, 0),
+        0.45, 100,
+        { ySquash: 0.7, shellBias: 0.5 },
     );
-    bush.position.y = 0.4; bush.scale.y = 0.6; g.add(bush);
+    g.add(buildLeafCloud(positions, {
+        leafSize: 0.14,
+        sizeJitter: 0.4,
+        color: new THREE.Color(0x2a5a2a),
+        aspectW: 0.55, aspectH: 1.2,
+    }));
     return g;
 }

@@ -10,8 +10,7 @@
 
 import * as THREE from "three";
 import {
-    generateCanopyPoints,
-    buildLeafCloud,
+    buildBranchyCanopy,
     buildFruitCluster,
 } from "./_canopy.js";
 
@@ -69,64 +68,51 @@ export function makeTree(opts) {
     flare.position.y = trunkRadius * 0.3;
     g.add(flare);
 
-    // ── Visible primary branches ─────────────────────────────────────
-    // Without sphere blobs, the canopy structure needs real branches
-    // poking into it; otherwise leaves would float on top of a bare
-    // pole. Four branches around the trunk reaching up into the
-    // canopy give it solidity.
-    const branchCount = 4;
-    for (let i = 0; i < branchCount; i++) {
-        const a = (i / branchCount) * Math.PI * 2 + 0.5;
-        const branchLen = canopyRadius * 0.75;
-        const branch = new THREE.Mesh(
-            new THREE.CylinderGeometry(
-                trunkRadius * 0.20, trunkRadius * 0.45, branchLen, 6
-            ),
-            trunkMat,
-        );
-        const dir = Math.cos(a), dirZ = Math.sin(a);
-        branch.position.set(
-            dir * canopyRadius * 0.3,
-            trunkHeight + branchLen * 0.35,
-            dirZ * canopyRadius * 0.3,
-        );
-        branch.rotation.z = -dir * 0.65;
-        branch.rotation.x = dirZ * 0.65;
-        branch.castShadow = true;
-        g.add(branch);
-    }
-
-    // ── Canopy: leaves only ──────────────────────────────────────────
-    // Density tuned by canopy volume so small trees aren't sparse
-    // and big trees aren't ludicrously expensive. ~80 leaves per
-    // canopyRadius² unit, scaled by canopyHeight ratio.
-    const ySquash = canopyHeight / canopyRadius;
-    const leafCount = Math.max(40, Math.floor(
-        canopyRadius * canopyRadius * ySquash * 80 * leafDensity
-    ));
-    const center = new THREE.Vector3(0, canopyY, 0);
-    const leafPositions = generateCanopyPoints(center, canopyRadius, leafCount, {
-        ySquash,
-        shellBias: 0.55,
+    // ── Canopy: recursive curving branches with leaf clusters ────────
+    // Topology adapts to the tree's proportions: broad species (big
+    // canopyRadius) get low-springing, wide-splaying, deeply-forked
+    // boughs → rounded spreading crowns; narrow species get steeper,
+    // shallower branching → upright crowns.
+    const broadness = Math.min(1, Math.max(0, (canopyRadius - 1.2) / 1.8)); // 0=narrow, 1=broad
+    const branchCount = Math.max(3, Math.min(7, Math.round(3 + canopyRadius * 1.2)));
+    const leavesPerCluster = Math.max(38, Math.floor(55 * leafDensity));
+    const canopy = buildBranchyCanopy({
+        base: new THREE.Vector3(0, trunkHeight - 0.1, 0),
+        spread: canopyRadius,
+        rise: canopyHeight * 1.5,
+        branches: branchCount,
+        barkColor: trunkColor,
+        leafColor: canopyColor,
+        boughRadius: Math.max(0.05, trunkRadius * 0.55),
+        leafSize: Math.min(leafSize, 0.17),
+        clusterRadius: Math.max(0.42, canopyRadius * 0.40),
+        leavesPerCluster,
+        aspectW: elongatedLeaves ? 0.4 : 0.9,
+        aspectH: elongatedLeaves ? 1.7 : 1.1,
+        // Broad trees spring out lower (0.5) + splay wide + fork deeper;
+        // narrow trees rise steeply (0.82) + fork shallow.
+        startElevation: 0.82 - broadness * 0.32,
+        splay: 0.45 + broadness * 0.35,
+        depth: canopyRadius > 2.2 ? 3 : 2,
+        curve: 0.30,
+        upBias: 0.10,
     });
-    const canopy = buildLeafCloud(leafPositions, {
-        leafSize,
-        sizeJitter: 0.5,
-        color: canopyColor,
-        aspectW: elongatedLeaves ? 0.45 : 1.0,
-        aspectH: elongatedLeaves ? 1.6  : 1.0,
-    });
+    // Branches start at the trunk top (base) and rise into the foliage
+    // — no extra offset, so the canopy stays attached to the trunk.
     g.add(canopy);
 
     // ── Fruits ────────────────────────────────────────────────────────
     if (fruitColor !== undefined && fruitCount) {
+        // Place fruits within the branch-canopy's leaf region (which
+        // sits above the trunk top, centred ~trunkHeight + canopyHeight).
+        const fruitCenterY = trunkHeight + canopyHeight * 0.85;
         const fruitPositions = [];
         for (let i = 0; i < fruitCount; i++) {
             const a = (i / fruitCount) * Math.PI * 2 + Math.random() * 0.3;
-            const r = canopyRadius * (0.7 + Math.random() * 0.25);
+            const r = canopyRadius * (0.55 + Math.random() * 0.35);
             fruitPositions.push(new THREE.Vector3(
                 Math.cos(a) * r,
-                canopyY + (Math.random() - 0.5) * canopyHeight * 0.7,
+                fruitCenterY + (Math.random() - 0.5) * canopyHeight,
                 Math.sin(a) * r,
             ));
         }

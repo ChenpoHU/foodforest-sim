@@ -106,6 +106,39 @@ pub struct Monarch {
     pub revolt_voters: Vec<u64>,
 }
 
+/// Marker + resources for the Innovator role. Distributed human
+/// ingenuity, designed as the counterweight to TechMonarch's
+/// centralised AI: each catastrophe needs a different specialised
+/// insight, and the Innovator builds that knowledge per topic. When a
+/// global catastrophe is active they can spend Knowledge to deploy a
+/// matching Breakthrough that ends the crisis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Innovator {
+    /// 0..100. Accumulated by `Research` actions. Spent on
+    /// `DeployBreakthrough` to end a matching catastrophe.
+    pub knowledge: f32,
+    /// Lifetime count of breakthroughs this player has deployed —
+    /// purely informational, for the dashboard / surveillance feed.
+    pub breakthroughs: u32,
+    /// Which Topic the Innovator most recently researched (used to
+    /// drive small per-topic bonuses + visualised on the HUD).
+    ///   0 = Climate, 1 = Medicine, 2 = Defense, 3 = Food
+    pub focus_topic: u8,
+}
+
+impl Default for Innovator {
+    fn default() -> Self {
+        Self { knowledge: 0.0, breakthroughs: 0, focus_topic: 0 }
+    }
+}
+
+/// Knowledge gained per Research action.
+pub const RESEARCH_GAIN: f32 = 8.0;
+/// Knowledge cap.
+pub const KNOWLEDGE_CAP: f32 = 100.0;
+/// Knowledge cost to deploy a Breakthrough.
+pub const BREAKTHROUGH_COST: f32 = 30.0;
+
 /// Coin cost a Farmer must pay (and lose) to ascend to Tech-Monarch.
 pub const MONARCH_ASCENSION_COST: u32 = 500;
 /// Discontent points added per Farmer revolt vote.

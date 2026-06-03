@@ -1,6 +1,7 @@
 //! ECS systems — each is a function called in deterministic order by the tick loop.
 
 pub mod animal_ai;
+pub mod catastrophe;
 pub mod interaction;
 pub mod monarch_ai;
 pub mod npc_ai;
@@ -54,6 +55,16 @@ pub fn run_tick(
         let fire_result = wildfire::run(world, resources);
         fell_messages.extend(fire_result.messages);
         despawned.extend(fire_result.despawned);
+    }
+
+    // Global catastrophes (pandemic / solar flare / drought / nuclear /
+    // asteroid) run in Realistic and Survival. The system mutates the
+    // active catastrophe state on `resources` and returns any entities
+    // killed this tick (e.g. drones zapped by a solar flare) so the
+    // server can broadcast despawns.
+    if resources.game_mode != GameMode::Peaceful {
+        let cat_despawned = catastrophe::run(world, soil_grid, resources);
+        despawned.extend(cat_despawned);
     }
 
     if tick % 20 == 0 {
