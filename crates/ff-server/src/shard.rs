@@ -25,6 +25,18 @@ pub struct Shard {
     pub soil_grid: SoilGrid,
     pub sessions: HashMap<PlayerId, PlayerSession>,
     pub next_entity_id: u64,
+    /// Highest entity id we've already announced to connected clients
+    /// via the initial world snapshot or a ServerEntitySpawn. Entities
+    /// with a higher id are "new" (e.g. a freshly planted seed) and the
+    /// tick loop broadcasts a spawn for them so clients render the right
+    /// mesh instead of the gray fallback. Entity ids are monotonic
+    /// (next_entity_id only increments), so a single watermark suffices.
+    pub announced_max_entity_id: u64,
+    /// Last plant growth stage we broadcast per entity id. When a plant
+    /// advances a stage the tick loop re-announces it (a spawn carries
+    /// the new stage) so the client rescales it — the periodic batch
+    /// update only carries position, not growth stage.
+    pub plant_stage_seen: HashMap<u64, u8>,
     pub region_index: u8,
     /// Active Tech-Monarch tasks keyed by task_id. The reward coins are
     /// escrowed (already debited from the issuing Monarch's wallet) so
@@ -84,6 +96,8 @@ impl Shard {
             soil_grid,
             sessions: HashMap::new(),
             next_entity_id: 1000,
+            announced_max_entity_id: 0,
+            plant_stage_seen: HashMap::new(),
             region_index,
             active_tasks: HashMap::new(),
             task_progress: HashMap::new(),
@@ -93,6 +107,12 @@ impl Shard {
 
         // Spawn some initial plants and animals
         shard.spawn_initial_ecosystem();
+
+        // Everything spawned so far is part of the initial world snapshot
+        // every client receives on join, so mark it all as "already
+        // announced" — only entities created AFTER this (planted seeds,
+        // deployed drones, …) need an incremental spawn broadcast.
+        shard.announced_max_entity_id = shard.next_entity_id.saturating_sub(1);
 
         Arc::new(Mutex::new(shard))
     }

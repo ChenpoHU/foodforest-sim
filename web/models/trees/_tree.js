@@ -9,10 +9,7 @@
 //     main.js toggles per growth stage.
 
 import * as THREE from "three";
-import {
-    buildBranchyCanopy,
-    buildFruitCluster,
-} from "./_canopy.js";
+import { buildBranchyCanopy } from "./_canopy.js";
 
 /**
  * @typedef {object} TreeOpts
@@ -96,32 +93,16 @@ export function makeTree(opts) {
         depth: canopyRadius > 2.2 ? 3 : 2,
         curve: 0.30,
         upBias: 0.10,
+        // Fruit hangs from real twig tips inside the canopy builder, so
+        // it's always attached to a branch end (never floating).
+        fruitColor,
+        fruitCount: fruitCount || 0,
+        fruitSize: fruitSize ?? 0.16,
+        fruitElongation: fruitElongation ?? 1.0,
     });
     // Branches start at the trunk top (base) and rise into the foliage
     // — no extra offset, so the canopy stays attached to the trunk.
     g.add(canopy);
-
-    // ── Fruits ────────────────────────────────────────────────────────
-    if (fruitColor !== undefined && fruitCount) {
-        // Place fruits within the branch-canopy's leaf region (which
-        // sits above the trunk top, centred ~trunkHeight + canopyHeight).
-        const fruitCenterY = trunkHeight + canopyHeight * 0.85;
-        const fruitPositions = [];
-        for (let i = 0; i < fruitCount; i++) {
-            const a = (i / fruitCount) * Math.PI * 2 + Math.random() * 0.3;
-            const r = canopyRadius * (0.55 + Math.random() * 0.35);
-            fruitPositions.push(new THREE.Vector3(
-                Math.cos(a) * r,
-                fruitCenterY + (Math.random() - 0.5) * canopyHeight,
-                Math.sin(a) * r,
-            ));
-        }
-        const fruits = buildFruitCluster(fruitPositions, fruitColor, {
-            size: fruitSize ?? 0.16,
-            elongation: fruitElongation ?? 1.0,
-        });
-        g.add(fruits);
-    }
 
     return g;
 }

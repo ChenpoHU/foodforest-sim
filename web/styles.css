@@ -1,0 +1,336 @@
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #0a0a0f; font-family: system-ui, sans-serif; }
+        canvas { display: block; }
+
+        /* HUD overlay */
+        #hud {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            pointer-events: none;
+            z-index: 100;
+        }
+        #status {
+            position: fixed;
+            top: 12px; left: 12px;
+            color: #8f8;
+            font-size: 13px;
+            font-family: monospace;
+            background: rgba(0,0,0,0.6);
+            padding: 8px 12px;
+            border-radius: 6px;
+        }
+        #toolbar {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 8px;
+            pointer-events: all;
+        }
+        #toolbar button {
+            background: rgba(30,60,30,0.85);
+            color: #cfc;
+            border: 1px solid #4a4;
+            border-radius: 8px;
+            padding: 10px 16px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #toolbar button:hover { background: rgba(40,100,40,0.9); }
+        #toolbar button.active { background: rgba(60,140,60,0.9); border-color: #8f8; }
+
+        #chat {
+            position: fixed;
+            bottom: 80px; left: 12px;
+            width: 300px;
+            pointer-events: all;
+        }
+        #chat-log {
+            background: rgba(0,0,0,0.5);
+            color: #ccc;
+            font-size: 12px;
+            padding: 8px;
+            border-radius: 6px 6px 0 0;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        #chat-input {
+            width: 100%;
+            background: rgba(0,0,0,0.7);
+            color: #fff;
+            border: 1px solid #444;
+            border-radius: 0 0 6px 6px;
+            padding: 6px 8px;
+            font-size: 12px;
+            outline: none;
+        }
+
+        #minimap {
+            position: fixed;
+            top: 12px; right: 12px;
+            width: 200px; height: 200px;
+            border: 2px solid rgba(100,200,100,0.4);
+            border-radius: 8px;
+            background: rgba(0,20,0,0.6);
+            cursor: pointer;
+            pointer-events: all;
+        }
+
+        /* ── Connect / landing screen ─────────────────────────────── */
+        #connect-screen {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 2px;
+            padding: 36px 20px 64px;
+            overflow-y: auto;            /* scroll when the panel is taller than the viewport */
+            /* Layered depth: a soft green glow up top, a darker pool at
+               the bottom, over a deep forest-to-earth gradient. */
+            background:
+                radial-gradient(1100px 560px at 50% -8%, rgba(70,175,85,0.20), transparent 60%),
+                radial-gradient(900px 520px at 50% 112%, rgba(20,80,32,0.30), transparent 60%),
+                linear-gradient(165deg, #07140b 0%, #0a1410 45%, #110a0a 100%);
+            z-index: 200;
+        }
+        #connect-screen > * { flex-shrink: 0; }
+        #connect-screen h1 {
+            margin: 6px 0 0;
+            font-size: 56px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            background: linear-gradient(180deg, #c6f8cf, #4caf50 68%, #2e7d32);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 3px 16px rgba(76,175,80,0.45));
+            animation: ff-rise 0.5s ease both;
+        }
+        /* Subtitle only (the unclassed <p>); mode-desc/role-desc use
+           .choice-desc and must not inherit this. */
+        #connect-screen > p:not([class]) {
+            color: #94a89a;
+            margin-bottom: 18px;
+            letter-spacing: 0.5px;
+            font-size: 14px;
+            animation: ff-rise 0.5s ease 0.04s both;
+        }
+        @keyframes ff-rise {
+            from { opacity: 0; transform: translateY(10px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        #connect-screen input {
+            background: rgba(255,255,255,0.045);
+            color: #e2f0e3;
+            border: 1px solid rgba(120,200,130,0.28);
+            border-radius: 10px;
+            padding: 11px 18px;
+            font-size: 15px;
+            width: 280px;
+            text-align: center;
+            outline: none;
+            transition: border-color .18s, box-shadow .18s, background .18s;
+        }
+        #connect-screen input::placeholder { color: #6b7d70; }
+        #connect-screen input:focus {
+            border-color: #6fdc82;
+            box-shadow: 0 0 0 3px rgba(76,175,80,0.18);
+            background: rgba(255,255,255,0.07);
+        }
+        /* Neutral base for the connect-screen's various <button>s; the
+           primary CTA (#connect-btn) and the chips override below. */
+        #connect-screen button {
+            font-family: inherit;
+            cursor: pointer;
+        }
+        /* Primary CTA — Enter World. */
+        #connect-btn {
+            margin-top: 14px;
+            background: linear-gradient(180deg, #54bd58, #2e7d32);
+            color: #fff;
+            border: none;
+            border-radius: 12px;
+            padding: 14px 48px;
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            box-shadow: 0 6px 22px rgba(46,125,50,0.42),
+                        inset 0 1px 0 rgba(255,255,255,0.22);
+            transition: transform .12s ease, box-shadow .2s ease, filter .2s;
+        }
+        #connect-btn:hover {
+            filter: brightness(1.08);
+            transform: translateY(-2px);
+            box-shadow: 0 12px 30px rgba(76,175,80,0.5),
+                        inset 0 1px 0 rgba(255,255,255,0.28);
+        }
+        #connect-btn:active { transform: translateY(0); }
+
+        #country-bar {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 10px 0 4px;
+            max-width: 720px;
+        }
+        .country-btn {
+            background: rgba(255,255,255,0.03);
+            color: #aab;
+            border: 1px solid rgba(140,180,150,0.18);
+            border-radius: 999px;
+            padding: 6px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.18s;
+        }
+        .country-btn:hover { background: rgba(90,160,100,0.18); border-color: #4a4; color: #dfe; }
+        .country-btn.active {
+            background: linear-gradient(180deg, #4caf50, #357a38);
+            color: #fff;
+            border-color: #b9f6ca;
+            box-shadow: 0 0 14px rgba(140, 255, 140, 0.45);
+            font-weight: bold;
+        }
+        #region-list {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 4px 0;
+            max-width: 620px;
+        }
+        .region-btn {
+            background: rgba(255,255,255,0.03);
+            color: #9aa;
+            border: 1px solid rgba(140,180,150,0.16);
+            border-radius: 999px;
+            padding: 5px 14px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.18s;
+        }
+        .region-btn:hover { background: rgba(90,160,100,0.16); border-color: #4a4; color: #dfe; }
+        .region-btn.active {
+            background: linear-gradient(180deg, #4caf50, #357a38);
+            color: #fff;
+            border-color: #b9f6ca;
+            box-shadow: 0 0 14px rgba(140, 255, 140, 0.45);
+            font-weight: bold;
+        }
+        #plot-selector {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            margin: 8px 0 2px;
+        }
+        #plot-selector label { color: #94a89a; font-size: 12px; }
+        #plot-seed-input {
+            background: rgba(255,255,255,0.045);
+            color: #e2f0e3;
+            border: 1px solid rgba(120,200,130,0.28);
+            border-radius: 8px;
+            padding: 7px 10px;
+            font-size: 13px;
+            width: 84px;
+            text-align: center;
+            outline: none;
+            transition: border-color .18s, box-shadow .18s;
+        }
+        #plot-seed-input:focus {
+            border-color: #6fdc82;
+            box-shadow: 0 0 0 3px rgba(76,175,80,0.18);
+        }
+        #world-canvas {
+            border: 1px solid rgba(120,200,130,0.28);
+            border-radius: 14px;
+            cursor: crosshair;
+            margin: 10px 0 6px;
+            box-shadow: 0 14px 40px rgba(0,0,0,0.5),
+                        inset 0 0 60px rgba(0,0,0,0.35);
+            max-width: 92vw;
+        }
+
+        /* Mode + role segmented selectors. */
+        .seg-row {
+            display: flex;
+            gap: 8px;
+            margin: 6px 0;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .mode-btn, .role-btn {
+            background: rgba(255,255,255,0.04);
+            color: #9fb0a2;
+            border: 1px solid rgba(140,180,150,0.20);
+            border-radius: 10px;
+            padding: 9px 18px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all .18s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .mode-btn:hover, .role-btn:hover {
+            background: rgba(90,160,100,0.16);
+            color: #dfe;
+            border-color: #4a4;
+        }
+        .mode-btn.active, .role-btn.active {
+            background: linear-gradient(180deg, #4caf50, #2f7d34);
+            color: #fff;
+            border-color: #b9f6ca;
+            box-shadow: 0 4px 14px rgba(76,175,80,0.35),
+                        inset 0 1px 0 rgba(255,255,255,0.20);
+            font-weight: 600;
+        }
+        .choice-label {
+            color: #7fd089;
+            font-size: 11px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        .choice-desc {
+            color: #8a9a8c;
+            font-size: 11px;
+            margin: 2px 0 6px;
+            max-width: 440px;
+            text-align: center;
+            line-height: 1.4;
+        }
+        .choice-desc.dim { color: #6b7d70; font-size: 10px; }
+
+        /* Connect-screen country/region buttons.
+           The generic `#connect-screen button` rule (ID specificity)
+           was overriding the `.country-btn` / `.region-btn` class rules
+           (class specificity), tinting EVERY button solid green so you
+           couldn't tell which was selected. These container-scoped rules
+           (#id + .class) out-specify it, restoring the same muted look
+           as the mode/role buttons above: dark when inactive, a soft
+           green highlight only on the active one. */
+        #country-bar .country-btn,
+        #region-list .region-btn {
+            background: #1a2a1a;
+            color: #aaa;
+            border: 1px solid #444;
+            box-shadow: none;
+            font-weight: normal;
+        }
+        #country-bar .country-btn:hover,
+        #region-list .region-btn:hover {
+            background: #243424;
+            border-color: #4a4;
+        }
+        #country-bar .country-btn.active,
+        #region-list .region-btn.active {
+            background: #2a5a2a;
+            color: #cfc;
+            border-color: #4a4;
+            box-shadow: none;
+            font-weight: bold;
+        }

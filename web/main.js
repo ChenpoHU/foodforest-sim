@@ -4,6 +4,29 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 // under ./models/. main.js consults MODEL_BUILDERS first; species that
 // haven't been migrated yet still fall through to the inline switch.
 import { MODEL_BUILDERS, makeTreePositional as makeTree } from "./models/index.js";
+// Binary protocol (de)serialisation primitives.
+import {
+    BincodeReader, encodeVarint, encodeZigzagVarint, encodeF32,
+    encodeBincodeString, buildFramedMessage,
+} from "./net/codec.js";
+// Static world data (countries, regions, per-country plantable species).
+import {
+    WORLD_COUNTRIES, COUNTRY_PLANTS, getCountryForRegion,
+} from "./data/world.js";
+// Per-species animal movement "habits".
+import { ANIMAL_GAITS } from "./data/gaits.js";
+// ActionKind → wire-bytes encoders.
+import {
+    encodePlantAction, encodeHarvestAction, encodeWaterAction,
+    encodeSwaleAction, encodeHugelAction, encodeCutTreeAction,
+    encodeInspectAction, encodeHuntAction, encodeEatAction,
+    encodeSellAction, encodeDeployAIAction, encodePropagandaAction,
+    encodeGrantUbiAction, encodeIssueTaskAction, encodeAscendAction,
+    encodeRevoltAction, encodeResearchAction, encodeDeployBreakthroughAction,
+    encodeHochsitzAction,
+} from "./net/messages.js";
+// Ambient generative piano (Web Audio).
+import { startAmbientMusic } from "./audio/music.js";
 
 // Surface any uncaught runtime / promise error as a visible red banner
 // instead of failing silently to a blank screen. Without this, a single
@@ -160,12 +183,10 @@ function refreshRoleVisibility() {
 }
 
 function applyRoleVisuals() {
+    // Active state is purely a CSS class now (.role-btn.active) — no
+    // inline styles, so the stylesheet owns the look.
     document.querySelectorAll(".role-btn").forEach(b => {
-        const isActive = parseInt(b.dataset.role) === selectedRole;
-        b.style.background = isActive ? "#2a5a2a" : "#1a2a1a";
-        b.style.color = isActive ? "#cfc" : "#aaa";
-        b.style.borderColor = isActive ? "#4a4" : "#444";
-        b.classList.toggle("active", isActive);
+        b.classList.toggle("active", parseInt(b.dataset.role) === selectedRole);
     });
     const desc = document.getElementById("role-desc");
     if (desc) desc.textContent = roleDescriptions[selectedRole];
@@ -173,15 +194,7 @@ function applyRoleVisuals() {
 
 document.querySelectorAll(".mode-btn").forEach(btn => {
     btn.addEventListener("click", () => {
-        document.querySelectorAll(".mode-btn").forEach(b => {
-            b.style.background = "#1a2a1a";
-            b.style.color = "#aaa";
-            b.style.borderColor = "#444";
-            b.classList.remove("active");
-        });
-        btn.style.background = "#2a5a2a";
-        btn.style.color = "#cfc";
-        btn.style.borderColor = "#4a4";
+        document.querySelectorAll(".mode-btn").forEach(b => b.classList.remove("active"));
         btn.classList.add("active");
         selectedGameMode = parseInt(btn.dataset.mode);
         document.getElementById("mode-desc").textContent = modeDescriptions[selectedGameMode];
@@ -197,44 +210,7 @@ document.querySelectorAll(".role-btn").forEach(btn => {
 });
 
 // === World data ===
-const WORLD_COUNTRIES = [
-    { name: "Portugal", start: 0, count: 7, color: "#4a8a3a",
-      cx: 90, cy: 155, regions: [
-        "Minho", "Tras-os-Montes", "Beira", "Ribatejo", "Alentejo", "Algarve", "Lisboa"
-    ]},
-    { name: "France", start: 7, count: 4, color: "#3a6a8a",
-      cx: 130, cy: 125, regions: [
-        "Provence", "Dordogne", "Loire Valley", "Normandy"
-    ]},
-    { name: "Spain", start: 11, count: 4, color: "#8a6a3a",
-      cx: 105, cy: 150, regions: [
-        "Andalusia", "Catalonia", "Galicia", "Basque Country"
-    ]},
-    { name: "Italy", start: 15, count: 4, color: "#6a8a3a",
-      cx: 165, cy: 140, regions: [
-        "Tuscany", "Sicily", "Amalfi Coast", "Piedmont"
-    ]},
-    { name: "Iran", start: 19, count: 4, color: "#8a5a3a",
-      cx: 290, cy: 145, regions: [
-        "Isfahan", "Shiraz", "Gilan", "Alborz"
-    ]},
-    { name: "California", start: 23, count: 4, color: "#3a8a6a",
-      cx: 625, cy: 140, regions: [
-        "Central Valley", "Napa Valley", "Coastal Range", "Sierra Nevada"
-    ]},
-    { name: "South Africa", start: 27, count: 4, color: "#8a3a5a",
-      cx: 215, cy: 260, regions: [
-        "Cape Winelands", "Fynbos Coast", "Karoo", "Garden Route"
-    ]},
-    { name: "Yunnan", start: 31, count: 4, color: "#5a8a3a",
-      cx: 430, cy: 155, regions: [
-        "Kunming Plateau", "Xishuangbanna", "Dali", "Tiger Leaping Gorge"
-    ]},
-    { name: "Japan", start: 35, count: 4, color: "#3a5a8a",
-      cx: 500, cy: 130, regions: [
-        "Hokkaido", "Kanto", "Kansai", "Kyushu"
-    ]},
-];
+// WORLD_COUNTRIES → ./data/world.js (imported at top)
 
 let selectedCountryIdx = 0;
 
@@ -407,109 +383,9 @@ selectCountry(0);
 drawWorldMap();
 
 // Country-specific plantable species
-const COUNTRY_PLANTS = {
-    "Portugal": [
-        { action: "plant-chestnut", label: "Chestnut", sid: 100 },
-        { action: "plant-walnut", label: "Walnut", sid: 101 },
-        { action: "plant-carob", label: "Carob", sid: 102 },
-        { action: "plant-olive", label: "Olive", sid: 203 },
-        { action: "plant-fig", label: "Fig", sid: 200 },
-        { action: "plant-pomegranate", label: "Pomegranate", sid: 201 },
-        { action: "plant-rosemary", label: "Rosemary", sid: 300 },
-        { action: "plant-lavender", label: "Lavender", sid: 301 },
-        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-    ],
-    "France": [
-        { action: "plant-chestnut", label: "Chestnut", sid: 100 },
-        { action: "plant-walnut", label: "Walnut", sid: 101 },
-        { action: "plant-hazelnut", label: "Hazelnut", sid: 104 },
-        { action: "plant-fig", label: "Fig", sid: 200 },
-        { action: "plant-plum", label: "Plum", sid: 204 },
-        { action: "plant-lavender", label: "Lavender", sid: 301 },
-        { action: "plant-thyme", label: "Thyme", sid: 302 },
-        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
-        { action: "plant-grapevine", label: "Grapevine", sid: 600 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-    ],
-    "Spain": [
-        { action: "plant-carob", label: "Carob", sid: 102 },
-        { action: "plant-almond", label: "Almond", sid: 105 },
-        { action: "plant-corkoak", label: "Cork Oak", sid: 106 },
-        { action: "plant-olive", label: "Olive", sid: 203 },
-        { action: "plant-citrus", label: "Citrus", sid: 202 },
-        { action: "plant-pomegranate", label: "Pomegranate", sid: 201 },
-        { action: "plant-fig", label: "Fig", sid: 200 },
-        { action: "plant-rosemary", label: "Rosemary", sid: 300 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-        { action: "plant-grapevine", label: "Grapevine", sid: 600 },
-    ],
-    "Italy": [
-        { action: "plant-chestnut", label: "Chestnut", sid: 100 },
-        { action: "plant-hazelnut", label: "Hazelnut", sid: 104 },
-        { action: "plant-stonepine", label: "Stone Pine", sid: 109 },
-        { action: "plant-olive", label: "Olive", sid: 203 },
-        { action: "plant-fig", label: "Fig", sid: 200 },
-        { action: "plant-citrus", label: "Citrus", sid: 202 },
-        { action: "plant-basil", label: "Basil", sid: 401 },
-        { action: "plant-rosemary", label: "Rosemary", sid: 300 },
-        { action: "plant-grapevine", label: "Grapevine", sid: 600 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-    ],
-    "Iran": [
-        { action: "plant-walnut", label: "Walnut", sid: 101 },
-        { action: "plant-pistachio", label: "Pistachio", sid: 110 },
-        { action: "plant-pomegranate", label: "Pomegranate", sid: 201 },
-        { action: "plant-mulberry", label: "Mulberry", sid: 206 },
-        { action: "plant-fig", label: "Fig", sid: 200 },
-        { action: "plant-saffron", label: "Saffron", sid: 402 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-    ],
-    "California": [
-        { action: "plant-redwood", label: "Redwood", sid: 107 },
-        { action: "plant-avocado", label: "Avocado", sid: 205 },
-        { action: "plant-citrus", label: "Citrus", sid: 202 },
-        { action: "plant-fig", label: "Fig", sid: 200 },
-        { action: "plant-sage", label: "Sage", sid: 303 },
-        { action: "plant-grapevine", label: "Grapevine", sid: 600 },
-        { action: "plant-strawberry", label: "Strawberry", sid: 501 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-    ],
-    "South Africa": [
-        { action: "plant-macadamia", label: "Macadamia", sid: 108 },
-        { action: "plant-citrus", label: "Citrus", sid: 202 },
-        { action: "plant-rooibos", label: "Rooibos", sid: 304 },
-        { action: "plant-protea", label: "Protea", sid: 305 },
-        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-    ],
-    "Yunnan": [
-        { action: "plant-cherry", label: "Cherry", sid: 112 },
-        { action: "plant-bamboo", label: "Bamboo", sid: 111 },
-        { action: "plant-banana", label: "Banana", sid: 207 },
-        { action: "plant-mango", label: "Mango", sid: 208 },
-        { action: "plant-peach", label: "Peach", sid: 210 },
-        { action: "plant-tea", label: "Tea", sid: 306 },
-        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-    ],
-    "Japan": [
-        { action: "plant-cherry", label: "Cherry", sid: 112 },
-        { action: "plant-persimmon", label: "Persimmon", sid: 209 },
-        { action: "plant-bamboo", label: "Bamboo", sid: 111 },
-        { action: "plant-tea", label: "Tea", sid: 306 },
-        { action: "plant-shiso", label: "Shiso", sid: 403 },
-        { action: "plant-comfrey", label: "Comfrey", sid: 400 },
-        { action: "plant-clover", label: "Clover", sid: 500 },
-    ],
-};
+// COUNTRY_PLANTS → ./data/world.js
 
-function getCountryForRegion(regionIndex) {
-    for (const c of WORLD_COUNTRIES) {
-        if (regionIndex >= c.start && regionIndex < c.start + c.count) return c.name;
-    }
-    return "Portugal";
-}
+// getCountryForRegion → ./data/world.js
 
 // Icon colors for toolbar items
 const TOOL_ICONS = {
@@ -1530,6 +1406,53 @@ function updateGrass(time) {
     }
 }
 
+// Grass tufts that can burn away near fire. We keep the InstancedMesh +
+// each tuft's base position & matrix so a fire pass can hide (zero-scale)
+// tufts within range of a burning entity and restore them once the fire
+// is gone. Reset whenever the terrain is rebuilt.
+let grassTuftMesh = null;
+let grassTuftData = null;            // { pos: [{x,z}], base: [Matrix4], hidden: [bool] }
+const _zeroScaleMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+let _grassFireTimer = 0;
+
+// Throttled (~3 Hz from the game loop): hide grass tufts close to any
+// burning entity, restore the rest. Cheap enough — a few thousand tufts
+// against a capped list of fire sources.
+function updateGrassFire(dt) {
+    _grassFireTimer += dt;
+    if (_grassFireTimer < 0.33) return;
+    _grassFireTimer = 0;
+    if (!grassTuftMesh || !grassTuftData) return;
+
+    // Collect up to N burning-entity positions (flameEntities is the
+    // client's set of entities currently rendering a flame effect).
+    const fires = [];
+    for (const eid of flameEntities.keys()) {
+        const obj = entityMeshes.get(eid);
+        if (obj) { fires.push(obj.position); if (fires.length >= 80) break; }
+    }
+
+    const data = grassTuftData;
+    const R2 = 9.0;                  // burn radius² (3 m)
+    let changed = false;
+    for (let i = 0; i < data.pos.length; i++) {
+        const p = data.pos[i];
+        let near = false;
+        for (let f = 0; f < fires.length; f++) {
+            const dx = fires[f].x - p.x, dz = fires[f].z - p.z;
+            if (dx * dx + dz * dz < R2) { near = true; break; }
+        }
+        if (near && !data.hidden[i]) {
+            grassTuftMesh.setMatrixAt(i, _zeroScaleMatrix);
+            data.hidden[i] = true; changed = true;
+        } else if (!near && data.hidden[i]) {
+            grassTuftMesh.setMatrixAt(i, data.base[i]);
+            data.hidden[i] = false; changed = true;
+        }
+    }
+    if (changed) grassTuftMesh.instanceMatrix.needsUpdate = true;
+}
+
 function buildWaterMaterial({ shallow, deep, opacity }) {
     return new THREE.ShaderMaterial({
         transparent: true,
@@ -1785,108 +1708,8 @@ function initRenderer() {
 
 // --- Bincode v2 reader (standard config, variable-length integers) ---
 
-class BincodeReader {
-    constructor(buffer) {
-        this.view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-        this.offset = 0;
-    }
-
-    readU8() {
-        const v = this.view.getUint8(this.offset);
-        this.offset += 1;
-        return v;
-    }
-
-    readBool() {
-        return this.readU8() !== 0;
-    }
-
-    readVarint() {
-        const first = this.readU8();
-        if (first < 251) return first;
-        if (first === 251) {
-            const lo = this.readU8();
-            const hi = this.readU8();
-            return lo | (hi << 8);
-        }
-        if (first === 252) {
-            const b0 = this.readU8();
-            const b1 = this.readU8();
-            const b2 = this.readU8();
-            const b3 = this.readU8();
-            return b0 | (b1 << 8) | (b2 << 16) | ((b3 << 24) >>> 0);
-        }
-        if (first === 253) {
-            const lo = this.readU8() | (this.readU8() << 8) |
-                       (this.readU8() << 16) | ((this.readU8() << 24) >>> 0);
-            const hi = this.readU8() | (this.readU8() << 8) |
-                       (this.readU8() << 16) | ((this.readU8() << 24) >>> 0);
-            return lo + hi * 0x100000000;
-        }
-        throw new Error("Invalid varint prefix: " + first);
-    }
-
-    readU16() { return this.readVarint(); }
-    readU32() { return this.readVarint(); }
-    readU64() { return this.readVarint(); }
-
-    readF32() {
-        const v = this.view.getFloat32(this.offset, true);
-        this.offset += 4;
-        return v;
-    }
-
-    readString() {
-        const len = this.readVarint();
-        const bytes = new Uint8Array(this.view.buffer, this.view.byteOffset + this.offset, len);
-        this.offset += len;
-        return new TextDecoder().decode(bytes);
-    }
-
-    readBytes(n) {
-        const bytes = new Uint8Array(this.view.buffer, this.view.byteOffset + this.offset, n);
-        this.offset += n;
-        return bytes;
-    }
-
-    remaining() {
-        return this.view.byteLength - this.offset;
-    }
-}
-
-// --- Bincode v2 encoder helpers ---
-
-function encodeVarint(value) {
-    if (value < 251) return [value];
-    if (value <= 0xFFFF) return [251, value & 0xFF, (value >> 8) & 0xFF];
-    if (value <= 0xFFFFFFFF) return [252, value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF];
-    throw new Error("varint > u32 not implemented for encoder");
-}
-
-function encodeZigzagVarint(value) {
-    const zigzag = (value << 1) ^ (value >> 31);
-    return encodeVarint(zigzag >>> 0);
-}
-
-function encodeF32(value) {
-    const buf = new ArrayBuffer(4);
-    new DataView(buf).setFloat32(0, value, true);
-    return [...new Uint8Array(buf)];
-}
-
-function encodeBincodeString(str) {
-    const bytes = new TextEncoder().encode(str);
-    return [...encodeVarint(bytes.length), ...bytes];
-}
-
-function buildFramedMessage(msgType, payloadBytes) {
-    const frame = new Uint8Array(6 + payloadBytes.length);
-    const view = new DataView(frame.buffer);
-    view.setUint16(0, msgType, true);
-    view.setUint32(2, payloadBytes.length, true);
-    frame.set(payloadBytes, 6);
-    return frame;
-}
+// Bincode codec primitives (BincodeReader, encode* helpers,
+// buildFramedMessage) live in ./net/codec.js — imported at the top.
 
 // `traveling` is the trailing bool: true when this hello is a
 // Travel-to-Region reconnect from a player already in the world
@@ -2759,14 +2582,29 @@ function handleEntitySpawn(payload) {
     const py = r.readF32();
     const pz = r.readF32();
     const rot = r.readF32();
-    // We don't need the EntityState here — the periodic ServerBatchUpdate
-    // is authoritative for live state and runs ~10 Hz anyway.
 
-    entityKinds.set(eid, { kind, speciesId, growthStage: 0 });
+    // Decode EntityState so plants spawn at (and re-spawn re-render at)
+    // their true growth stage — the server re-sends a spawn each time a
+    // plant advances a stage.
+    let growthStage = 0;
+    const stateTag = r.readVarint();
+    if (stateTag === 1) {            // PlantGrowth { stage, health }
+        growthStage = r.readU8();
+        r.readF32();
+    } else if (stateTag === 2) {     // AnimalBehavior { behavior, hunger }
+        r.readU8();
+        r.readF32();
+    } else if (stateTag === 3) {     // PlayerVisible { held_item?, animation }
+        const hasItem = r.readU8();
+        if (hasItem === 1) r.readU16();
+        r.readU8();
+    }
 
-    // If we already created a placeholder mesh for this eid (from a
-    // batch update that arrived before the spawn message), drop it so
-    // the next update rebuilds it with the correct category.
+    entityKinds.set(eid, { kind, speciesId, growthStage });
+
+    // If we already created a mesh for this eid (a batch update that
+    // arrived before the spawn, OR a re-spawn for a growth-stage change),
+    // drop it so it's rebuilt at the correct category + scale.
     const existing = entityMeshes.get(eid);
     if (existing) {
         scene.remove(existing);
@@ -3194,18 +3032,21 @@ function renderSurveillance() {
         "<span></span>" +
         "</div>";
     for (const row of rows) {
-        const roleIcon = row.role === 1 ? "👑" : "🧑‍🌾";
-        const roleColor = row.role === 1 ? "#8ccdff" : "#8fcf8f";
+        const roleIcon = row.role === 1 ? "👑" : (row.role === 2 ? "🔬" : "🧑‍🌾");
+        const roleColor = row.role === 1 ? "#8ccdff" : (row.role === 2 ? "#d8b5ff" : "#8fcf8f");
         const px = Math.round(row.position[0]);
         const pz = Math.round(row.position[2]);
         const hungerColor = row.hunger > 60 ? "#ff9a6a" : (row.hunger > 30 ? "#ffd966" : "#8fcf8f");
         const staminaColor = row.stamina < 30 ? "#ff9a6a" : (row.stamina < 60 ? "#ffd966" : "#8fcf8f");
-        // Pay button only for *other* farmers — paying yourself is a
-        // no-op the server rejects, and there's no use case for it.
+        // "Pay" funds the recipient. For Innovators (role 2) it's
+        // labelled "Fund" — the coins become research Knowledge — giving
+        // the Monarch a way to bankroll the person who can end the
+        // catastrophes wrecking their drones.
         const isSelf = row.player_id === myPlayerId;
+        const payLabel = row.role === 2 ? "Fund" : "Pay";
         const payBtn = (isSelf || row.role === 1)
             ? "<span style='font-size:10px; color:#445;'>—</span>"
-            : "<button data-pay='" + row.player_id + "' style='background:#1a2a14; color:#cfe9aa; border:1px solid #4a6a24; border-radius:3px; padding:1px 8px; cursor:pointer; font-size:10px;'>Pay</button>";
+            : "<button data-pay='" + row.player_id + "' style='background:" + (row.role === 2 ? "#2a1a3a" : "#1a2a14") + "; color:" + (row.role === 2 ? "#d8b5ff" : "#cfe9aa") + "; border:1px solid " + (row.role === 2 ? "#6a4a8a" : "#4a6a24") + "; border-radius:3px; padding:1px 8px; cursor:pointer; font-size:10px;'>" + payLabel + "</button>";
         html +=
             "<div style='display:grid; grid-template-columns: 1.4fr 0.5fr 0.5fr 0.5fr 0.9fr 1.2fr auto; gap:8px; align-items:center; padding:3px 0;'>" +
             "<span><span style='margin-right:4px;'>" + roleIcon + "</span><span style='color:" + roleColor + ";'>" + escapeHtml(row.player_name) + "</span></span>" +
@@ -3652,6 +3493,9 @@ function renderTerrain(terrainData) {
     waterMaterials.length = 0;
     grassMaterials.length = 0;
     waterMeshes.length = 0;
+    // The old grass tufts belonged to the disposed terrainGroup.
+    grassTuftMesh = null;
+    grassTuftData = null;
 
     const dv = new DataView(terrainData.buffer, terrainData.byteOffset, terrainData.byteLength);
     const width = dv.getUint32(0, true);
@@ -3877,6 +3721,8 @@ function renderTerrain(terrainData) {
         const q  = new THREE.Quaternion();
         const s  = new THREE.Vector3();
         const p  = new THREE.Vector3();
+        const tuftPos = [];
+        const tuftBase = [];
         let tIdx = 0;
         for (let v = 0; v < grassCount && tIdx < maxTufts; v += sampleStride) {
             const fx = grassPositions[v * 3];
@@ -3885,7 +3731,11 @@ function renderTerrain(terrainData) {
             if (!isAir(fx, fy + 1, fz)) continue;
             const jitX = ((fx * 73 + fz * 19) % 100) / 100 - 0.5;
             const jitZ = ((fz * 97 + fx * 31) % 100) / 100 - 0.5;
-            p.set(fx + jitX * 0.8, fy + 1.0, fz + jitZ * 0.8);
+            // Voxels are unit cubes CENTRED on their grid coord, so the
+            // grass voxel's top surface is at fy + 0.5. The blade geometry
+            // is anchored at its base, so place the base exactly there —
+            // grass sits ON the ground, not floating above it.
+            p.set(fx + jitX * 0.8, fy + 0.5, fz + jitZ * 0.8);
             // Random Y rotation so neighbouring tufts don't line up.
             const rot = ((fx * 13 + fz * 7) & 0xff) / 255 * Math.PI;
             q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot);
@@ -3893,7 +3743,10 @@ function renderTerrain(terrainData) {
             const scaleH = 0.7 + (((fx + fz) * 11) % 50) / 100; // 0.7..1.2
             s.set(scaleH * 0.9, scaleH, scaleH * 0.9);
             m4.compose(p, q, s);
-            tufts.setMatrixAt(tIdx++, m4);
+            tufts.setMatrixAt(tIdx, m4);
+            tuftPos.push({ x: p.x, z: p.z });
+            tuftBase.push(m4.clone());
+            tIdx++;
         }
         tufts.count = tIdx;
         tufts.instanceMatrix.needsUpdate = true;
@@ -3901,6 +3754,9 @@ function renderTerrain(terrainData) {
         terrainGroup.add(tufts);
         // And track so updateGrass() can drive the time uniform.
         grassMaterials.push(tuftMat);
+        // Track for the fire pass (grass burns away near flames).
+        grassTuftMesh = tufts;
+        grassTuftData = { pos: tuftPos, base: tuftBase, hidden: new Array(tIdx).fill(false) };
     }
 
     // Butterflies (animated in render loop)
@@ -4510,9 +4366,35 @@ function travelToRegion(regionIndex, plotSeed) {
 //   - Materials are shared. Do NOT mutate `obj.material.color` on a
 //     clone — that would tint every instance. Use `obj.material =
 //     obj.material.clone()` first if a per-instance recolour is needed.
-const entityMeshTemplates = new Map();
+const entityMeshTemplates = new Map();   // single template per category
+const entityMeshVariants  = new Map();   // category → array of variant templates
+const VARIANT_COUNT = 5;
+
+// Categories that are NOT plants/trees — they keep a single canonical
+// template (a chicken must always look like a chicken). Everything else
+// (every tree + herb species) gets a small pool of randomised variant
+// templates so no two walnuts are identical.
+const NON_PLANT_CATEGORIES = new Set([
+    "player", "semi-ai", "npc", "chicken", "deer", "boar", "rabbit",
+    "lamb", "animal", "hochsitz", "structure", "item", "unknown",
+    "fish", "butterfly",
+]);
+function isPlantLike(cat) { return !NON_PLANT_CATEGORIES.has(cat); }
 
 function createEntityMesh(category) {
+    if (isPlantLike(category)) {
+        // Variant pool: each buildEntityMeshTemplate() call re-runs the
+        // species' random branch/leaf generator, so the pool naturally
+        // contains differently-shaped individuals. We grow it lazily up
+        // to VARIANT_COUNT, then clone a random member per spawn.
+        let pool = entityMeshVariants.get(category);
+        if (!pool) { pool = []; entityMeshVariants.set(category, pool); }
+        if (pool.length < VARIANT_COUNT) {
+            pool.push(buildEntityMeshTemplate(category));
+        }
+        const pick = pool[(Math.random() * pool.length) | 0];
+        return pick.clone(true);
+    }
     let template = entityMeshTemplates.get(category);
     if (!template) {
         template = buildEntityMeshTemplate(category);
@@ -4540,7 +4422,11 @@ function buildEntityMeshTemplate(category) {
 }
 
 // Growth stage scale factors: Seed=0, Germinating=1, Seedling=2, Juvenile=3, Mature=4, Fruiting=5
-const GROWTH_SCALES = [0.1, 0.15, 0.3, 0.55, 1.0, 1.0, 0.9, 0.0];
+// Per-growth-stage mesh scale. Seed/Germinating are bumped up from a
+// near-invisible 0.1 so a freshly-planted seed is clearly visible (a
+// small sprout) and then visibly grows as the server advances stages.
+// Stages: Seed, Germinating, Seedling, Juvenile, Mature, Fruiting, Dormant, Dead.
+const GROWTH_SCALES = [0.28, 0.38, 0.52, 0.72, 1.0, 1.0, 0.9, 0.0];
 
 // Categories that should idle-bob (subtle Y oscillation) and lean
 // forward slightly when moving. Plants/structures stay still.
@@ -4565,6 +4451,15 @@ function createOrUpdateEntity(eid, x, y, z, rot, category) {
         obj.userData.targetRot = rot;
         obj.userData.lastTargetMs = performance.now();
         if (obj.rotation) obj.rotation.y = rot;
+        // Per-instance variation for plants/trees: a random heading, a
+        // size multiplier, and a slight natural lean — so even two
+        // clones of the same variant template read as distinct trees.
+        if (isPlantLike(category)) {
+            obj.rotation.y = Math.random() * Math.PI * 2;
+            obj.rotation.x = (Math.random() - 0.5) * 0.10;   // gentle lean
+            obj.rotation.z = (Math.random() - 0.5) * 0.10;
+            obj.userData.scaleVar = 0.82 + Math.random() * 0.40; // 0.82–1.22
+        }
         scene.add(obj);
         entityMeshes.set(eid, obj);
     } else {
@@ -4588,7 +4483,8 @@ function createOrUpdateEntity(eid, x, y, z, rot, category) {
     // alone signals ripeness, like a real orchard.
     const info = entityKinds.get(eid);
     if (info && info.kind === "plant" && info.growthStage !== undefined) {
-        const s = GROWTH_SCALES[info.growthStage] || 1.0;
+        const v = obj.userData.scaleVar || 1.0;   // per-instance size variation
+        const s = (GROWTH_SCALES[info.growthStage] || 1.0) * v;
         obj.scale.set(s, s, s);
         const fruitsGroup = obj.getObjectByName ? obj.getObjectByName("fruits") : null;
         if (fruitsGroup) {
@@ -4618,6 +4514,8 @@ function createOrUpdateEntity(eid, x, y, z, rot, category) {
 //     walking = quicker stride).
 //   - Yaw is lerped via the shorter angular path so 359°→1° doesn't
 //     spin the whole way round.
+// ANIMAL_GAITS → ./data/gaits.js (imported at top)
+
 const _tmpVec = new THREE.Vector3();
 function updateEntityAnimations(dt, nowSec) {
     if (entityMeshes.size === 0) return;
@@ -4638,28 +4536,55 @@ function updateEntityAnimations(dt, nowSec) {
         _tmpVec.subVectors(u.targetPos, obj.position).multiplyScalar(posBlend);
         obj.position.add(_tmpVec);
 
-        // Yaw lerp along the shorter arc.
-        if (obj.rotation && typeof u.targetRot === "number") {
+        const animated = ANIMATED_CATEGORIES.has(u.category);
+
+        // Yaw lerp along the shorter arc — only for animated entities
+        // (animals/players/drones face their heading). Plants/trees keep
+        // the random heading we gave them at spawn, so we must NOT lerp
+        // their yaw back toward the server's (meaningless) rotation.
+        if (animated && obj.rotation && typeof u.targetRot === "number") {
             const cur = obj.rotation.y;
             let diff = ((u.targetRot - cur + Math.PI) % (Math.PI * 2)) - Math.PI;
             if (diff < -Math.PI) diff += Math.PI * 2;
             obj.rotation.y = cur + diff * rotBlend;
         }
 
-        // Idle / walk bob. Skipped for the local player — the
-        // first-person camera tracks this entity's position directly,
-        // and bob propagating to the eye would make the player seasick.
-        if (ANIMATED_CATEGORIES.has(u.category) && u.entityId !== myEntityId) {
+        // Species-specific gait. Skipped for the local player (the
+        // first-person camera tracks this entity, so bob would induce
+        // motion sickness).
+        if (animated && u.entityId !== myEntityId) {
+            const g = ANIMAL_GAITS[u.category] || ANIMAL_GAITS.animal;
             const moving = speed2 > 0.001;
-            const bobAmp   = moving ? 0.07 : 0.025;
-            const bobSpeed = moving ? 9.0  : 2.0;
-            const t = nowSec * bobSpeed + (u.bobPhase || 0);
-            obj.position.y += Math.sin(t) * bobAmp;
-            // Slight forward tilt while moving (lean into stride).
-            if (obj.rotation) {
-                const targetPitch = moving ? -0.06 : 0;
-                obj.rotation.x = (obj.rotation.x || 0) + (targetPitch - (obj.rotation.x || 0)) * 0.1;
+            const phase = u.bobPhase || 0;
+            const t = nowSec * g.speed + phase;
+
+            // Vertical breathing / stride bob.
+            let dy = Math.sin(t) * (moving ? g.moveAmp : g.idleAmp);
+
+            // Hop: arc-jumps while moving (rabbits, lambs).
+            if (g.hop > 0 && moving) {
+                const hp = Math.sin(nowSec * (g.speed * 0.55) + phase);
+                dy += Math.max(0, hp) * g.hop;
             }
+            // Drone hover: float gently above the ground, never grazes.
+            if (g.hover) dy = 0.05 + Math.sin(nowSec * 1.6 + phase) * 0.06;
+            obj.position.y += dy;
+
+            // Sway: side-to-side roll (boar waddle, chicken bustle).
+            if (g.sway > 0) {
+                obj.rotation.z = Math.sin(t * 0.5) * g.sway;
+            }
+
+            // Pitch: lean forward into a stride, plus periodic head-down
+            // grazing / pecking / rooting bouts when idle. The pulse
+            // spikes only when sin clears a threshold → discrete dips
+            // rather than a constant nod.
+            let pitch = moving ? -0.05 : 0;
+            if (g.grazeAmt > 0 && !moving) {
+                const pulse = Math.max(0, Math.sin(nowSec * g.grazeRate + phase * 2) - 0.6) * 2.5;
+                pitch -= g.grazeAmt * Math.min(1, pulse);
+            }
+            obj.rotation.x = (obj.rotation.x || 0) + (pitch - (obj.rotation.x || 0)) * 0.15;
         }
     }
 }
@@ -4673,13 +4598,7 @@ function onWorldClick(event) {
     if (!connected) return;
     if (!selectedAction) return;
 
-    // Non-spatial Innovator actions — fire immediately, no raycast.
-    if (selectedAction.startsWith("research-")) {
-        const topic = parseInt(selectedAction.split("-")[1], 10) || 0;
-        ws.send(buildActionMessage(encodeResearchAction(topic)));
-        triggerToolSwing();
-        return;
-    }
+    // Deploy Breakthrough is global (not aimed at anything).
     if (selectedAction === "deploy-breakthrough") {
         // The breakthrough kind must match the active catastrophe.
         // catastrophe.kind is 1..=5; breakthrough kind is 0..=4 (offset
@@ -4717,6 +4636,22 @@ function onWorldClick(event) {
         }
 
         const eid = hitObj.userData.entityId;
+        // Innovator field study: research by examining living things in
+        // the world. Clicking a plant/animal with a research topic
+        // selected grants Knowledge in that topic — so the Innovator
+        // explores the ecosystem instead of button-mashing.
+        if (eid && selectedAction.startsWith("research-")) {
+            const info = entityKinds.get(eid);
+            const cat = info ? info.kind : "";
+            if (cat === "plant" || cat === "animal" || cat === "tree") {
+                const topic = parseInt(selectedAction.split("-")[1], 10) || 0;
+                ws.send(buildActionMessage(encodeResearchAction(topic)));
+                triggerToolSwing();
+            } else {
+                flashHint("Study a plant, tree, or animal to research it.");
+            }
+            return;
+        }
         if (eid && selectedAction === "harvest") {
             ws.send(buildActionMessage(encodeHarvestAction(eid)));
             triggerToolSwing();
@@ -4738,6 +4673,13 @@ function onWorldClick(event) {
             // the player in their exploration view.
             return;
         }
+    }
+
+    // Research aimed at empty ground (no entity studied) — nudge the
+    // Innovator to study a living thing instead.
+    if (selectedAction.startsWith("research-")) {
+        flashHint("Study a plant, tree, or animal — aim at one and click.");
+        return;
     }
 
     // Hit terrain — plant/build at that position
@@ -4780,146 +4722,7 @@ function onWorldClick(event) {
     }
 }
 
-// ActionKind bincode encoders (enum variant index as varint, then fields)
-function encodePlantAction(speciesId, x, y, z) {
-    // PlantSeed { species_id: u16, position: [i32; 3] }
-    return [
-        ...encodeVarint(0),
-        ...encodeVarint(speciesId),
-        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
-    ];
-}
-
-function encodeHarvestAction(entityId) {
-    // Harvest { entity_id: EntityId(u64) }
-    return [...encodeVarint(1), ...encodeVarint(entityId)];
-}
-
-function encodeWaterAction(x, y, z) {
-    return [
-        ...encodeVarint(3),
-        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
-        3, // radius
-    ];
-}
-
-function encodeSwaleAction(x, y, z) {
-    return [
-        ...encodeVarint(4),
-        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
-        0, // direction
-    ];
-}
-
-function encodeHugelAction(x, y, z) {
-    return [
-        ...encodeVarint(5),
-        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
-    ];
-}
-
-function encodeCutTreeAction(entityId) {
-    return [...encodeVarint(10), ...encodeVarint(entityId)];
-}
-
-function encodeInspectAction(entityId) {
-    return [...encodeVarint(11), ...encodeVarint(entityId)];
-}
-
-function encodeHuntAction(entityId) {
-    return [...encodeVarint(12), ...encodeVarint(entityId)];
-}
-
-function encodeEatAction(itemId) {
-    // EatItem { item_id: u16 } — variant 14
-    return [...encodeVarint(14), ...encodeVarint(itemId)];
-}
-
-function encodeSellAction(itemId, count) {
-    // SellItem { item_id: u16, count: u16 } — variant 15
-    return [...encodeVarint(15), ...encodeVarint(itemId), ...encodeVarint(count)];
-}
-
-function encodeDeployAIAction(x, y, z) {
-    // DeploySemiAI { position: [i32; 3] } — variant 16
-    return [
-        ...encodeVarint(16),
-        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
-    ];
-}
-
-function encodePropagandaAction(tone, message) {
-    // Propaganda { tone: u8, message: String } — variant 17
-    const msgBytes = new TextEncoder().encode(message);
-    return [
-        ...encodeVarint(17),
-        tone & 0xff,
-        ...encodeVarint(msgBytes.length),
-        ...msgBytes,
-    ];
-}
-
-function encodeGrantUbiAction(targetPlayerId, amount) {
-    // GrantUbi { target_player_id: u64, amount: u32 } — variant 18
-    // target_player_id is a varint (bincode standard for u64). 0 = all
-    // farmers.
-    return [
-        ...encodeVarint(18),
-        ...encodeVarint(targetPlayerId),
-        ...encodeVarint(amount),
-    ];
-}
-
-function encodeIssueTaskAction(tone, message, taskKind, target, reward) {
-    // IssueTask { tone: u8, message: String, task_kind: u8, target: u32,
-    //             reward: u32 } — variant 19
-    const msgBytes = new TextEncoder().encode(message);
-    return [
-        ...encodeVarint(19),
-        tone & 0xff,
-        ...encodeVarint(msgBytes.length),
-        ...msgBytes,
-        taskKind & 0xff,
-        ...encodeVarint(target),
-        ...encodeVarint(reward),
-    ];
-}
-
-function encodeAscendAction() {
-    // AscendToMonarch — variant 20, no fields.
-    return [...encodeVarint(20)];
-}
-
-function encodeRevoltAction(targetMonarchId) {
-    // Revolt { target_monarch_id: u64 } — variant 21
-    return [
-        ...encodeVarint(21),
-        ...encodeVarint(targetMonarchId),
-    ];
-}
-
-function encodeResearchAction(topic) {
-    // Research { topic: u8 } — variant 22
-    return [
-        ...encodeVarint(22),
-        topic & 0xff,
-    ];
-}
-
-function encodeDeployBreakthroughAction(kind) {
-    // DeployBreakthrough { kind: u8 } — variant 23
-    return [
-        ...encodeVarint(23),
-        kind & 0xff,
-    ];
-}
-
-function encodeHochsitzAction(x, y, z) {
-    return [
-        ...encodeVarint(13),
-        ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
-    ];
-}
+// ActionKind encoders → ./net/messages.js (imported at top)
 
 // --- Input ---
 
@@ -5185,6 +4988,7 @@ function gameLoop(now) {
     updateFlames(now / 1000);
     updateWater(now / 1000);
     updateGrass(now / 1000);
+    updateGrassFire(dt);
     updateEntityAnimations(dt, now / 1000);
     updateFirstPerson(dt);
     checkEdgeTransition();
@@ -5203,113 +5007,29 @@ function updateStatus(text) {
     document.getElementById("status").textContent = text;
 }
 
-// --- Ambient music (relaxing piano) ---
-
-let audioCtx = null;
-let musicStarted = false;
-let pianoBus = null;
-
-// Synthesize a single piano-like note using a stack of harmonics with an
-// ADSR envelope (fast attack, exponential decay) — no samples, no drones.
-function playPianoNote(freq, when, duration, velocity) {
-    if (!audioCtx) return;
-    const t0 = audioCtx.currentTime + when;
-    const peak = velocity;
-
-    const noteGain = audioCtx.createGain();
-    noteGain.gain.setValueAtTime(0.0001, t0);
-    noteGain.gain.exponentialRampToValueAtTime(peak, t0 + 0.008);
-    noteGain.gain.exponentialRampToValueAtTime(peak * 0.35, t0 + 0.25);
-    noteGain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
-    noteGain.connect(pianoBus);
-
-    // Loose approximation of a piano's first few partials.
-    const partials = [
-        { mult: 1.0, amp: 1.00, type: "triangle" },
-        { mult: 2.0, amp: 0.42, type: "sine" },
-        { mult: 3.0, amp: 0.18, type: "sine" },
-        { mult: 4.0, amp: 0.09, type: "sine" },
-        { mult: 5.0, amp: 0.04, type: "sine" },
-    ];
-    for (const p of partials) {
-        const osc = audioCtx.createOscillator();
-        osc.type = p.type;
-        osc.frequency.value = freq * p.mult;
-        const g = audioCtx.createGain();
-        g.gain.value = p.amp;
-        osc.connect(g);
-        g.connect(noteGain);
-        osc.start(t0);
-        osc.stop(t0 + duration + 0.05);
+// Transient centre-screen toast for soft guidance ("study a plant…").
+let _hintTimer = null;
+function flashHint(text) {
+    let el = document.getElementById("flash-hint");
+    if (!el) {
+        el = document.createElement("div");
+        el.id = "flash-hint";
+        el.style.cssText = [
+            "position:fixed", "top:38%", "left:50%", "transform:translateX(-50%)",
+            "padding:8px 16px", "background:rgba(20,20,30,0.82)", "color:#dde",
+            "border:1px solid rgba(180,200,220,0.3)", "border-radius:8px",
+            "font:13px system-ui, sans-serif", "z-index:300", "pointer-events:none",
+            "transition:opacity 0.3s ease",
+        ].join(";");
+        document.body.appendChild(el);
     }
+    el.textContent = text;
+    el.style.opacity = "1";
+    if (_hintTimer) clearTimeout(_hintTimer);
+    _hintTimer = setTimeout(() => { el.style.opacity = "0"; }, 1800);
 }
 
-function startAmbientMusic() {
-    if (musicStarted) return;
-    musicStarted = true;
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-    // Shared bus with a gentle low-pass + soft delay tail for warmth —
-    // no oscillators on it directly, just shaping for the piano notes.
-    pianoBus = audioCtx.createGain();
-    pianoBus.gain.value = 0.85;
-
-    const tone = audioCtx.createBiquadFilter();
-    tone.type = "lowpass";
-    tone.frequency.value = 3200;
-    tone.Q.value = 0.6;
-
-    const delay = audioCtx.createDelay(1.0);
-    delay.delayTime.value = 0.42;
-    const feedback = audioCtx.createGain();
-    feedback.gain.value = 0.22;
-    const wet = audioCtx.createGain();
-    wet.gain.value = 0.18;
-
-    pianoBus.connect(tone);
-    tone.connect(audioCtx.destination);
-    tone.connect(delay);
-    delay.connect(feedback);
-    feedback.connect(delay);
-    delay.connect(wet);
-    wet.connect(audioCtx.destination);
-
-    // Slow, peaceful four-chord progression (vi - IV - I - V in C major).
-    // Each entry: [root chord notes, melody pool drawn from the chord scale].
-    const progression = [
-        { chord: [220.00, 261.63, 329.63], melody: [440.00, 523.25, 659.25, 783.99] }, // A minor
-        { chord: [174.61, 220.00, 261.63], melody: [349.23, 440.00, 523.25, 698.46] }, // F major
-        { chord: [196.00, 261.63, 329.63], melody: [392.00, 523.25, 587.33, 659.25] }, // C major
-        { chord: [196.00, 246.94, 293.66], melody: [392.00, 493.88, 587.33, 783.99] }, // G major
-    ];
-
-    const CHORD_SECONDS = 5.5;
-    let step = 0;
-
-    function scheduleNext() {
-        if (!audioCtx) return;
-        const slot = progression[step % progression.length];
-
-        // Soft sustained chord underneath.
-        for (const f of slot.chord) {
-            playPianoNote(f, 0, CHORD_SECONDS, 0.08);
-        }
-
-        // Sparse melody on top: 2–3 notes drifting through the chord.
-        const notes = 2 + Math.floor(Math.random() * 2);
-        for (let i = 0; i < notes; i++) {
-            const f = slot.melody[Math.floor(Math.random() * slot.melody.length)];
-            const offset = 0.8 + i * (1.2 + Math.random() * 0.6);
-            const vel = 0.10 + Math.random() * 0.05;
-            playPianoNote(f, offset, 2.5, vel);
-        }
-
-        step += 1;
-        setTimeout(scheduleNext, CHORD_SECONDS * 1000);
-    }
-
-    scheduleNext();
-}
+// Ambient music synth → ./audio/music.js (startAmbientMusic imported at top)
 
 // Start music on first user interaction (browser autoplay policy)
 document.addEventListener("click", () => startAmbientMusic(), { once: true });

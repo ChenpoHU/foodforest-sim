@@ -4,7 +4,7 @@
 // → russet walnuts.
 
 import * as THREE from "three";
-import { buildBranchyCanopy, buildFruitCluster } from "./_canopy.js";
+import { buildBranchyCanopy } from "./_canopy.js";
 
 export function buildWalnut() {
     const g = new THREE.Group();
@@ -29,21 +29,8 @@ export function buildWalnut() {
         boughRadius: 0.17, leafSize: 0.16,
         clusterRadius: 0.95, leavesPerCluster: 75,
         startElevation: 0.5, splay: 0.72, depth: 3, curve: 0.34, upBias: 0.10,
-    }));
-
-    // Walnuts: green husk (unripe) → russet-brown (ripe)
-    const fruitPositions = [];
-    for (let i = 0; i < 14; i++) {
-        const a = (i / 14) * Math.PI * 2 + Math.random() * 0.3;
-        const r = 2.0 * (0.6 + Math.random() * 0.3);
-        fruitPositions.push(new THREE.Vector3(
-            Math.cos(a) * r,
-            trunkH + 1.6 + (Math.random() - 0.5) * 1.6,
-            Math.sin(a) * r,
-        ));
-    }
-    g.add(buildFruitCluster(fruitPositions, 0x6a4622, {
-        size: 0.16, unripeColor: 0x4a6a2a,
+        // Walnuts: green husk (unripe) → russet-brown (ripe), hung from twigs.
+        fruitColor: 0x6a4622, fruitCount: 14, fruitSize: 0.16, unripeColor: 0x4a6a2a,
     }));
 
     return g;

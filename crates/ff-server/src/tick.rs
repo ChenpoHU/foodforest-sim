@@ -86,9 +86,124 @@ pub async fn run_tick_loop(shard: Arc<Mutex<Shard>>) {
     }
 }
 
+/// Build a full `EntitySnapshot` (kind + state + transform) for one
+/// entity. Shared by the initial world-state build and the incremental
+/// new-entity spawn broadcast so both produce identical metadata.
+fn build_entity_snapshot(
+    world: &hecs::World,
+    e: hecs::Entity,
+    entity_id: EntityId,
+) -> EntitySnapshot {
+    let pos = world
+        .get::<&Position>(e)
+        .map(|p| [p.0.x, p.0.y, p.0.z])
+        .unwrap_or([0.0, 0.0, 0.0]);
+    let rot = world
+        .get::<&ff_ecs::components::transform::Rotation>(e)
+        .map(|r| r.0)
+        .unwrap_or(0.0);
+
+    let kind = if let Ok(plant) = world.get::<&ff_ecs::components::plant::Plant>(e) {
+        EntityKind::Plant { species_id: plant.species_id }
+    } else if let Ok(animal) = world.get::<&ff_ecs::components::animal::Animal>(e) {
+        EntityKind::Animal { species_id: animal.species_id }
+    } else if let Ok(structure) = world.get::<&ff_ecs::components::identity::Structure>(e) {
+        EntityKind::Structure { kind: structure.kind }
+    } else if world.get::<&ff_ecs::components::ai_agent::SemiAIWorker>(e).is_ok() {
+        EntityKind::SemiAI
+    } else {
+        EntityKind::Player
+    };
+
+    let state = if let Ok(plant) = world.get::<&ff_ecs::components::plant::Plant>(e) {
+        EntityState::PlantGrowth { stage: plant.growth_stage as u8, health: plant.health }
+    } else if let Ok(animal) = world.get::<&ff_ecs::components::animal::Animal>(e) {
+        EntityState::AnimalBehavior { behavior: 0, hunger: animal.hunger }
+    } else {
+        EntityState::Active
+    };
+
+    EntitySnapshot { entity_id, kind, position: pos, rotation: rot, state }
+}
+
 /// Build and broadcast entity position updates to all connected players.
 fn broadcast_updates(shard: &mut Shard) {
     let tick = shard.resources.calendar.tick;
+
+    // ── Announce NEW entities ────────────────────────────────────────
+    // Any entity whose id exceeds the watermark was created after the
+    // last broadcast (a planted seed, a deployed drone, a newly joined
+    // player, …). Send a ServerEntitySpawn for each so clients render
+    // the correct mesh instead of the gray fallback sphere. Without
+    // this, the periodic batch update only carries positions and the
+    // client never learns the entity's kind.
+    {
+        let mut new_spawns: Vec<(u64, EntitySnapshot)> = Vec::new();
+        for (e, net_id) in shard
+            .ecs_world
+            .query::<&NetworkId>()
+            .iter()
+        {
+            if net_id.0 .0 > shard.announced_max_entity_id {
+                new_spawns.push((net_id.0 .0, build_entity_snapshot(&shard.ecs_world, e, net_id.0)));
+            }
+        }
+        if !new_spawns.is_empty() {
+            let mut max_id = shard.announced_max_entity_id;
+            for (id, snap) in new_spawns {
+                if id > max_id { max_id = id; }
+                let spawn = ServerEntitySpawn { entity: snap };
+                if let Ok(buf) = encode(MessageType::ServerEntitySpawn, &spawn) {
+                    for session in shard.sessions.values() {
+                        session.send(buf.clone());
+                    }
+                }
+            }
+            shard.announced_max_entity_id = max_id;
+        }
+    }
+
+    // ── Re-announce plants that changed growth stage ─────────────────
+    // ~2 Hz. A plant advancing from Seed→…→Fruiting needs the client to
+    // rescale its mesh + reveal fruit, but the batch update carries no
+    // stage. We re-send a spawn (which carries the stage) only for
+    // plants whose stage actually changed since we last saw it. New
+    // plants are recorded silently the first time (the client already
+    // learned them via the spawn broadcast above or the world state).
+    if tick.0 % 10 == 0 {
+        let mut snapshot: Vec<(u64, u8, hecs::Entity, EntityId)> = Vec::new();
+        for (e, (net_id, plant)) in shard
+            .ecs_world
+            .query::<(&NetworkId, &ff_ecs::components::plant::Plant)>()
+            .iter()
+        {
+            snapshot.push((net_id.0 .0, plant.growth_stage as u8, e, net_id.0));
+        }
+        let mut changed: Vec<(hecs::Entity, EntityId)> = Vec::new();
+        for (id, stage, e, eid) in snapshot {
+            match shard.plant_stage_seen.get(&id) {
+                Some(&seen) if seen == stage => {}
+                Some(_) => {
+                    shard.plant_stage_seen.insert(id, stage);
+                    changed.push((e, eid));
+                }
+                None => {
+                    // First time we track this plant — record without a
+                    // resend (client already knows its current stage).
+                    shard.plant_stage_seen.insert(id, stage);
+                }
+            }
+        }
+        for (e, eid) in changed {
+            let snap = build_entity_snapshot(&shard.ecs_world, e, eid);
+            let spawn = ServerEntitySpawn { entity: snap };
+            if let Ok(buf) = encode(MessageType::ServerEntitySpawn, &spawn) {
+                for session in shard.sessions.values() {
+                    session.send(buf.clone());
+                }
+            }
+        }
+    }
 
     // Collect entity updates
     let mut updates = Vec::new();
@@ -176,6 +291,18 @@ fn broadcast_updates(shard: &mut Shard) {
     if tick.0 % 20 == 0 {
         check_political_thresholds(shard);
         broadcast_politics(shard);
+        // Innovators slowly accrue Knowledge passively (their "lab"
+        // ticking away) so the role isn't pure button-mashing — they
+        // can roam, study the ecosystem, and watch for catastrophes.
+        // Field-study (clicking living things) is still the fast path.
+        for (_e, inv) in shard
+            .ecs_world
+            .query::<&mut ff_ecs::components::player::Innovator>()
+            .iter()
+        {
+            inv.knowledge = (inv.knowledge + 1.0)
+                .min(ff_ecs::components::player::KNOWLEDGE_CAP);
+        }
     }
 
     // Catastrophe broadcast — push the current state to everyone
@@ -406,12 +533,21 @@ fn broadcast_surveillance(shard: &mut Shard) {
             .get::<&ff_ecs::components::player::Hunger>(entity)
             .map(|h| h.0)
             .unwrap_or(0.0);
+        // Role: 0 Farmer, 1 Monarch, 2 Innovator — so the Monarch's
+        // surveillance roster distinguishes Innovators (whom they may
+        // want to fund) from ordinary farmers.
         let role = if shard
             .ecs_world
             .get::<&ff_ecs::components::player::Monarch>(entity)
             .is_ok()
         {
             1
+        } else if shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Innovator>(entity)
+            .is_ok()
+        {
+            2
         } else {
             0
         };

@@ -194,14 +194,16 @@ export function buildFruitCluster(positions, ripeColorHex, opts = {}) {
     root.name = "fruits";
     root.visible = false;
 
-    const fruitGeo = new THREE.SphereGeometry(size, 8, 6);
+    // Rounder, smoother spheres so ripe fruit looks plump + appetising.
+    const fruitGeo = new THREE.SphereGeometry(size, 12, 10);
 
-    // Ripe — bright species colour, slight specular but NO emissive
-    // glow. Ripeness reads via colour contrast against green foliage.
+    // Ripe — bright species colour with a soft waxy sheen (low roughness
+    // + a touch of clearcoat-like specular via metalness). No emissive
+    // glow; ripeness reads from colour contrast against the foliage.
     const ripeMat = new THREE.MeshStandardMaterial({
         color: ripeColorHex,
-        roughness: 0.42,
-        metalness: 0.05,
+        roughness: 0.32,
+        metalness: 0.0,
     });
     const ripeGroup = new THREE.Group();
     ripeGroup.name = "fruits-ripe";
@@ -249,39 +251,75 @@ function _branchAccumulator() {
 }
 
 // Scratch vectors reused across the whole build.
-const _segAxis = new THREE.Vector3();
-const _segU = new THREE.Vector3();
-const _segW = new THREE.Vector3();
+const _tan = new THREE.Vector3();
+const _prevTan = new THREE.Vector3();
+const _nrm = new THREE.Vector3();
+const _bin = new THREE.Vector3();
+const _rotQ = new THREE.Quaternion();
 
-// Emit a tapered cone (cylinder with r0→r1) from p0 to p1 into `acc`.
-function _emitSegment(acc, p0, p1, r0, r1, radial) {
-    _segAxis.subVectors(p1, p0);
-    const len = _segAxis.length();
-    if (len < 1e-5) return;
-    _segAxis.multiplyScalar(1 / len);
-    // Build an orthonormal frame perpendicular to the axis.
-    if (Math.abs(_segAxis.y) < 0.99) _segU.set(0, 1, 0);
-    else _segU.set(1, 0, 0);
-    _segW.crossVectors(_segAxis, _segU).normalize();
-    _segU.crossVectors(_segW, _segAxis).normalize();
+/**
+ * Emit ONE continuous tapered tube through a polyline of centre points,
+ * into the merged accumulator. Uses a rotation-minimising (parallel-
+ * transport) frame so the cross-section never twists — consecutive
+ * rings stay aligned, giving a smooth solid branch instead of the
+ * kinked/torn look you get when each segment frames itself.
+ *
+ *   pts:    THREE.Vector3[]  centreline (>= 2 points)
+ *   radii:  number[]         radius at each point
+ *   radial: int              sides of the tube cross-section
+ */
+function _emitTube(acc, pts, radii, radial) {
+    const n = pts.length;
+    if (n < 2) return;
 
-    const base = acc.v;
-    for (let i = 0; i <= radial; i++) {
-        const th = (i / radial) * Math.PI * 2;
-        const c = Math.cos(th), s = Math.sin(th);
-        const ox = _segU.x * c + _segW.x * s;
-        const oy = _segU.y * c + _segW.y * s;
-        const oz = _segU.z * c + _segW.z * s;
-        acc.pos.push(p0.x + ox * r0, p0.y + oy * r0, p0.z + oz * r0);
-        acc.norm.push(ox, oy, oz);
-        acc.pos.push(p1.x + ox * r1, p1.y + oy * r1, p1.z + oz * r1);
-        acc.norm.push(ox, oy, oz);
+    // Initial frame at pts[0].
+    _tan.subVectors(pts[1], pts[0]).normalize();
+    // Pick a normal not parallel to the tangent.
+    if (Math.abs(_tan.y) < 0.99) _nrm.set(0, 1, 0);
+    else _nrm.set(1, 0, 0);
+    _bin.crossVectors(_tan, _nrm).normalize();
+    _nrm.crossVectors(_bin, _tan).normalize();
+
+    const ringStart = [];
+    for (let i = 0; i < n; i++) {
+        // Tangent at this point (forward difference, last reuses prev).
+        if (i < n - 1) {
+            _prevTan.copy(_tan);
+            _tan.subVectors(pts[i + 1], pts[i]).normalize();
+            // Parallel-transport the normal: rotate it by the same
+            // rotation that turns the previous tangent into this one.
+            _rotQ.setFromUnitVectors(_prevTan, _tan);
+            _nrm.applyQuaternion(_rotQ);
+        }
+        // Re-orthonormalise to kill drift.
+        _bin.crossVectors(_tan, _nrm).normalize();
+        _nrm.crossVectors(_bin, _tan).normalize();
+
+        ringStart.push(acc.v);
+        const r = Math.max(radii[i], 0.01);
+        const p = pts[i];
+        for (let k = 0; k <= radial; k++) {
+            const th = (k / radial) * Math.PI * 2;
+            const c = Math.cos(th), s = Math.sin(th);
+            const ox = _nrm.x * c + _bin.x * s;
+            const oy = _nrm.y * c + _bin.y * s;
+            const oz = _nrm.z * c + _bin.z * s;
+            acc.pos.push(p.x + ox * r, p.y + oy * r, p.z + oz * r);
+            acc.norm.push(ox, oy, oz);
+        }
+        acc.v += radial + 1;
     }
-    for (let i = 0; i < radial; i++) {
-        const a = base + i * 2;
-        acc.idx.push(a, a + 1, a + 3, a, a + 3, a + 2);
+
+    // Connect consecutive rings into quads.
+    for (let i = 0; i < n - 1; i++) {
+        const a0 = ringStart[i];
+        const b0 = ringStart[i + 1];
+        for (let k = 0; k < radial; k++) {
+            const a = a0 + k, b = a0 + k + 1;
+            const c = b0 + k, d = b0 + k + 1;
+            acc.idx.push(a, c, d, a, d, b);
+        }
     }
-    acc.v += (radial + 1) * 2;
 }
 
 function _accToMesh(acc, mat) {
@@ -294,43 +332,48 @@ function _accToMesh(acc, mat) {
     return m;
 }
 
-// Grow one branch (recursively). `start` Vector3, `dir` normalized
-// Vector3, `length`/`radius` for this branch, `depth` remaining forks.
-function _grow(acc, leafSink, start, dir, length, radius, depth, cfg) {
+// Grow one branch recursively. Builds a curved centreline, emits it as a
+// continuous tube, then either forks into thinner children or (at the
+// leaves) drops a leaf cluster AND records the tip so fruit can hang
+// from it.
+function _grow(acc, leafSink, tipSink, start, dir, length, radius, depth, cfg) {
     const segs = cfg.segs;
     const segLen = length / segs;
-    const pos = start.clone();
+    const pts = [start.clone()];
+    const radii = [radius];
     const d = dir.clone().normalize();
+    let pos = start.clone();
     for (let s = 0; s < segs; s++) {
-        const r0 = radius * (1 - (s / segs) * (1 - cfg.taper));
-        const r1 = radius * (1 - ((s + 1) / segs) * (1 - cfg.taper));
-        const next = pos.clone().addScaledVector(d, segLen);
-        _emitSegment(acc, pos, next, Math.max(r0, 0.012), Math.max(r1, 0.01), 5);
-        pos.copy(next);
+        pos = pos.clone().addScaledVector(d, segLen);
+        pts.push(pos.clone());
+        radii.push(Math.max(radius * (1 - ((s + 1) / segs) * (1 - cfg.taper)), 0.012));
         // Bend: small random drift + a vertical bias (curve gently
-        // upward, or downward for `droop` species like willow/olive).
+        // upward, or downward for droopy species).
         d.x += (Math.random() - 0.5) * cfg.curve;
         d.z += (Math.random() - 0.5) * cfg.curve;
         d.y += cfg.upBias;
         d.normalize();
     }
+    _emitTube(acc, pts, radii, 6);
+    const tip = pts[pts.length - 1];
 
     if (depth <= 0) {
-        // Terminal twig → leaf cluster at the tip.
-        for (const p of generateCanopyPoints(pos, cfg.clusterRadius, cfg.leavesPerCluster,
+        // Terminal twig → leaf cluster + remember the tip for fruit.
+        for (const p of generateCanopyPoints(tip, cfg.clusterRadius, cfg.leavesPerCluster,
             { ySquash: 0.9, shellBias: 0.4 })) leafSink.push(p);
+        tipSink.push(tip.clone());
         return;
     }
     // Fork into thinner, shorter children that splay outward + up.
-    const n = cfg.children;
-    for (let i = 0; i < n; i++) {
-        const az = (i / n) * Math.PI * 2 + Math.random() * 0.8;
+    const cn = cfg.children;
+    for (let i = 0; i < cn; i++) {
+        const az = (i / cn) * Math.PI * 2 + Math.random() * 0.8;
         const child = d.clone();
         child.x += Math.cos(az) * cfg.splay;
         child.z += Math.sin(az) * cfg.splay;
         child.y += cfg.splay * 0.45;          // children also rise
         child.normalize();
-        _grow(acc, leafSink, pos.clone(), child,
+        _grow(acc, leafSink, tipSink, tip.clone(), child,
             length * cfg.lengthFalloff, radius * cfg.radiusFalloff, depth - 1, cfg);
     }
 }
@@ -370,12 +413,16 @@ export function buildBranchyCanopy(opts) {
         aspectW = 1.0, aspectH = 1.0,
         depth = 2, curve = 0.28, upBias = 0.12, splay = 0.55,
         startElevation = 0.85,
+        // Optional fruit, hung from real twig tips (not floating).
+        fruitColor, fruitCount = 0, fruitSize = 0.16,
+        fruitElongation = 1.0, unripeColor,
     } = opts;
 
     const group = new THREE.Group();
     const barkMat = new THREE.MeshStandardMaterial({ color: barkColor, roughness: 0.93 });
     const acc = _branchAccumulator();
     const leafSink = [];
+    const tipSink = [];
 
     const cfg = {
         segs: 4,
@@ -401,7 +448,7 @@ export function buildBranchyCanopy(opts) {
             startElevation,
             Math.sin(az) * out,
         ).normalize();
-        _grow(acc, leafSink, base.clone(), dir, rise, boughRadius, depth, cfg);
+        _grow(acc, leafSink, tipSink, base.clone(), dir, rise, boughRadius, depth, cfg);
     }
 
     if (acc.idx.length > 0) group.add(_accToMesh(acc, barkMat));
@@ -409,5 +456,23 @@ export function buildBranchyCanopy(opts) {
         leafSize, sizeJitter: 0.5, color: new THREE.Color(leafColor),
         aspectW, aspectH,
     }));
+
+    // Fruit hangs from actual twig tips, nestled just below the foliage
+    // — so it reads as growing on the branch, never floating in space.
+    if (fruitColor !== undefined && fruitCount > 0 && tipSink.length > 0) {
+        const fruitPositions = [];
+        for (let i = 0; i < fruitCount; i++) {
+            const tip = tipSink[(Math.random() * tipSink.length) | 0];
+            fruitPositions.push(new THREE.Vector3(
+                tip.x + (Math.random() - 0.5) * 0.22,
+                tip.y - 0.10 - Math.random() * 0.14,   // hang below the twig
+                tip.z + (Math.random() - 0.5) * 0.22,
+            ));
+        }
+        group.add(buildFruitCluster(fruitPositions, fruitColor, {
+            size: fruitSize, elongation: fruitElongation, unripeColor,
+        }));
+    }
+
     return group;
 }

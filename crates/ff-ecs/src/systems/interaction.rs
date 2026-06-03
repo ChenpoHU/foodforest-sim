@@ -82,14 +82,13 @@ pub fn process_action(
         ActionKind::Harvest { entity_id } => {
             // Find the target entity and validate (two-pass to avoid borrow conflicts)
             let mut target_entity = None;
-            for (entity, (net_id, pos, plant)) in
+            for (entity, (net_id, _pos, plant)) in
                 world.query_mut::<(&NetworkId, &Position, &Plant)>()
             {
                 if net_id.0 == *entity_id {
-                    let dist = (pos.0 - player_pos).length();
-                    if dist > 10.0 {
-                        return ActionResult::Failure("Too far away — move closer".into());
-                    }
+                    // No distance check for harvesting — if the player can
+                    // click it (it rendered on their screen), they can
+                    // gather it. Only ripeness gates the action.
                     if plant.growth_stage != GrowthStage::Fruiting {
                         return ActionResult::Failure("Not ready to harvest".into());
                     }
@@ -473,7 +472,25 @@ pub fn process_action(
             if let Ok(mut w) = world.get::<&mut crate::components::player::Wallet>(te) {
                 w.0 = w.0.saturating_add(*amount);
             }
-            ActionResult::Success(format!("Wired {} coins UBI", amount))
+            // Monarch → Innovator support loop: if the recipient is an
+            // Innovator, the grant is "research funding" — convert a
+            // share of the coins into Knowledge. This gives the Monarch
+            // (whose drones get wrecked by catastrophes) a concrete
+            // reason to bankroll an Innovator who can end them.
+            let mut funded_research = false;
+            if let Ok(mut inv) = world.get::<&mut crate::components::player::Innovator>(te) {
+                inv.knowledge = (inv.knowledge + (*amount as f32) * 0.5)
+                    .min(crate::components::player::KNOWLEDGE_CAP);
+                funded_research = true;
+            }
+            if funded_research {
+                ActionResult::Success(format!(
+                    "Funded Innovator's research with {} coins (+{:.0} Knowledge)",
+                    amount, (*amount as f32) * 0.5
+                ))
+            } else {
+                ActionResult::Success(format!("Wired {} coins UBI", amount))
+            }
         }
 
         ActionKind::IssueTask { tone, message, task_kind, target, reward } => {

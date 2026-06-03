@@ -4,7 +4,7 @@
 // the strongest ripeness signal in the game.
 
 import * as THREE from "three";
-import { buildBranchyCanopy, buildFruitCluster } from "./_canopy.js";
+import { buildBranchyCanopy } from "./_canopy.js";
 
 export function buildCitrus() {
     const g = new THREE.Group();
@@ -24,22 +24,9 @@ export function buildCitrus() {
         boughRadius: 0.08, leafSize: 0.15,
         clusterRadius: 0.78, leavesPerCluster: 85,
         startElevation: 0.55, splay: 0.6, depth: 2, curve: 0.32, upBias: 0.12,
-    }));
-
-    // Oranges: pale green (unripe) → bright orange (ripe). Big so they
-    // read at distance.
-    const fruitPositions = [];
-    for (let i = 0; i < 14; i++) {
-        const a = (i / 14) * Math.PI * 2 + Math.random() * 0.4;
-        const r = 1.7 * (0.6 + Math.random() * 0.3);
-        fruitPositions.push(new THREE.Vector3(
-            Math.cos(a) * r,
-            trunkH + 1.0 + (Math.random() - 0.5) * 1.2,
-            Math.sin(a) * r,
-        ));
-    }
-    g.add(buildFruitCluster(fruitPositions, 0xff8c1f, {
-        size: 0.20, unripeColor: 0xa6c468,
+        // Oranges: pale green (unripe) → bright orange (ripe). Big so they
+        // read at distance, hung from the twig tips.
+        fruitColor: 0xff8c1f, fruitCount: 14, fruitSize: 0.20, unripeColor: 0xa6c468,
     }));
 
     return g;

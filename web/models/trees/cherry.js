@@ -3,7 +3,7 @@
 // sakura pink. Cherries ripen green → deep red.
 
 import * as THREE from "three";
-import { buildBranchyCanopy, buildFruitCluster } from "./_canopy.js";
+import { buildBranchyCanopy } from "./_canopy.js";
 
 export function buildCherry() {
     const g = new THREE.Group();
@@ -24,21 +24,8 @@ export function buildCherry() {
         boughRadius: 0.11, leafSize: 0.15,
         clusterRadius: 0.8, leavesPerCluster: 80,
         startElevation: 0.7, splay: 0.5, depth: 3, curve: 0.3, upBias: 0.2,
-    }));
-
-    // Cherries: green unripe → deep red ripe
-    const fruitPositions = [];
-    for (let i = 0; i < 18; i++) {
-        const a = (i / 18) * Math.PI * 2 + Math.random() * 0.3;
-        const r = 2.0 * (0.6 + Math.random() * 0.3);
-        fruitPositions.push(new THREE.Vector3(
-            Math.cos(a) * r,
-            trunkH + 1.1 + (Math.random() - 0.5) * 1.3,
-            Math.sin(a) * r,
-        ));
-    }
-    g.add(buildFruitCluster(fruitPositions, 0xc81b2a, {
-        size: 0.09, unripeColor: 0x6aaa44,
+        // Cherries: green unripe → deep red ripe, hung from twig tips.
+        fruitColor: 0xc81b2a, fruitCount: 18, fruitSize: 0.09, unripeColor: 0x6aaa44,
     }));
 
     return g;

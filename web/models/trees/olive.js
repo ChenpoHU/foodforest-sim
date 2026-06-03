@@ -4,7 +4,7 @@
 // silvery-green foliage and ripening drupes (green → dark olive).
 
 import * as THREE from "three";
-import { buildBranchyCanopy, buildFruitCluster } from "./_canopy.js";
+import { buildBranchyCanopy } from "./_canopy.js";
 
 export function buildOlive() {
     const g = new THREE.Group();
@@ -63,22 +63,9 @@ export function buildOlive() {
         clusterRadius: 0.7, leavesPerCluster: 70,
         aspectW: 0.4, aspectH: 1.5,   // narrow olive leaves
         startElevation: 0.55, splay: 0.6, depth: 2, curve: 0.5, upBias: 0.05,
-    }));
-
-    // ── Olives: green unripe → dark-olive ripe ──────────────────────
-    const fruitPositions = [];
-    for (let i = 0; i < 22; i++) {
-        const a = (i / 22) * Math.PI * 2 + Math.random() * 0.4;
-        const r = 1.5 * (0.55 + Math.random() * 0.35);
-        fruitPositions.push(new THREE.Vector3(
-            Math.cos(a) * r,
-            capY + 1.0 + (Math.random() - 0.5) * 1.1,
-            Math.sin(a) * r,
-        ));
-    }
-    g.add(buildFruitCluster(fruitPositions, 0x2a3a14, {
-        size: 0.085, elongation: 1.5,
-        unripeColor: 0x9eb59a,   // matches foliage when unripe — hard to spot
+        // Olives: green unripe → dark-olive ripe, clustered on the twigs.
+        fruitColor: 0x2a3a14, fruitCount: 22, fruitSize: 0.085,
+        fruitElongation: 1.5, unripeColor: 0x9eb59a,
     }));
 
     return g;

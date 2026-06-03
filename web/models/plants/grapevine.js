@@ -57,37 +57,43 @@ export function buildGrapevine() {
         color: new THREE.Color(0x4a8a2a),
     }));
 
-    // Grape clusters — three pendant clusters hanging *below* the
-    // canopy. Each cluster is built as a fruit position group: many
-    // small fruit positions stacked vertically + slightly varying
-    // X/Z, so each cluster reads as a tapered bunch of grapes.
+    // Grape bunches — dense conical clusters of berries hanging below
+    // the canopy. The key to "reads as grapes" is DENSITY: berries
+    // packed tightly (spacing ≈ berry diameter) into a tapered cone, so
+    // it looks like a solid bunch rather than a scatter of loose balls.
+    const BERRY = 0.05;
     const grapePositions = [];
-    const clusterCenters = [
-        [-0.35, 1.55,  0.15],
-        [ 0.40, 1.55, -0.10],
-        [ 0.05, 1.50,  0.40],
-    ];
-    for (const [cx, cy, cz] of clusterCenters) {
-        // Tapered bunch: wider at top, narrower at bottom.
-        let row = 0;
-        for (let y = 0; y < 6; y++) {
-            const radius = (6 - y) * 0.04;
-            const perRow = Math.max(2, 6 - y);
-            for (let i = 0; i < perRow; i++) {
-                const a = (i / perRow) * Math.PI * 2 + y * 0.3;
+    function addBunch(cx, cy, cz, height, topR) {
+        const rows = Math.max(5, Math.ceil(height / (BERRY * 0.85)));
+        for (let r = 0; r < rows; r++) {
+            const t = r / (rows - 1);                 // 0 top → 1 bottom
+            const y = cy - t * height;
+            // Quadratic taper to a near-point at the bottom.
+            const radius = topR * (1 - t) * (1 - t) + 0.012;
+            const circ = 2 * Math.PI * radius;
+            const count = Math.max(1, Math.round(circ / (BERRY * 1.45)));
+            for (let i = 0; i < count; i++) {
+                const a = (i / count) * Math.PI * 2 + r * 0.5;
                 grapePositions.push(new THREE.Vector3(
-                    cx + Math.cos(a) * radius,
-                    cy - y * 0.045,
-                    cz + Math.sin(a) * radius,
+                    cx + Math.cos(a) * radius + (Math.random() - 0.5) * BERRY * 0.4,
+                    y + (Math.random() - 0.5) * BERRY * 0.3,
+                    cz + Math.sin(a) * radius + (Math.random() - 0.5) * BERRY * 0.4,
                 ));
             }
-            row++;
+            // Fill the core so the bunch isn't hollow.
+            if (radius > BERRY * 1.2) grapePositions.push(new THREE.Vector3(cx, y, cz));
         }
     }
-    g.add(buildFruitCluster(grapePositions, 0x5a229a, {
-        size: 0.04,
-        elongation: 1.1,
-        unripeColor: 0x9eb55c, // pale green when unripe
+    // Four full bunches dangling at different spots under the canopy.
+    addBunch(-0.34, 1.58,  0.14, 0.42, 0.13);
+    addBunch( 0.38, 1.56, -0.10, 0.46, 0.14);
+    addBunch( 0.06, 1.50,  0.40, 0.38, 0.12);
+    addBunch(-0.10, 1.52, -0.34, 0.40, 0.12);
+
+    g.add(buildFruitCluster(grapePositions, 0x4a1466, {  // deep grape purple
+        size: BERRY,
+        elongation: 1.05,
+        unripeColor: 0x9ab84a,   // pale green when unripe
     }));
 
     return g;
