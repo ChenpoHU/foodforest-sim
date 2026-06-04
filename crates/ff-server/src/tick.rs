@@ -123,7 +123,12 @@ fn build_entity_snapshot(
         EntityState::Active
     };
 
-    EntitySnapshot { entity_id, kind, position: pos, rotation: rot, state }
+    let outfit = world
+        .get::<&ff_ecs::components::player::Outfit>(e)
+        .map(|o| o.0)
+        .unwrap_or(0);
+
+    EntitySnapshot { entity_id, kind, position: pos, rotation: rot, state, outfit }
 }
 
 /// Build and broadcast entity position updates to all connected players.
@@ -654,6 +659,11 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             Some((k, b, t)) => (2u8, k, b, t),
             None => (role, 0.0, 0u32, 0u8),
         };
+        let outfit = shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::Outfit>(entity)
+            .map(|o| o.0)
+            .unwrap_or(0);
         payload = Some(ServerPlayerState {
             stamina: stamina.0,
             hunger: hunger.0,
@@ -671,6 +681,7 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             innovator_knowledge: inv_knowledge,
             innovator_breakthroughs: inv_breakthroughs,
             innovator_focus_topic: inv_focus,
+            outfit,
         });
         break;
     }

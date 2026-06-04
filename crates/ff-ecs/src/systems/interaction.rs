@@ -50,13 +50,9 @@ pub fn process_action(
             let plant_z = pz;
             let plant_y = terrain.spawn_height(plant_x, plant_z);
 
-            // Generous distance check so the player can lay out a small
-            // food forest without constantly stepping forward.
-            let dx = plant_x as f32 - player_pos.x;
-            let dz = plant_z as f32 - player_pos.z;
-            if (dx * dx + dz * dz).sqrt() > 15.0 {
-                return ActionResult::Failure("Too far away to plant — move closer".into());
-            }
+            // No distance limit on planting — if the player can click a
+            // spot, they can plant there. Lets you lay out a food forest
+            // freely without stepping to every tile.
 
             let id = *next_entity_id;
             *next_entity_id += 1;
@@ -113,6 +109,9 @@ pub fn process_action(
                 Some((item_id, amount)) => {
                     if let Ok(mut inv) = world.get::<&mut crate::components::player::Inventory>(player_entity) {
                         inv.add(item_id, amount);
+                        // Harvesting also yields plant fibre — the raw
+                        // material for crafting cloth garments.
+                        inv.add(crate::components::player::ITEM_FIBER, 1);
                     }
                     let name = resources.species_db.get_plant_by_item(item_id)
                         .unwrap_or("produce");
@@ -364,9 +363,10 @@ pub fn process_action(
             }
 
             let _ = world.despawn(te);
-            // Add meat to inventory (item_id 2000 = game meat)
+            // Add meat + a hide (used to craft fur clothing) to inventory.
             if let Ok(mut inv) = world.get::<&mut crate::components::player::Inventory>(player_entity) {
                 inv.add(2000, 3);
+                inv.add(crate::components::player::ITEM_HIDE, 1);
             }
 
             // Witnessing a hunt teaches nearby wild animals to fear this area.
@@ -750,6 +750,49 @@ pub fn process_action(
             // of player_entity's component — but ws.rs runs the
             // resolve step after seeing the success message prefix.
             ActionResult::Success("breakthrough deployed — catastrophe averted".into())
+        }
+
+        ActionKind::Craft { recipe } => {
+            use crate::components::player::{
+                Outfit, ITEM_HIDE, ITEM_FIBER, TUNIC_FIBER_COST, COAT_HIDE_COST,
+            };
+            // Recipe 255 = take the outfit off (free).
+            if *recipe == 255 {
+                let _ = world.insert_one(player_entity, Outfit(0));
+                return ActionResult::Success("Changed back into everyday clothes".into());
+            }
+            // Determine material + cost for the chosen garment.
+            let (item, cost, outfit_id, name): (u16, u16, u8, &str) = match recipe {
+                0 => (ITEM_FIBER, TUNIC_FIBER_COST, 1, "Linen Tunic"),
+                1 => (ITEM_HIDE, COAT_HIDE_COST, 2, "Fur Coat"),
+                _ => return ActionResult::Failure("Unknown garment".into()),
+            };
+            // Check + consume materials.
+            {
+                let mut inv = match world
+                    .get::<&mut crate::components::player::Inventory>(player_entity)
+                {
+                    Ok(i) => i,
+                    Err(_) => return ActionResult::Failure("Inventory unavailable".into()),
+                };
+                let have = inv.slots.iter()
+                    .find(|s| s.item_id == item)
+                    .map(|s| s.count)
+                    .unwrap_or(0);
+                if have < cost {
+                    let mat = if item == ITEM_FIBER { "plant fibre" } else { "animal hide" };
+                    return ActionResult::Failure(format!(
+                        "Need {} {} (you have {})", cost, mat, have
+                    ));
+                }
+                if !inv.remove(item, cost) {
+                    return ActionResult::Failure("Not enough materials".into());
+                }
+            }
+            let _ = world.insert_one(player_entity, Outfit(outfit_id));
+            // "craft ok" prefix lets ws.rs spot this to re-broadcast the
+            // player's appearance to everyone else.
+            ActionResult::Success(format!("craft ok — crafted and put on a {name}"))
         }
 
         ActionKind::DeploySemiAI { position } => {

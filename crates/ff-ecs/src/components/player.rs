@@ -139,6 +139,18 @@ pub const KNOWLEDGE_CAP: f32 = 100.0;
 /// Knowledge cost to deploy a Breakthrough.
 pub const BREAKTHROUGH_COST: f32 = 30.0;
 
+/// Worn outfit, crafted from gathered materials. 0 = default clothes.
+/// Drives the avatar's appearance (and, with the seasons system, could
+/// gate cold resistance later).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct Outfit(pub u8); // 0 default, 1 Linen Tunic, 2 Fur Coat
+
+/// Crafting material item ids + recipe costs.
+pub const ITEM_HIDE: u16 = 3000;   // dropped by hunting animals
+pub const ITEM_FIBER: u16 = 3001;  // gathered when harvesting plants
+pub const TUNIC_FIBER_COST: u16 = 5;
+pub const COAT_HIDE_COST: u16 = 4;
+
 /// Coin cost a Farmer must pay (and lose) to ascend to Tech-Monarch.
 pub const MONARCH_ASCENSION_COST: u32 = 500;
 /// Discontent points added per Farmer revolt vote.

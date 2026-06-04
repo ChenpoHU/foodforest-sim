@@ -144,3 +144,12 @@ export function encodeHochsitzAction(x, y, z) {
         ...encodeZigzagVarint(x), ...encodeZigzagVarint(y), ...encodeZigzagVarint(z),
     ];
 }
+
+export function encodeCraftAction(recipe) {
+    // Craft { recipe: u8 } — variant 24. recipe 0 = Linen Tunic,
+    // 1 = Fur Coat, 255 = take off (back to default clothes).
+    return [
+        ...encodeVarint(24),
+        recipe & 0xff,
+    ];
+}

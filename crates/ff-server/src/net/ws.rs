@@ -252,12 +252,17 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
                 EntityState::Active
             };
 
+            let outfit = shard.ecs_world
+                .get::<&ff_ecs::components::player::Outfit>(_e)
+                .map(|o| o.0)
+                .unwrap_or(0);
             snaps.push(EntitySnapshot {
                 entity_id: net_id.0,
                 kind,
                 position: [pos.0.x, pos.0.y, pos.0.z],
                 rotation: rot,
                 state,
+                outfit,
             });
         }
         snaps
@@ -478,6 +483,51 @@ async fn handle_message(
                                 position,
                                 rotation,
                                 state: EntityState::Active,
+                                outfit: 0,
+                            };
+                            let spawn = ServerEntitySpawn { entity: snap };
+                            if let Ok(buf) = encode(MessageType::ServerEntitySpawn, &spawn) {
+                                for session in shard.sessions.values() {
+                                    session.send(buf.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Craft fan-out — when a player puts on (or takes off) an
+                // outfit, their avatar's appearance changes. Re-broadcast a
+                // ServerEntitySpawn for the player's own entity so every
+                // connected client (and the player themselves, in third
+                // person) re-skins the avatar with the new outfit id.
+                if success {
+                    if let ff_protocol::messages::ActionKind::Craft { .. } = &action.action {
+                        if let Ok(net_id) = shard
+                            .ecs_world
+                            .get::<&ff_ecs::components::identity::NetworkId>(pe)
+                        {
+                            let pos = shard
+                                .ecs_world
+                                .get::<&ff_ecs::components::transform::Position>(pe)
+                                .map(|p| [p.0.x, p.0.y, p.0.z])
+                                .unwrap_or([0.0, 0.0, 0.0]);
+                            let rot = shard
+                                .ecs_world
+                                .get::<&ff_ecs::components::transform::Rotation>(pe)
+                                .map(|r| r.0)
+                                .unwrap_or(0.0);
+                            let outfit = shard
+                                .ecs_world
+                                .get::<&ff_ecs::components::player::Outfit>(pe)
+                                .map(|o| o.0)
+                                .unwrap_or(0);
+                            let snap = EntitySnapshot {
+                                entity_id: net_id.0,
+                                kind: EntityKind::Player,
+                                position: pos,
+                                rotation: rot,
+                                state: EntityState::Active,
+                                outfit,
                             };
                             let spawn = ServerEntitySpawn { entity: snap };
                             if let Ok(buf) = encode(MessageType::ServerEntitySpawn, &spawn) {
@@ -1075,5 +1125,11 @@ fn action_tag(action: &ff_protocol::messages::ActionKind) -> String {
             };
             format!("deploying {name}")
         }
+        Craft { recipe } => match recipe {
+            0 => "crafting tunic".into(),
+            1 => "crafting fur coat".into(),
+            255 => "undressing".into(),
+            _ => "crafting".into(),
+        },
     }
 }

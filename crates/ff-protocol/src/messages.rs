@@ -174,6 +174,11 @@ pub enum ActionKind {
     /// catastrophe's kind. Mismatched breakthroughs are rejected.
     ///   kind: 0=Pandemic, 1=SolarFlare, 2=Drought, 3=Nuclear, 4=Asteroid
     DeployBreakthrough { kind: u8 },
+    /// Craft + wear an outfit from gathered materials. `recipe`:
+    ///   0 = Linen Tunic  (costs plant fibre)
+    ///   1 = Fur Coat     (costs animal hide)
+    ///   255 = take it off (back to default clothes, free)
+    Craft { recipe: u8 },
 }
 
 /// State of a global catastrophe pushed to every player.
@@ -315,6 +320,10 @@ pub struct EntitySnapshot {
     pub position: [f32; 3],
     pub rotation: f32,
     pub state: EntityState,
+    /// Worn outfit (players only; 0 = default). Lets other clients
+    /// render the player's crafted clothing. 0=default, 1=Linen Tunic,
+    /// 2=Fur Coat.
+    pub outfit: u8,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -397,6 +406,8 @@ pub struct ServerPlayerState {
     pub innovator_knowledge: f32,
     pub innovator_breakthroughs: u32,
     pub innovator_focus_topic: u8,
+    /// Currently-worn outfit (0=default, 1=Linen Tunic, 2=Fur Coat).
+    pub outfit: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

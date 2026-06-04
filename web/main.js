@@ -23,7 +23,7 @@ import {
     encodeSellAction, encodeDeployAIAction, encodePropagandaAction,
     encodeGrantUbiAction, encodeIssueTaskAction, encodeAscendAction,
     encodeRevoltAction, encodeResearchAction, encodeDeployBreakthroughAction,
-    encodeHochsitzAction,
+    encodeHochsitzAction, encodeCraftAction,
 } from "./net/messages.js";
 // Ambient generative piano (Web Audio).
 import { startAmbientMusic } from "./audio/music.js";
@@ -637,6 +637,17 @@ function rebuildToolbar() {
         "<span id='toolbar-coin-chip' style='background:rgba(255,200,80,0.18); color:#ffd966; border:1px solid #c9a45a; border-radius:10px; padding:1px 8px; font-size:11px; font-weight:bold; margin-left:2px;'>🪙 0</span>";
     toolbar.appendChild(propBtn);
 
+    // Wardrobe button — craft + wear clothes from gathered plant fibre
+    // and hunted animal hide.
+    const wardrobeBtn = document.createElement("button");
+    wardrobeBtn.dataset.action = "wardrobe";
+    wardrobeBtn.id = "toolbar-wardrobe-btn";
+    wardrobeBtn.style.cssText = "display:flex; align-items:center; gap:6px; padding:6px 10px;";
+    wardrobeBtn.innerHTML =
+        "<span style='font-size:18px;'>👕</span>" +
+        "<span style='font-size:11px;'>Wardrobe</span>";
+    toolbar.appendChild(wardrobeBtn);
+
     // Politics button — Realistic mode only. Opens the modal where a
     // Farmer can ascend (if they've saved 500 coins) or revolt against
     // any active Monarch.
@@ -695,6 +706,10 @@ function rebuildToolbar() {
             }
             if (action === "property") {
                 openPropertyMenu();
+                return;
+            }
+            if (action === "wardrobe") {
+                openWardrobe();
                 return;
             }
             if (action === "politics") {
@@ -826,6 +841,10 @@ document.getElementById("property-menu-close").addEventListener("click", closePr
 document.getElementById("property-menu").addEventListener("click", (e) => {
     if (e.target.id === "property-menu") closePropertyMenu();
 });
+document.getElementById("wardrobe-close").addEventListener("click", closeWardrobe);
+document.getElementById("wardrobe-modal").addEventListener("click", (e) => {
+    if (e.target.id === "wardrobe-modal") closeWardrobe();
+});
 document.getElementById("monarch-dashboard-close").addEventListener("click", closeMonarchDashboard);
 document.getElementById("monarch-dashboard").addEventListener("click", (e) => {
     if (e.target.id === "monarch-dashboard") closeMonarchDashboard();
@@ -953,6 +972,8 @@ document.addEventListener("keydown", (e) => {
         if (dash && dash.style.display === "flex") { closeMonarchDashboard(); return; }
         const pol = document.getElementById("politics-menu");
         if (pol && pol.style.display === "flex") { closePoliticsMenu(); return; }
+        const wardrobe = document.getElementById("wardrobe-modal");
+        if (wardrobe && wardrobe.style.display === "flex") { closeWardrobe(); return; }
     }
 });
 
@@ -1187,7 +1208,16 @@ const fp = {
     viewmodel: null,
     swing: 0,                            // 0..1 anim phase for tool swing
     swingActive: false,
+    // Camera mode. First-person (default) shows the viewmodel hand;
+    // third-person pulls the camera back over the shoulder so you see
+    // your whole avatar — better for multiplayer presence + the hunt.
+    thirdPerson: false,
+    camDist: 4.2,                        // metres behind the avatar
+    camHeight: 1.4,                      // pivot height above the feet
 };
+
+const _tpPivot = new THREE.Vector3();
+const _tpFwd = new THREE.Vector3();
 
 function buildViewmodel() {
     // A small forearm + hand + tool attached as a child of the camera.
@@ -1353,17 +1383,52 @@ function updateFirstPerson(dt) {
     // Track the player's interpolated position so the camera glides
     // smoothly with movement updates from the server.
     const playerObj = myEntityId && entityMeshes.get(myEntityId);
-    if (playerObj) {
-        camera.position.set(
+
+    if (fp.thirdPerson && playerObj) {
+        // Third-person: orbit the camera behind + above the avatar and
+        // look at a chest-height pivot. The avatar is turned to face the
+        // look direction so you see your whole body stride about. The
+        // viewmodel hand is hidden (it'd float in front of the camera).
+        playerObj.visible = true;
+        playerObj.rotation.y = fp.yaw;          // face where we look
+        if (fp.viewmodel) fp.viewmodel.visible = false;
+
+        // Forward unit vector from yaw+pitch (three.js camera looks -Z).
+        const cp = Math.cos(fp.pitch);
+        _tpFwd.set(-Math.sin(fp.yaw) * cp, Math.sin(fp.pitch), -Math.cos(fp.yaw) * cp);
+        _tpPivot.set(
             playerObj.position.x,
-            playerObj.position.y + PLAYER_EYE_HEIGHT,
+            playerObj.position.y + fp.camHeight,
             playerObj.position.z,
         );
+        camera.position.set(
+            _tpPivot.x - _tpFwd.x * fp.camDist,
+            _tpPivot.y - _tpFwd.y * fp.camDist,
+            _tpPivot.z - _tpFwd.z * fp.camDist,
+        );
+        // Don't let the camera sink underground on steep down-pitch.
+        if (camera.position.y < playerObj.position.y + 0.4) {
+            camera.position.y = playerObj.position.y + 0.4;
+        }
+        camera.rotation.order = "YXZ";
+        camera.lookAt(_tpPivot);
+    } else {
+        // First-person: eye at the avatar, viewmodel hand visible, own
+        // body hidden so it doesn't clip the near plane.
+        if (playerObj) {
+            playerObj.visible = false;
+            camera.position.set(
+                playerObj.position.x,
+                playerObj.position.y + PLAYER_EYE_HEIGHT,
+                playerObj.position.z,
+            );
+        }
+        if (fp.viewmodel) fp.viewmodel.visible = true;
+        // Orient camera from yaw + pitch. Order matters: yaw first
+        // (around Y), then pitch (around the camera's local X).
+        camera.rotation.order = "YXZ";
+        camera.rotation.set(fp.pitch, fp.yaw, 0);
     }
-    // Orient camera from yaw + pitch. Order matters: yaw first
-    // (around Y), then pitch (around the camera's local X).
-    camera.rotation.order = "YXZ";
-    camera.rotation.set(fp.pitch, fp.yaw, 0);
 
     // Tool swing — ~0.35 s in, ~0.25 s out. Maps to a forward thrust
     // + slight downward pitch of the viewmodel group.
@@ -1578,7 +1643,7 @@ function initRenderer() {
     function anyModalOpen() {
         const ids = [
             "plant-menu", "property-menu", "monarch-dashboard",
-            "politics-menu", "world-nav-overlay",
+            "politics-menu", "world-nav-overlay", "wardrobe-modal",
         ];
         for (const id of ids) {
             const m = document.getElementById(id);
@@ -2370,6 +2435,8 @@ function handleWelcome(payload) {
     document.getElementById("hud-stamina").textContent = "Stamina: 100%";
     document.getElementById("hud-hunger").textContent = "Hunger: 0%";
     renderHudRole();
+    // Show the starter objectives the moment the player lands in-world.
+    renderObjectives();
 
     // Make sure the coin chip shows up immediately (even before the first
     // PlayerState broadcast). The player can open the Property modal at
@@ -2447,7 +2514,11 @@ function handleWorldState(payload) {
             r.readU8();
         }
 
-        entityKinds.set(eid, { kind, speciesId, growthStage });
+        // Trailing EntitySnapshot.outfit (u8) — present for every entity.
+        let outfit = 0;
+        try { outfit = r.readU8(); } catch (_) { /* old server */ }
+
+        entityKinds.set(eid, { kind, speciesId, growthStage, outfit });
 
         // Determine visual category
         let category = classifyEntity(kind, speciesId);
@@ -2600,7 +2671,11 @@ function handleEntitySpawn(payload) {
         r.readU8();
     }
 
-    entityKinds.set(eid, { kind, speciesId, growthStage });
+    // Trailing EntitySnapshot.outfit (u8).
+    let outfit = 0;
+    try { outfit = r.readU8(); } catch (_) { /* old server */ }
+
+    entityKinds.set(eid, { kind, speciesId, growthStage, outfit });
 
     // If we already created a mesh for this eid (a batch update that
     // arrived before the spawn, OR a re-spawn for a growth-stage change),
@@ -2695,6 +2770,135 @@ function handleActionResult(payload) {
     line.textContent = (success ? "[OK] " : "[FAIL] ") + message;
     chatLog.appendChild(line);
     chatLog.scrollTop = chatLog.scrollHeight;
+
+    // Engagement layer: turn a successful action into juicy feedback +
+    // objective progress.
+    if (success) onActionSuccess(message);
+}
+
+// ══ Engagement: objectives + juicy feedback ══════════════════════════
+// Built on three pillars of why games hold attention:
+//   • Flow (Csikszentmihalyi): clear goals + immediate feedback let the
+//     player enter focused, stress-dissolving absorption.
+//   • Goal-gradient effect: motivation rises as a goal nears, so we
+//     always keep the next reachable objective in view.
+//   • Game-feel "juice": small, satisfying reward pops make every
+//     action feel good (Jonasson & Purho, "Juice it or lose it").
+// Entirely client-side + additive: it observes existing action results
+// and player state, changing nothing on the server.
+
+const playerStats = {
+    planted: 0, harvested: 0, cut: 0, hunted: 0,
+    species: new Set(), coinsPeak: 0,
+};
+
+const OBJECTIVES = [
+    { id: "plant1",    icon: "🌱", text: "Plant your first seed",     goal: 1,   prog: s => s.planted },
+    { id: "harvest5",  icon: "🍎", text: "Harvest 5 crops",           goal: 5,   prog: s => s.harvested },
+    { id: "species4",  icon: "🌳", text: "Grow 4 different species",  goal: 4,   prog: s => s.species.size },
+    { id: "coins50",   icon: "🪙", text: "Earn 50 FoFo coins",        goal: 50,  prog: s => s.coinsPeak },
+    { id: "harvest25", icon: "🧺", text: "Harvest 25 crops",          goal: 25,  prog: s => s.harvested },
+    { id: "coins200",  icon: "💰", text: "Earn 200 FoFo coins",       goal: 200, prog: s => s.coinsPeak },
+    { id: "species8",  icon: "🌲", text: "Grow 8 different species",  goal: 8,   prog: s => s.species.size },
+];
+const _objDone = new Set();
+let _toastTimer = null;
+
+function renderObjectives() {
+    let el = document.getElementById("objectives");
+    if (!el) {
+        el = document.createElement("div");
+        el.id = "objectives";
+        el.innerHTML = "<div class='obj-title'>Objectives</div><div id='obj-list'></div>";
+        document.body.appendChild(el);
+    }
+    const list = document.getElementById("obj-list");
+    if (!list) return;
+    // Goal-gradient: only ever show the next 3 open objectives.
+    const open = OBJECTIVES.filter(o => !_objDone.has(o.id)).slice(0, 3);
+    if (open.length === 0) {
+        list.innerHTML = "<div class='obj-line' style='color:#9be36b;'>✓ Forest mastered — every objective complete!</div>";
+        return;
+    }
+    let html = "";
+    for (const o of open) {
+        const cur = Math.min(o.goal, Math.floor(o.prog(playerStats)));
+        const pct = Math.round((cur / o.goal) * 100);
+        const bar = o.goal > 1;
+        html +=
+            "<div class='obj-row'>" +
+              "<div class='obj-line'><span class='obj-check'>▢</span>" +
+              "<span>" + o.icon + "</span><span class='obj-text'>" + o.text + "</span>" +
+              (bar ? "<span style='margin-left:auto;color:#8a9a8c;font-size:11px;'>" + cur + "/" + o.goal + "</span>" : "") +
+              "</div>" +
+              (bar ? "<div class='obj-bar'><i style='width:" + pct + "%'></i></div>" : "") +
+            "</div>";
+    }
+    list.innerHTML = html;
+}
+
+function checkObjectives() {
+    for (const o of OBJECTIVES) {
+        if (_objDone.has(o.id)) continue;
+        if (Math.floor(o.prog(playerStats)) >= o.goal) {
+            _objDone.add(o.id);
+            showToast("Objective complete", o.icon + "  " + o.text);
+            spawnFloatText("✓ " + o.text, "#9be36b");
+        }
+    }
+    renderObjectives();
+}
+
+function showToast(kicker, main) {
+    let el = document.getElementById("toast");
+    if (!el) { el = document.createElement("div"); el.id = "toast"; document.body.appendChild(el); }
+    el.innerHTML = "<div class='toast-kicker'>" + kicker + "</div><div class='toast-main'>" + main + "</div>";
+    // reflow so re-adding .show re-triggers the transition
+    void el.offsetWidth;
+    el.classList.add("show");
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+function spawnFloatText(text, color) {
+    const el = document.createElement("div");
+    el.className = "float-text";
+    el.style.color = color || "#fff";
+    el.style.left = (47 + Math.random() * 6) + "%";
+    el.textContent = text;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 1200);
+}
+
+// Translate a successful action message into stats + a reward pop.
+function onActionSuccess(message) {
+    const m = message || "";
+    let mm;
+    if ((mm = m.match(/^Harvested\s+(.+?)\s+x(\d+)/i))) {
+        const n = parseInt(mm[2], 10) || 1;
+        playerStats.harvested += n;
+        spawnFloatText("+" + n + " 🍎 " + mm[1], "#ffe08a");
+    } else if ((mm = m.match(/^Planted\s+(.+?)\s+seed/i))) {
+        playerStats.planted += 1;
+        playerStats.species.add(mm[1].toLowerCase());
+        spawnFloatText("🌱 Planted " + mm[1], "#9be36b");
+    } else if (/Sold|coins/i.test(m)) {
+        mm = m.match(/(\d+)/);
+        spawnFloatText(mm ? ("+" + mm[1] + " 🪙") : "🪙 Sold", "#ffd966");
+    } else if (/^Cutting|Removed| cut/i.test(m)) {
+        playerStats.cut += 1;
+        spawnFloatText("🪓 " + m.split("(")[0].trim(), "#e0b48a");
+    } else if (/Hunted|hunt/i.test(m)) {
+        playerStats.hunted += 1;
+        spawnFloatText("🏹 " + m, "#e0a070");
+    } else if (/Ate/i.test(m)) {
+        spawnFloatText("🍽 " + m, "#a0e0a0");
+    } else if (/Watered/i.test(m)) {
+        spawnFloatText("💧 Watered", "#7fc8ff");
+    } else if (/Built|Deployed|Researched|breakthrough/i.test(m)) {
+        spawnFloatText("✦ " + m.split("—")[0].split("(")[0].trim(), "#cfe9aa");
+    }
+    checkObjectives();
 }
 
 function showInspectPanel(data) {
@@ -2790,12 +2994,15 @@ const ITEM_DB = {
     1501: { name: "Strawberries", color: "#cc2222" },
     1600: { name: "Grapes", color: "#5522aa" },
     2000: { name: "Game Meat", color: "#8a3a2a" },
+    3000: { name: "Animal Hide", color: "#7a5a3a" },
+    3001: { name: "Plant Fibre", color: "#9aa86a" },
 };
 
 let playerInventory = [];
 let playerStamina = 100;
 let playerHunger = 0;
 let playerCoins = 0;
+let myOutfit = 0;             // currently-worn outfit id (0/1/2)
 
 function handlePlayerState(payload) {
     const r = new BincodeReader(payload);
@@ -2818,6 +3025,11 @@ function handlePlayerState(payload) {
     }
     try {
         playerCoins = r.readU32();
+        // Track lifetime peak for coin-earning objectives.
+        if (playerCoins > playerStats.coinsPeak) {
+            playerStats.coinsPeak = playerCoins;
+            checkObjectives();
+        }
     } catch (e) {
         // Old server without the coins field — keep the previous balance.
     }
@@ -2843,6 +3055,10 @@ function handlePlayerState(payload) {
         innovatorBreakthroughs = r.readU32();
         innovatorFocusTopic  = r.readU8();
     } catch (_) { /* server doesn't speak innovator yet */ }
+    // Outfit is the final trailing field.
+    try {
+        myOutfit = r.readU8();
+    } catch (_) { /* server doesn't speak outfits yet */ }
 
     // Log notable monarch transitions for the dashboard.
     if (playerRoleLive === 1) {
@@ -2879,6 +3095,10 @@ function handlePlayerState(payload) {
     const dash = document.getElementById("monarch-dashboard");
     if (dash && dash.style.display === "flex") {
         renderMonarchDashboard();
+    }
+    const wardrobe = document.getElementById("wardrobe-modal");
+    if (wardrobe && wardrobe.style.display === "flex") {
+        renderWardrobe();
     }
     updatePlayerHUD();
 }
@@ -3325,6 +3545,103 @@ function openPropertyMenu() {
 
 function closePropertyMenu() {
     document.getElementById("property-menu").style.display = "none";
+}
+
+// ── Wardrobe / crafting ──────────────────────────────────────────────
+// Mirrors the server's recipe costs (ff-ecs player.rs). recipe is the
+// Craft action's u8: 0 Linen Tunic, 1 Fur Coat, 255 take off.
+const ITEM_HIDE = 3000, ITEM_FIBER = 3001;
+const CRAFT_RECIPES = [
+    {
+        recipe: 0, outfit: 1, name: "Linen Tunic", icon: "🥼",
+        item: ITEM_FIBER, cost: 5, matName: "Plant Fibre",
+        blurb: "Light & breathable. Woven from fibre gathered while harvesting plants.",
+        swatch: "#e8dcb6",
+    },
+    {
+        recipe: 1, outfit: 2, name: "Fur Coat", icon: "🧥",
+        item: ITEM_HIDE, cost: 4, matName: "Animal Hide",
+        blurb: "Warm & rugged. Stitched from hide dropped by the animals you hunt.",
+        swatch: "#6e4a2c",
+    },
+];
+
+function inventoryCount(itemId) {
+    let n = 0;
+    for (const it of playerInventory) if (it.itemId === itemId) n += it.count;
+    return n;
+}
+
+function openWardrobe() {
+    if (document.pointerLockElement) document.exitPointerLock();
+    renderWardrobe();
+    document.getElementById("wardrobe-modal").style.display = "flex";
+}
+
+function closeWardrobe() {
+    document.getElementById("wardrobe-modal").style.display = "none";
+}
+
+function renderWardrobe() {
+    const body = document.getElementById("wardrobe-body");
+    if (!body) return;
+
+    const wearingName = (OUTFIT_DEFS[myOutfit] || OUTFIT_DEFS[0]).name;
+    let html = "";
+
+    // Currently wearing + camera hint.
+    html += "<div style='display:flex; align-items:center; gap:10px; background:rgba(40,30,20,0.5); border:1px solid #4a3a2a; border-radius:8px; padding:10px 12px; margin-bottom:14px;'>";
+    html += "<span style='font-size:11px; color:#aa9;'>Currently wearing</span>";
+    html += "<span style='font-weight:bold; color:#f0d9a8; font-size:14px;'>" + wearingName + "</span>";
+    if (myOutfit !== 0) {
+        html += "<button data-craft='255' style='margin-left:auto; background:#3a2a22; color:#caa; border:1px solid #654; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:12px;'>Take off</button>";
+    }
+    html += "</div>";
+
+    // Recipe cards.
+    for (const rec of CRAFT_RECIPES) {
+        const have = inventoryCount(rec.item);
+        const canCraft = have >= rec.cost;
+        const wearing = myOutfit === rec.outfit;
+        html += "<div style='display:flex; align-items:center; gap:12px; padding:12px; background:rgba(20,16,28,0.6); border:1px solid " + (wearing ? "#caa46a" : "#3a3046") + "; border-radius:10px; margin-bottom:10px;'>";
+        // Swatch + icon.
+        html += "<div style='width:46px; height:46px; border-radius:8px; background:" + rec.swatch + "; display:flex; align-items:center; justify-content:center; font-size:24px; flex-shrink:0; box-shadow:inset 0 0 0 2px rgba(0,0,0,0.2);'>" + rec.icon + "</div>";
+        // Text block.
+        html += "<div style='flex:1;'>";
+        html += "<div style='color:#f0e0c0; font-weight:bold; font-size:14px;'>" + rec.name + (wearing ? " <span style=\"color:#9d8; font-size:11px;\">· worn</span>" : "") + "</div>";
+        html += "<div style='color:#998; font-size:11px; margin:3px 0;'>" + rec.blurb + "</div>";
+        const costColor = canCraft ? "#9d8" : "#c66";
+        html += "<div style='font-size:11px; color:" + costColor + ";'>Needs " + rec.cost + " " + rec.matName + " · you have " + have + "</div>";
+        html += "</div>";
+        // Action button.
+        if (wearing) {
+            html += "<button disabled style='background:#2a3a2a; color:#7a8; border:1px solid #3a5a3a; border-radius:6px; padding:8px 14px; font-size:12px; flex-shrink:0;'>Worn ✓</button>";
+        } else {
+            const dis = canCraft ? "" : "disabled";
+            const bg = canCraft ? "linear-gradient(180deg,#5a4a2a,#3a2f1a)" : "#2a2530";
+            const col = canCraft ? "#ffe0a0" : "#776";
+            const cur = canCraft ? "pointer" : "not-allowed";
+            html += "<button data-craft='" + rec.recipe + "' " + dis + " style='background:" + bg + "; color:" + col + "; border:1px solid #654; border-radius:6px; padding:8px 14px; font-size:12px; cursor:" + cur + "; flex-shrink:0;'>Craft &amp; wear</button>";
+        }
+        html += "</div>";
+    }
+
+    html += "<div style='color:#776; font-size:11px; margin-top:6px; line-height:1.5;'>Gather <b style='color:#9aa86a;'>Plant Fibre</b> by harvesting plants and <b style='color:#b98a5a;'>Animal Hide</b> by hunting. Press <b style='color:#ccc;'>V</b> to switch to third-person and see your outfit.</div>";
+
+    body.innerHTML = html;
+
+    body.querySelectorAll("button[data-craft]").forEach((btn) => {
+        btn.addEventListener("click", () => sendCraft(parseInt(btn.dataset.craft, 10)));
+    });
+}
+
+function sendCraft(recipe) {
+    if (!connected) return;
+    ws.send(buildActionMessage(encodeCraftAction(recipe)));
+    // Optimistic: switch to third-person so the player immediately sees
+    // the garment they just made (the server rebroadcast re-skins the
+    // avatar a moment later). Only auto-switch when putting clothes ON.
+    if (recipe !== 255 && !fp.thirdPerson) setCameraMode(true);
 }
 
 function renderPropertyMenu() {
@@ -4381,6 +4698,76 @@ const NON_PLANT_CATEGORIES = new Set([
 ]);
 function isPlantLike(cat) { return !NON_PLANT_CATEGORIES.has(cat); }
 
+// ── Outfits / wardrobe ───────────────────────────────────────────────
+// Crafted garments change the avatar's appearance. Each def recolours
+// the "shirt" + "pants" cloth meshes and optionally adds a decorative
+// "outfit-extra" overlay (a tunic hem, a fur collar) so the garment
+// reads clearly from third-person distance. Ids match the server's
+// Outfit component: 0 default, 1 Linen Tunic, 2 Fur Coat.
+const OUTFIT_DEFS = {
+    0: { name: "Everyday Clothes", shirt: 0x5588bb, pants: 0x445566, extra: null },
+    1: { name: "Linen Tunic",      shirt: 0xe8dcb6, pants: 0xb9a884, extra: "tunic" },
+    2: { name: "Fur Coat",         shirt: 0x6e4a2c, pants: 0x4a3422, extra: "fur" },
+};
+
+function buildOutfitExtra(kind) {
+    const grp = new THREE.Group();
+    grp.name = "outfit-extra";
+    if (kind === "tunic") {
+        // A linen hem skirt flaring from the hips to mid-thigh.
+        const mat = new THREE.MeshStandardMaterial({ color: 0xddcca0, roughness: 0.85 });
+        const hem = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.34, 0.42, 10, 1, true), mat);
+        hem.position.y = 0.74; hem.castShadow = true; grp.add(hem);
+        // A simple rope belt.
+        const belt = new THREE.Mesh(
+            new THREE.TorusGeometry(0.235, 0.022, 6, 14),
+            new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.9 }),
+        );
+        belt.position.y = 0.96; belt.rotation.x = Math.PI / 2; grp.add(belt);
+    } else if (kind === "fur") {
+        // A thick fur collar + shoulder mantle for a heavy winter coat.
+        const fur = new THREE.MeshStandardMaterial({ color: 0x7a5638, roughness: 1.0 });
+        const collar = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.075, 7, 16), fur);
+        collar.position.y = 1.3; collar.rotation.x = Math.PI / 2; collar.castShadow = true; grp.add(collar);
+        const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.3, 0.5, 12), fur);
+        mantle.position.y = 1.05; mantle.castShadow = true; grp.add(mantle);
+        // A few fur tufts on the shoulders for silhouette.
+        for (const side of [-1, 1]) {
+            const tuft = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 5), fur);
+            tuft.position.set(side * 0.26, 1.22, 0); tuft.scale.set(1, 0.7, 1); grp.add(tuft);
+        }
+    }
+    return grp;
+}
+
+// Apply (or refresh) a player avatar's outfit. Idempotent: recolours
+// per-instance cloned cloth materials and rebuilds the overlay only if
+// the outfit id actually changed, so repeated calls every batch update
+// are cheap.
+function applyOutfit(obj, outfitId) {
+    if (!obj) return;
+    const def = OUTFIT_DEFS[outfitId] || OUTFIT_DEFS[0];
+    if (obj.userData.outfitApplied === outfitId) return;
+    obj.userData.outfitApplied = outfitId;
+
+    obj.traverse((m) => {
+        if (!m.isMesh || !m.userData || !m.userData.cloth) return;
+        // Clone the (shared) template material once so recolouring this
+        // avatar doesn't tint every other player.
+        if (!m.userData._ownMat) {
+            m.material = m.material.clone();
+            m.userData._ownMat = true;
+        }
+        const hex = m.userData.cloth === "pants" ? def.pants : def.shirt;
+        m.material.color.setHex(hex);
+    });
+
+    // Swap the decorative overlay.
+    const old = obj.getObjectByName ? obj.getObjectByName("outfit-extra") : null;
+    if (old) { old.parent.remove(old); old.traverse((c) => { if (c.geometry) c.geometry.dispose(); }); }
+    if (def.extra) obj.add(buildOutfitExtra(def.extra));
+}
+
 function createEntityMesh(category) {
     if (isPlantLike(category)) {
         // Variant pool: each buildEntityMeshTemplate() call re-runs the
@@ -4498,11 +4885,19 @@ function createOrUpdateEntity(eid, x, y, z, rot, category) {
         }
     }
 
-    // Track own player for camera + hide the own-avatar mesh in
-    // first-person. Other clients still see the full body (their copy
-    // is a separate cloned template); only this client hides it.
+    // Dress player avatars in their crafted outfit (server sends the
+    // outfit id in every EntitySnapshot, stored on the entityKinds rec).
+    if (info && info.kind === "player") {
+        applyOutfit(obj, info.outfit || 0);
+    }
+
+    // Track own player for camera. In first-person the own avatar is
+    // hidden (you see the viewmodel hand instead); in third-person it
+    // becomes visible so you watch your whole body — important for
+    // multiplayer presence and the hunt. Other clients always see the
+    // full body (their copy is a separate cloned template).
     if (eid === myEntityId) {
-        obj.visible = false;
+        obj.visible = !!fp.thirdPerson;
     }
 }
 
@@ -4741,7 +5136,27 @@ document.addEventListener("keydown", (e) => {
         }
         e.preventDefault();
     }
+    // Toggle first/third-person camera. V (common) or F5 (Minecraft-style).
+    const typing = document.activeElement &&
+        (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA");
+    if (!typing && (e.code === "KeyV" || e.code === "F5")) {
+        setCameraMode(!fp.thirdPerson);
+        e.preventDefault();
+    }
 });
+
+// Switch camera mode and immediately reconcile avatar / viewmodel
+// visibility so there's no one-frame flash. updateFirstPerson() then
+// keeps them in sync every frame.
+function setCameraMode(thirdPerson) {
+    fp.thirdPerson = !!thirdPerson;
+    const playerObj = myEntityId && entityMeshes.get(myEntityId);
+    if (playerObj) playerObj.visible = fp.thirdPerson;
+    if (fp.viewmodel) fp.viewmodel.visible = !fp.thirdPerson;
+    if (typeof showToast === "function") {
+        showToast("🎥 Camera", fp.thirdPerson ? "Third-person — see your whole body" : "First-person view");
+    }
+}
 
 document.addEventListener("keyup", (e) => keys.delete(e.code));
 
