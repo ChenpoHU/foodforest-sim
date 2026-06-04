@@ -146,3 +146,126 @@ export function getCountryForRegion(regionIndex) {
     return "Portugal";
 }
 
+// ── Geography + difficulty model ─────────────────────────────────────
+// True centroid latitude/longitude for each playable territory (used to
+// place its pin on the 3D globe) plus an overall food-forest difficulty
+// (1 = easy / green … 5 = brutal / red) and the dominant hazards.
+//
+// Difficulty reflects real permaculture challenge: summer drought, fire
+// regime, flammable eucalyptus monocultures, extreme heat, frost, etc.
+export const COUNTRY_GEO = {
+    "Portugal":     { lat: 39.6, lon:  -8.0, stars: 4, hazards: ["eucalyptus", "fire", "drought"] },
+    "France":       { lat: 46.6, lon:   2.4, stars: 2, hazards: ["temperate"] },
+    "Spain":        { lat: 40.2, lon:  -3.7, stars: 4, hazards: ["drought", "heat", "fire"] },
+    "Italy":        { lat: 42.6, lon:  12.6, stars: 3, hazards: ["fire", "drought"] },
+    "Iran":         { lat: 32.4, lon:  53.7, stars: 4, hazards: ["drought", "heat", "salinity"] },
+    "California":   { lat: 37.2, lon:-120.0, stars: 4, hazards: ["drought", "fire", "eucalyptus"] },
+    "South Africa": { lat:-33.6, lon:  21.6, stars: 4, hazards: ["fire", "drought", "eucalyptus"] },
+    "Yunnan":       { lat: 25.0, lon: 101.6, stars: 2, hazards: ["fertile", "erosion"] },
+    "Japan":        { lat: 37.5, lon: 138.0, stars: 2, hazards: ["fertile", "typhoon"] },
+};
+
+// Per-region detail: true-ish lat/lon, star difficulty, and hazards.
+// Keyed by region name (unique across the dataset).
+export const REGION_INFO = {
+    // Portugal
+    "Minho":            { lat: 41.7, lon: -8.4, stars: 2, hazards: ["wet", "fertile"] },
+    "Tras-os-Montes":   { lat: 41.5, lon: -7.0, stars: 3, hazards: ["frost", "drought"] },
+    "Beira":            { lat: 40.3, lon: -7.6, stars: 3, hazards: ["fire", "eucalyptus"] },
+    "Ribatejo":         { lat: 39.2, lon: -8.5, stars: 2, hazards: ["fertile", "flood"] },
+    "Alentejo":         { lat: 38.1, lon: -7.9, stars: 5, hazards: ["eucalyptus", "fire", "drought", "heat"] },
+    "Algarve":          { lat: 37.1, lon: -8.0, stars: 4, hazards: ["drought", "fire"] },
+    "Lisboa":           { lat: 38.8, lon: -9.1, stars: 2, hazards: ["coastal", "fertile"] },
+    // France
+    "Provence":         { lat: 43.9, lon:  6.0, stars: 4, hazards: ["fire", "drought", "mistral"] },
+    "Dordogne":         { lat: 45.0, lon:  0.7, stars: 2, hazards: ["fertile"] },
+    "Loire Valley":     { lat: 47.3, lon:  0.7, stars: 1, hazards: ["fertile", "temperate"] },
+    "Normandy":         { lat: 49.2, lon: -0.4, stars: 1, hazards: ["wet", "temperate"] },
+    // Spain
+    "Andalusia":        { lat: 37.4, lon: -4.8, stars: 5, hazards: ["drought", "heat", "desertification"] },
+    "Catalonia":        { lat: 41.8, lon:  1.7, stars: 3, hazards: ["fire", "drought"] },
+    "Galicia":          { lat: 42.8, lon: -8.0, stars: 3, hazards: ["eucalyptus", "fire", "wet"] },
+    "Basque Country":   { lat: 43.1, lon: -2.7, stars: 2, hazards: ["wet", "fertile"] },
+    // Italy
+    "Tuscany":          { lat: 43.4, lon: 11.2, stars: 2, hazards: ["fertile", "temperate"] },
+    "Sicily":           { lat: 37.5, lon: 14.2, stars: 5, hazards: ["heat", "drought", "fire"] },
+    "Amalfi Coast":     { lat: 40.6, lon: 14.6, stars: 3, hazards: ["steep", "drought"] },
+    "Piedmont":         { lat: 45.0, lon:  7.9, stars: 2, hazards: ["fertile", "frost"] },
+    // Iran
+    "Isfahan":          { lat: 32.7, lon: 51.7, stars: 4, hazards: ["drought", "heat"] },
+    "Shiraz":           { lat: 29.6, lon: 52.5, stars: 4, hazards: ["drought", "heat"] },
+    "Gilan":            { lat: 37.3, lon: 49.8, stars: 2, hazards: ["humid", "fertile"] },
+    "Alborz":           { lat: 36.0, lon: 51.0, stars: 3, hazards: ["frost", "steep"] },
+    // California
+    "Central Valley":   { lat: 36.7, lon:-119.8, stars: 5, hazards: ["drought", "heat", "fire"] },
+    "Napa Valley":      { lat: 38.5, lon:-122.3, stars: 3, hazards: ["fire", "eucalyptus"] },
+    "Coastal Range":    { lat: 36.5, lon:-121.5, stars: 2, hazards: ["fog", "fertile"] },
+    "Sierra Nevada":    { lat: 38.0, lon:-119.5, stars: 4, hazards: ["fire", "frost", "steep"] },
+    // South Africa
+    "Cape Winelands":   { lat:-33.7, lon: 19.0, stars: 3, hazards: ["fire", "drought"] },
+    "Fynbos Coast":     { lat:-34.2, lon: 20.5, stars: 4, hazards: ["fire", "eucalyptus", "wind"] },
+    "Karoo":            { lat:-32.5, lon: 22.5, stars: 5, hazards: ["drought", "heat", "desertification"] },
+    "Garden Route":     { lat:-33.9, lon: 22.8, stars: 2, hazards: ["fertile", "wet"] },
+    // Yunnan
+    "Kunming Plateau":  { lat: 25.0, lon:102.7, stars: 1, hazards: ["fertile", "temperate"] },
+    "Xishuangbanna":    { lat: 22.0, lon:100.8, stars: 2, hazards: ["fertile", "deforestation"] },
+    "Dali":             { lat: 25.6, lon:100.2, stars: 2, hazards: ["fertile", "lake"] },
+    "Tiger Leaping Gorge": { lat: 27.2, lon:100.1, stars: 3, hazards: ["steep", "erosion"] },
+    // Japan
+    "Hokkaido":         { lat: 43.2, lon:142.8, stars: 2, hazards: ["frost", "fertile"] },
+    "Kanto":            { lat: 36.0, lon:139.8, stars: 2, hazards: ["fertile", "typhoon"] },
+    "Kansai":           { lat: 34.7, lon:135.5, stars: 1, hazards: ["fertile", "temperate"] },
+    "Kyushu":           { lat: 32.8, lon:131.0, stars: 3, hazards: ["typhoon", "volcanic"] },
+};
+
+// Hazard vocabulary → emoji + short label, for the difficulty chips.
+// "Easy/positive" traits (fertile, temperate, wet…) read green; the rest
+// read as challenges.
+export const HAZARD_META = {
+    eucalyptus:      { icon: "🌲", label: "Eucalyptus", bad: true },
+    fire:            { icon: "🔥", label: "Wildfire",    bad: true },
+    drought:         { icon: "🌵", label: "Drought",     bad: true },
+    heat:            { icon: "☀️", label: "Extreme heat", bad: true },
+    frost:           { icon: "❄️", label: "Frost",        bad: true },
+    salinity:        { icon: "🧂", label: "Salinity",     bad: true },
+    desertification: { icon: "🏜️", label: "Desertification", bad: true },
+    typhoon:         { icon: "🌀", label: "Typhoons",     bad: true },
+    volcanic:        { icon: "🌋", label: "Volcanic",     bad: true },
+    flood:           { icon: "🌊", label: "Flooding",     bad: true },
+    erosion:         { icon: "⛰️", label: "Erosion",      bad: true },
+    deforestation:   { icon: "🪓", label: "Deforestation", bad: true },
+    steep:           { icon: "📐", label: "Steep terrain", bad: true },
+    mistral:         { icon: "🌬️", label: "Mistral wind", bad: true },
+    wind:            { icon: "🌬️", label: "Strong wind",  bad: true },
+    wet:             { icon: "🌧️", label: "Reliable rain", bad: false },
+    humid:           { icon: "💧", label: "Humid",        bad: false },
+    fog:             { icon: "🌫️", label: "Coastal fog",  bad: false },
+    fertile:         { icon: "🌱", label: "Fertile soil", bad: false },
+    temperate:       { icon: "🌤️", label: "Mild climate", bad: false },
+    coastal:         { icon: "⚓", label: "Coastal",      bad: false },
+    lake:            { icon: "🛶", label: "Lakeside",     bad: false },
+};
+
+// Difficulty (1–5 stars) → a green→amber→red ramp used for pins, rings,
+// region cards, and the legend. Returns { hex, name }.
+export function difficultyColor(stars) {
+    switch (Math.max(1, Math.min(5, stars | 0))) {
+        case 1: return { hex: "#4caf50", name: "Easy" };       // green
+        case 2: return { hex: "#9ccc4a", name: "Gentle" };     // yellow-green
+        case 3: return { hex: "#ffc83d", name: "Moderate" };   // amber
+        case 4: return { hex: "#ff8a3d", name: "Hard" };       // orange
+        default: return { hex: "#f4453d", name: "Brutal" };    // red
+    }
+}
+
+// Convenience: region info by global region index.
+export function regionInfoByIndex(regionIndex) {
+    for (const c of WORLD_COUNTRIES) {
+        if (regionIndex >= c.start && regionIndex < c.start + c.count) {
+            const name = c.regions[regionIndex - c.start];
+            return { name, country: c.name, ...(REGION_INFO[name] || { stars: 3, hazards: [] }) };
+        }
+    }
+    return null;
+}
+

@@ -4,6 +4,7 @@
 //! loop at 20 Hz, and broadcasts entity updates to connected players.
 
 mod auth;
+mod behaviour_log;
 mod net;
 mod persistence;
 mod session;
@@ -19,6 +20,10 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .init();
+
+    // Optional anonymised behaviour log (house-AI training data); enabled
+    // only when BEHAVIOUR_LOG names a file. See md/08-agent-api.md.
+    behaviour_log::init();
 
     let addr: SocketAddr = std::env::var("LISTEN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:9000".into())

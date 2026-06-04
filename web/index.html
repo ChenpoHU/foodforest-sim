@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <title>Food Forest Simulation</title>
-    <link rel="stylesheet" href="./styles.css?v=cloth1" />
+    <link rel="stylesheet" href="./styles.css?v=globe2" />
     <script type="importmap">
     {
         "imports": {
@@ -18,14 +18,18 @@
     <div id="connect-screen">
         <h1>Food Forest</h1>
         <p>Global ecosystem simulation</p>
-        <div style="display:flex; gap:12px; align-items:center; margin-bottom:4px;">
-            <input id="player-name" type="text" placeholder="Your name" value="Farmer" />
-            <input id="server-url" type="text" placeholder="Server URL" value="ws://localhost:9000" />
+        <!-- Who are you — one friendly, prominent field. -->
+        <div id="identity-field">
+            <span id="identity-emoji">🧑‍🌾</span>
+            <input id="player-name" type="text" placeholder="Your name" value="Farmer" maxlength="22" spellcheck="false" autocomplete="off" />
         </div>
+
+        <!-- How do you want to play? -->
+        <div class="choice-label">How do you want to play?</div>
         <div class="seg-row">
-            <button class="mode-btn active" data-mode="0">Peaceful</button>
-            <button class="mode-btn" data-mode="1">Realistic</button>
-            <button class="mode-btn" data-mode="2">Survival</button>
+            <button class="mode-btn active" data-mode="0"><span class="seg-ic">🌿</span>Peaceful</button>
+            <button class="mode-btn" data-mode="1"><span class="seg-ic">🪓</span>Realistic</button>
+            <button class="mode-btn" data-mode="2"><span class="seg-ic">🔥</span>Survival</button>
         </div>
         <p id="mode-desc" class="choice-desc">No casualties. Trees disappear when cut. Relaxed pace for all ages.</p>
 
@@ -40,18 +44,45 @@
             <p id="role-desc" class="choice-desc dim">Plant, harvest, and trade your own food forest.</p>
         </div>
 
-        <canvas id="world-canvas" width="700" height="320"></canvas>
-
-        <div id="country-bar"></div>
-        <div id="region-list"></div>
-
-        <div id="plot-selector">
-            <label for="plot-seed-input">Plot parcel (5 ha):</label>
-            <input id="plot-seed-input" type="number" value="42" min="1" max="9999" />
-            <span style="color:#666; font-size:11px;">Each number generates a unique parcel</span>
+        <!-- 3D Earth selector: spin the globe, click a territory pin, then
+             pick a region. Pins + cards are colour-graded by food-forest
+             difficulty (green = easy … red = brutal). -->
+        <div id="world-select">
+            <div id="globe-block">
+                <div id="globe-stage"></div>
+                <div id="globe-hint">🌍 Drag to spin the Earth · click a pin to choose where to grow</div>
+            </div>
+            <div id="region-panel">
+                <div id="region-panel-head">
+                    <div>
+                        <div id="region-panel-country">Choose a territory</div>
+                        <div id="region-panel-sub">Click a glowing pin on the globe</div>
+                    </div>
+                    <div id="region-panel-diff"></div>
+                </div>
+                <div id="region-cards"></div>
+                <div id="difficulty-legend">
+                    <span class="leg-title">Difficulty</span>
+                    <span class="leg-item"><i style="background:#4caf50"></i>Easy</span>
+                    <span class="leg-item"><i style="background:#9ccc4a"></i></span>
+                    <span class="leg-item"><i style="background:#ffc83d"></i>Moderate</span>
+                    <span class="leg-item"><i style="background:#ff8a3d"></i></span>
+                    <span class="leg-item"><i style="background:#f4453d"></i>Brutal</span>
+                </div>
+            </div>
         </div>
 
-        <button id="connect-btn" style="margin-top:8px;">Enter World</button>
+        <button id="connect-btn">🌱 Enter World</button>
+
+        <!-- Advanced: the server endpoint is a dev/power-user detail, tucked
+             out of the main flow so players never see it. -->
+        <details id="advanced">
+            <summary>⚙ Advanced</summary>
+            <div id="advanced-body">
+                <label for="server-url">Server</label>
+                <input id="server-url" type="text" value="ws://localhost:9000" spellcheck="false" autocomplete="off" />
+            </div>
+        </details>
     </div>
 
     <!-- HUD -->
@@ -288,6 +319,6 @@
         <input id="chat-input" type="text" placeholder="Press Enter to chat..." />
     </div>
 
-    <script type="module" src="./main.js?v=cloth1"></script>
+    <script type="module" src="./main.js?v=globe2"></script>
 </body>
 </html>

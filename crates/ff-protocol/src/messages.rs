@@ -83,6 +83,16 @@ pub struct ClientHello {
     /// and charges `TRAVEL_COST` from the restored wallet. False on
     /// a fresh login from the connect screen.
     pub traveling: bool,
+    /// True when this connection is driven by an AI agent rather than a
+    /// human. AI players are first-class: they pick a role like anyone
+    /// else, but are tagged (🤖) and may later be scored on their own
+    /// ladder. The game's *own* lean online-learning agents set this when
+    /// they spawn; external agents set it when they register.
+    pub is_ai: bool,
+    /// Short label for an AI controller — the learning-agent build/version
+    /// (e.g. "sylva-rl-v1"). Empty for humans. Deliberately not a
+    /// market-LLM name: this game runs its own native learning AI.
+    pub agent_label: String,
 }
 
 /// Sent every tick (50ms) with the player's movement input.

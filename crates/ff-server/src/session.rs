@@ -23,6 +23,12 @@ pub struct PlayerSession {
     /// activity ("plant olive", "harvest", "moving", "idle"). Surfaces in
     /// the Tech-Monarch surveillance feed.
     pub last_action: String,
+    /// True when an AI agent (the game's own learning AI, or a registered
+    /// external agent) drives this connection rather than a human.
+    pub is_ai: bool,
+    /// Controller label for an AI session (learning-agent build/version);
+    /// empty for humans.
+    pub agent_label: String,
 }
 
 impl PlayerSession {
@@ -41,6 +47,8 @@ impl PlayerSession {
             sender,
             last_acked_seq: 0,
             last_action: "joined".into(),
+            is_ai: false,
+            agent_label: String::new(),
         }
     }
 

@@ -9,10 +9,14 @@ import {
     BincodeReader, encodeVarint, encodeZigzagVarint, encodeF32,
     encodeBincodeString, buildFramedMessage,
 } from "./net/codec.js";
-// Static world data (countries, regions, per-country plantable species).
+// Static world data (countries, regions, per-country plantable species,
+// geography + food-forest difficulty model).
 import {
     WORLD_COUNTRIES, COUNTRY_PLANTS, getCountryForRegion,
+    COUNTRY_GEO, REGION_INFO, HAZARD_META, difficultyColor,
 } from "./data/world.js";
+// 3D Earth start-screen selector.
+import { createGlobe } from "./globe.js";
 // Per-species animal movement "habits".
 import { ANIMAL_GAITS } from "./data/gaits.js";
 // ActionKind → wire-bytes encoders.
@@ -82,8 +86,10 @@ document.getElementById("connect-btn").addEventListener("click", () => {
     try {
         playerName = document.getElementById("player-name").value || "Farmer";
         const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
-        selectedPlotSeed = parseInt(document.getElementById("plot-seed-input").value) || 42;
         document.getElementById("connect-screen").style.display = "none";
+        // Free the start-screen globe's GPU resources — the in-game
+        // renderer is about to spin up.
+        if (_globe) { _globe.dispose(); _globe = null; }
         // Optimistically reflect the role the user picked so the toolbar
         // renders correctly on first paint, before the server has had a
         // chance to confirm or downgrade (Tech Monarch outside Realistic
@@ -190,6 +196,9 @@ function applyRoleVisuals() {
     });
     const desc = document.getElementById("role-desc");
     if (desc) desc.textContent = roleDescriptions[selectedRole];
+    // Mirror the role in the name field's avatar for a cohesive identity.
+    const idEmoji = document.getElementById("identity-emoji");
+    if (idEmoji) idEmoji.textContent = ["🧑‍🌾", "🤖", "🔬"][selectedRole] || "🧑‍🌾";
 }
 
 document.querySelectorAll(".mode-btn").forEach(btn => {
@@ -287,100 +296,128 @@ function buildWorldMapBase(w, h) {
     return off;
 }
 
-function drawWorldMap() {
-    const canvas = document.getElementById("world-canvas");
-    const ctx = canvas.getContext("2d");
-    const w = canvas.width, h = canvas.height;
+// ── 3D Earth selector (start screen) ─────────────────────────────────
+// The connect screen shows a real, textured, geographically-correct globe
+// (./globe.js, Natural Earth borders + NASA day texture). Clicking a
+// territory pin flies the globe to it and reveals its regions as cards,
+// each graded green→red by food-forest difficulty. selectedRegion +
+// selectedCountryIdx stay the shared selection state used elsewhere.
+let _globe = null;
 
-    // Lazily build the static base layer the first time, then blit.
-    if (!_worldMapBase) _worldMapBase = buildWorldMapBase(w, h);
-    ctx.drawImage(_worldMapBase, 0, 0);
-
-    // Draw country markers (only this loop runs on each redraw).
-    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
-        const c = WORLD_COUNTRIES[i];
-        const isSelected = (i === selectedCountryIdx);
-        ctx.fillStyle = isSelected ? "#fff" : c.color;
-        ctx.beginPath();
-        ctx.arc(c.cx, c.cy, isSelected ? 8 : 5, 0, Math.PI * 2);
-        ctx.fill();
-        if (isSelected) {
-            ctx.strokeStyle = c.color;
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        }
-        ctx.fillStyle = isSelected ? "#fff" : "#aaa";
-        ctx.font = isSelected ? "bold 11px system-ui" : "10px system-ui";
-        ctx.textAlign = "center";
-        ctx.fillText(c.name, c.cx, c.cy - 10);
-    }
+function starString(n) {
+    n = Math.max(1, Math.min(5, n | 0));
+    let s = "";
+    for (let i = 1; i <= 5; i++) s += (i <= n ? "<span class='on'>★</span>" : "<span class='off'>★</span>");
+    return s;
 }
 
-function selectCountry(idx) {
+function hazardChipsHtml(hazards) {
+    if (!hazards || !hazards.length) return "";
+    return hazards.slice(0, 4).map((h) => {
+        const m = HAZARD_META[h];
+        return m ? `<span title="${m.label}">${m.icon}</span>` : "";
+    }).join("");
+}
+
+// Fill the side panel for a country and auto-select its first region.
+function renderCountryPanel(idx) {
     selectedCountryIdx = idx;
-    const country = WORLD_COUNTRIES[idx];
-    selectedRegion = country.start;
+    const c = WORLD_COUNTRIES[idx];
+    const geo = COUNTRY_GEO[c.name];
 
-    // Update country buttons
-    document.querySelectorAll(".country-btn").forEach((b, i) => {
-        b.classList.toggle("active", i === idx);
-    });
+    document.getElementById("region-panel-country").textContent = c.name;
+    document.getElementById("region-panel-sub").textContent =
+        c.count + " region" + (c.count > 1 ? "s" : "") + " — pick where to grow";
 
-    // Rebuild region buttons
-    const regionList = document.getElementById("region-list");
-    regionList.innerHTML = "";
-    for (let r = 0; r < country.count; r++) {
+    const diffEl = document.getElementById("region-panel-diff");
+    if (geo) {
+        const dc = difficultyColor(geo.stars);
+        diffEl.style.display = "inline-block";
+        diffEl.style.background = dc.hex;
+        diffEl.textContent = dc.name;
+    } else {
+        diffEl.style.display = "none";
+    }
+
+    const cards = document.getElementById("region-cards");
+    cards.innerHTML = "";
+    for (let r = 0; r < c.count; r++) {
+        const name = c.regions[r];
+        const gIdx = c.start + r;
+        const info = REGION_INFO[name] || { stars: 3, hazards: [] };
+        const dc = difficultyColor(info.stars);
         const btn = document.createElement("button");
-        btn.className = "region-btn" + (r === 0 ? " active" : "");
-        btn.textContent = country.regions[r];
-        btn.dataset.region = country.start + r;
-        btn.addEventListener("click", () => {
-            selectedRegion = country.start + r;
-            document.querySelectorAll(".region-btn").forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
+        btn.className = "region-card";
+        btn.dataset.region = String(gIdx);
+        btn.style.borderLeftColor = dc.hex;
+        btn.innerHTML =
+            "<span class='rc-body'>" +
+              "<span class='rc-name'>" + name + "</span>" +
+              "<span class='rc-stars'>" + starString(info.stars) + "</span>" +
+            "</span>" +
+            "<span class='rc-haz'>" + hazardChipsHtml(info.hazards) + "</span>" +
+            "<span class='rc-diff' style='background:" + dc.hex + "'>" + dc.name + "</span>";
+        btn.addEventListener("click", () => selectRegionCard(gIdx, true));
+        cards.appendChild(btn);
+    }
+
+    selectRegionCard(c.start, false);   // default to the first region
+}
+
+function selectRegionCard(gIdx, fromUser) {
+    selectedRegion = gIdx;
+    document.querySelectorAll(".region-card").forEach((b) => {
+        b.classList.toggle("active", parseInt(b.dataset.region, 10) === gIdx);
+    });
+    if (fromUser && _globe) _globe.setSelectedRegion(gIdx);
+}
+
+// Build the globe (the connect screen is in the DOM by the time this
+// module runs — the <script> tag is at the end of <body>).
+function initGlobe() {
+    const stage = document.getElementById("globe-stage");
+    if (!stage || _globe) return;
+    try {
+        _globe = createGlobe(stage, {
+            onSelectCountry: (idx) => renderCountryPanel(idx),
+            onSelectRegion: (gIdx) => {
+                const cIdx = WORLD_COUNTRIES.findIndex(
+                    (c) => gIdx >= c.start && gIdx < c.start + c.count);
+                if (cIdx >= 0 && cIdx !== selectedCountryIdx) renderCountryPanel(cIdx);
+                selectRegionCard(gIdx, false);
+            },
         });
-        regionList.appendChild(btn);
+    } catch (err) {
+        // A WebGL failure must never blank the connect screen. Fall back to
+        // a simple territory list so the player can still choose + Enter.
+        console.error("Globe init failed, falling back to list:", err);
+        _globe = null;
+        stage.style.display = "none";
+        document.getElementById("globe-hint").textContent =
+            "3D globe unavailable — pick a territory below.";
+        const cards = document.getElementById("region-cards");
+        if (cards && !cards.dataset.fallback) {
+            cards.dataset.fallback = "1";
+            renderCountryPanel(0);
+        }
+        // Let the (now list-only) flow still drive country switching.
+        const panel = document.getElementById("region-panel");
+        if (panel && !panel.dataset.fallbackBar) {
+            panel.dataset.fallbackBar = "1";
+            const bar = document.createElement("div");
+            bar.style.cssText = "display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;";
+            WORLD_COUNTRIES.forEach((c, i) => {
+                const b = document.createElement("button");
+                b.textContent = c.name;
+                b.style.cssText = "background:rgba(255,255,255,0.05); color:#cfe; border:1px solid rgba(120,200,130,0.25); border-radius:8px; padding:5px 9px; font-size:11px; cursor:pointer;";
+                b.addEventListener("click", () => renderCountryPanel(i));
+                bar.appendChild(b);
+            });
+            panel.insertBefore(bar, document.getElementById("region-cards"));
+        }
     }
-
-    document.getElementById("plot-selector").style.display = "flex";
-    drawWorldMap();
 }
-
-// Build country buttons
-{
-    const bar = document.getElementById("country-bar");
-    WORLD_COUNTRIES.forEach((c, i) => {
-        const btn = document.createElement("button");
-        btn.className = "country-btn" + (i === 0 ? " active" : "");
-        btn.textContent = c.name;
-        btn.addEventListener("click", () => selectCountry(i));
-        bar.appendChild(btn);
-    });
-}
-
-// World canvas click
-document.getElementById("world-canvas").addEventListener("click", (e) => {
-    const canvas = document.getElementById("world-canvas");
-    const rect = canvas.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const my = (e.clientY - rect.top) * (canvas.height / rect.height);
-    let bestDist = 40;
-    let bestIdx = -1;
-    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
-        const c = WORLD_COUNTRIES[i];
-        const dist = Math.sqrt((mx - c.cx) ** 2 + (my - c.cy) ** 2);
-        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
-    }
-    if (bestIdx >= 0) selectCountry(bestIdx);
-});
-
-document.getElementById("plot-seed-input").addEventListener("change", (e) => {
-    selectedPlotSeed = parseInt(e.target.value) || 42;
-});
-
-// Initialize
-selectCountry(0);
-drawWorldMap();
+initGlobe();
 
 // Country-specific plantable species
 // COUNTRY_PLANTS → ./data/world.js
@@ -1779,7 +1816,7 @@ function initRenderer() {
 // `traveling` is the trailing bool: true when this hello is a
 // Travel-to-Region reconnect from a player already in the world
 // (server then restores persistent state minus TRAVEL_COST coins).
-function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole, traveling) {
+function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole, traveling, isAi = false, agentLabel = "") {
     const payload = new Uint8Array([
         ...encodeBincodeString(name),
         ...encodeBincodeString("dev-token"),
@@ -1789,6 +1826,11 @@ function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole, tr
         ...encodeVarint(plotSeed),
         playerRole & 0xff,
         traveling ? 1 : 0,
+        // Controller: is_ai (bool) + agent_label (String). Humans send
+        // false / "". The game's native learning agents set these when
+        // they connect; see md/07-master-design.md §4.
+        isAi ? 1 : 0,
+        ...encodeBincodeString(agentLabel),
     ]);
     return buildFramedMessage(0x0001, payload);
 }
@@ -4555,9 +4597,9 @@ function drawNavMap() {
     const ctx = canvas.getContext("2d");
     const w = canvas.width, h = canvas.height;
 
-    // Share the same offscreen base canvas as the connect-screen map
-    // (built lazily by drawWorldMap if the connect screen hasn't been
-    // shown yet — e.g. a deep-link straight into Travel to Region).
+    // The in-game "Travel to Region" overlay keeps the lightweight 2D
+    // map; the connect screen uses the 3D globe instead. Build the
+    // offscreen base lazily the first time the overlay opens.
     if (!_worldMapBase) _worldMapBase = buildWorldMapBase(w, h);
     ctx.drawImage(_worldMapBase, 0, 0);
 

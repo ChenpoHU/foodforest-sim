@@ -25,6 +25,11 @@ use tracing::{error, info, warn};
 /// got routed to the wrong WS.
 static NEXT_PLAYER_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Allocate the next unique player id. Shared with the JSON agent path.
+pub(crate) fn next_player_id() -> PlayerId {
+    PlayerId(NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed))
+}
+
 /// Run the WebSocket server and tick loop.
 pub async fn run_server(addr: SocketAddr, shard: Arc<Mutex<Shard>>) {
     let listener = TcpListener::bind(addr).await.expect("Failed to bind");
@@ -59,7 +64,9 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    // Wait for ClientHello
+    // Wait for ClientHello. Humans send a Binary `ClientHello`; AI agents
+    // (incl. external LLMs) send a Text `{"op":"register",…}` frame and are
+    // routed into the JSON Agent API instead (see net/agent.rs).
     let hello: ClientHello = loop {
         match ws_receiver.next().await {
             Some(Ok(Message::Binary(data))) => {
@@ -76,6 +83,17 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
                     }
                     _ => continue,
                 }
+            }
+            Some(Ok(Message::Text(t))) => {
+                let txt = t.to_string();
+                if let Some(reg) = crate::net::agent::parse_register(&txt) {
+                    crate::net::agent::handle_agent_connection(
+                        ws_sender, ws_receiver, Arc::clone(&shard), reg, peer_addr,
+                    )
+                    .await;
+                    return;
+                }
+                continue;
             }
             Some(Ok(Message::Close(_))) | None => {
                 info!("Connection closed before hello: {peer_addr}");
@@ -113,20 +131,37 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
         // is silently downgraded to Farmer outside Realistic.
         let role = ff_common::PlayerRole::from(hello.player_role)
             .validate_for_mode(shard.resources.game_mode);
-        info!("  → role resolved as {:?}", role);
+        info!("  → role resolved as {:?} (ai={})", role, hello.is_ai);
         // Disambiguate display name on collision (e.g. two players both
         // named "Farmer"). The Monarch's surveillance roster needs to be
         // able to tell them apart; player_id is already unique, this is
-        // just for the human-visible name.
-        let display_name = disambiguate_name(&hello.player_name, &shard);
-        let session = PlayerSession::new(
+        // just for the human-visible name. AI players are first-class —
+        // tag the visible name with 🤖 so humans know who shares the world.
+        let base_name = disambiguate_name(&hello.player_name, &shard);
+        let display_name = if hello.is_ai {
+            format!("🤖 {base_name}")
+        } else {
+            base_name
+        };
+        let mut session = PlayerSession::new(
             player_id,
             EntityId(0), // will be set below
             display_name.clone(),
             hello.player_name.clone(), // origin_name — key for persistent state
             tx,
         );
+        session.is_ai = hello.is_ai;
+        session.agent_label = hello.agent_label.clone();
         let (eid, entity) = shard.add_player(player_id, display_name, session);
+        // Tag the entity so the game's native learning-AI systems can find
+        // the players they are allowed to pilot, and so future snapshots /
+        // rosters can distinguish AI from human.
+        if hello.is_ai {
+            let _ = shard.ecs_world.insert_one(
+                entity,
+                ff_ecs::components::player::AiControlled { label: hello.agent_label.clone() },
+            );
+        }
 
         // Restore persistent state (wallet, inventory, Monarch) if we
         // have any saved for this origin name. When `hello.traveling`
@@ -413,6 +448,19 @@ async fn handle_message(
                         (true, msg, Some(eid))
                     }
                 };
+
+                // Feed the house-AI behaviour log: humans count too — the
+                // learning AI is "humanity, distilled" (md/07 §4b). No-op
+                // unless BEHAVIOUR_LOG is set.
+                crate::behaviour_log::record_action(
+                    shard.resources.calendar.tick.0,
+                    player_id.0,
+                    shard.sessions.get(&player_id).map(|s| s.is_ai).unwrap_or(false),
+                    0,
+                    &action_tag(&action.action),
+                    serde_json::json!({}),
+                    success,
+                );
 
                 let response = ServerActionResult {
                     seq: action.seq,
@@ -1049,7 +1097,7 @@ fn bump_task_progress(
 /// " #3", … until a free slot is found. Player ids are still unique
 /// either way; this is purely so a Monarch can tell two "Farmer"s apart
 /// in the surveillance roster and decision log.
-fn disambiguate_name(desired: &str, shard: &Shard) -> String {
+pub(crate) fn disambiguate_name(desired: &str, shard: &Shard) -> String {
     let exists = |candidate: &str| {
         shard.sessions.values().any(|s| s.player_name == candidate)
     };

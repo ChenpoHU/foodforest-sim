@@ -139,6 +139,18 @@ pub const KNOWLEDGE_CAP: f32 = 100.0;
 /// Knowledge cost to deploy a Breakthrough.
 pub const BREAKTHROUGH_COST: f32 = 30.0;
 
+/// Marks a player entity driven by an AI agent rather than a human. AI
+/// players are first-class — they pick a role like anyone else. `label`
+/// names the controller (the game's own learning-agent build, e.g.
+/// "sylva-rl-v1"); deliberately never a market LLM, since this game runs
+/// its own lean online-learning AI. The native AI systems query for this
+/// component to know which entities they may pilot, and the surveillance
+/// roster / nameplates tag these players with 🤖.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiControlled {
+    pub label: String,
+}
+
 /// Worn outfit, crafted from gathered materials. 0 = default clothes.
 /// Drives the avatar's appearance (and, with the seasons system, could
 /// gate cold resistance later).

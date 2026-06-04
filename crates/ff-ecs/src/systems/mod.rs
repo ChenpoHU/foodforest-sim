@@ -58,11 +58,13 @@ pub fn run_tick(
     }
 
     // Global catastrophes (pandemic / solar flare / drought / nuclear /
-    // asteroid) run in Realistic and Survival. The system mutates the
-    // active catastrophe state on `resources` and returns any entities
-    // killed this tick (e.g. drones zapped by a solar flare) so the
-    // server can broadcast despawns.
-    if resources.game_mode != GameMode::Peaceful {
+    // asteroid) now run in EVERY world so the Innovator role is
+    // meaningful everywhere — the world only sets how often and how hard
+    // (the system scales cadence + peak intensity per mode internally,
+    // and only ever damages the ecosystem, never players, so Peaceful
+    // keeps its "no casualties" promise). Returns entities killed this
+    // tick (e.g. drones zapped by a solar flare) for the despawn pipeline.
+    {
         let cat_despawned = catastrophe::run(world, soil_grid, resources);
         despawned.extend(cat_despawned);
     }
@@ -83,10 +85,10 @@ pub fn run_tick(
         npc_ai::run(world, terrain, resources);
     }
 
-    // Tech-Monarch domain runs only in Realistic mode (where the role is
-    // unlockable). Regenerate compute every 20 ticks and let semi-AI
+    // Tech-Monarch domain now runs in EVERY world (the role is unlockable
+    // everywhere). Regenerate compute every 20 ticks and let semi-AI
     // workers auto-harvest fruiting plants on the same cadence.
-    if resources.game_mode == GameMode::Realistic && tick % 20 == 0 {
+    if tick % 20 == 0 {
         monarch_ai::tick_monarchs(world);
         monarch_ai::tick_semi_ai_workers(world, resources);
     }

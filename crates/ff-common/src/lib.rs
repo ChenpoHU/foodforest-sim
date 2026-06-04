@@ -129,16 +129,14 @@ impl From<u8> for PlayerRole {
 }
 
 impl PlayerRole {
-    /// Tech Monarch is only allowed in Realistic. Innovator is allowed
-    /// in Realistic OR Survival (where catastrophes are most likely
-    /// and the role earns its keep). Anything else downgrades to Farmer.
-    pub fn validate_for_mode(self, mode: GameMode) -> Self {
-        match (self, mode) {
-            (Self::TechMonarch, GameMode::Realistic) => Self::TechMonarch,
-            (Self::Innovator, GameMode::Realistic) => Self::Innovator,
-            (Self::Innovator, GameMode::Survival)  => Self::Innovator,
-            _ => Self::Farmer,
-        }
+    /// Every role is now playable in every world — the world sets the
+    /// *difficulty* (how hard the economy, catastrophes and AI press on
+    /// you), not which roles exist. Farmer, Tech-Monarch, and Innovator
+    /// (human- or AI-controlled) can all join Peaceful, Realistic, and
+    /// Survival; their supporting systems run in all three, scaled per
+    /// world. Kept as a method so existing call sites need not change.
+    pub fn validate_for_mode(self, _mode: GameMode) -> Self {
+        self
     }
 }
 
