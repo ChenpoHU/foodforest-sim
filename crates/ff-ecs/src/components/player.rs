@@ -75,6 +75,13 @@ pub struct Hunger(pub f32);
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Wallet(pub u32);
 
+/// Which of Aurona Singer's songs this player has bought from the in-game
+/// Songbook store. Bit `i` set ⇒ they own `SONGS[i]` (0=Strawberry,
+/// 1=Enhanced Love Games, 2=Hu Hu Humandroid). Bought with FoFo Coin;
+/// persists across reconnect / travel like the wallet.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct SongLibrary(pub u8);
+
 /// Marker + resources for the Tech-Monarch role (only attachable in
 /// Realistic mode). The Monarch does not farm directly; instead they
 /// pay `compute` to deploy semi-AI workers that harvest fruiting plants
@@ -151,6 +158,37 @@ pub struct AiControlled {
     pub label: String,
 }
 
+/// Feature/action dimensions of the house brain's lean linear policy. Kept
+/// here so the per-agent `AiMemory` array size and the brain agree. Actions
+/// are the cross-role superset (plant/harvest/eat/sell/water/wander +
+/// research/breakthrough/deploy); features add crisis/knowledge/compute.
+pub const HOUSE_AI_FEATURES: usize = 11;
+pub const HOUSE_AI_ACTIONS: usize = 9;
+
+/// Marks a server-spawned **native** AI player — the game's *own* house AI,
+/// as distinct from an external agent. Native AI are embodied players piloted
+/// by the shared `HouseBrain` (lean online learning). Always co-exists with
+/// `AiControlled`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct NativeAi;
+
+/// Per-agent scratch the house brain needs for its online temporal-difference
+/// update: the previous decision's features + action + wallet, and the shaping
+/// bonus owed to that transition. One small struct per native agent.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiMemory {
+    /// Which role this native agent plays (0 Farmer · 1 Monarch · 2 Innovator
+    /// · 3 AI) — selects the action mask, reward score, and policy behaviour.
+    pub role: u8,
+    pub has_last: bool,
+    pub last_feats: [f32; HOUSE_AI_FEATURES],
+    pub last_action: u8,
+    /// Previous role-appropriate score (coins / knowledge / intelligence) — the
+    /// reward is its delta.
+    pub last_score: f32,
+    pub pending_bonus: f32,
+}
+
 /// Worn outfit, crafted from gathered materials. 0 = default clothes.
 /// Drives the avatar's appearance (and, with the seasons system, could
 /// gate cold resistance later).
@@ -218,4 +256,12 @@ pub enum DeathCause {
     CrushedByTree,
     Starvation,
     Wildfire,
+}
+
+/// The brain chip (Aurona Fate Oracle): a Farmer who chose the chip over death
+/// is now the Tech-Monarch's partially-controlled asset. `monarch` is the
+/// PlayerId who owns them. Removed by an Innovator's RemoveChip surgery.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct MonarchAsset {
+    pub monarch: ff_common::PlayerId,
 }

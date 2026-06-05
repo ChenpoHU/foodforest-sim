@@ -233,6 +233,21 @@
                         inset 0 1px 0 rgba(255,255,255,0.28);
         }
         #connect-btn:active { transform: translateY(0); }
+        /* Locked until a mode AND a role have been deliberately chosen. */
+        #connect-btn:disabled {
+            filter: grayscale(0.7);
+            opacity: 0.5;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        #connect-btn:disabled:hover { transform: none; filter: grayscale(0.7); box-shadow: none; }
+        #enter-hint {
+            margin-top: 8px;
+            color: #9bb1a3;
+            font-size: 12px;
+            letter-spacing: 0.3px;
+        }
+        #enter-hint b { color: #cfe6d2; font-weight: 700; }
 
         #country-bar {
             display: flex;
@@ -286,7 +301,17 @@
             box-shadow: 0 0 14px rgba(140, 255, 140, 0.45);
             font-weight: bold;
         }
-        /* ── Identity (name) — one welcoming, prominent field ─────────── */
+        /* ── Name + Enter row: the name field sits to the LEFT of the CTA ── */
+        #enter-row {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+        #enter-row #connect-btn { margin-top: 0; }
+        /* ── Identity (name) — one welcoming field, beside Enter World ───── */
         #identity-field {
             display: inline-flex;
             align-items: center;
@@ -295,7 +320,7 @@
             border: 1px solid rgba(120,200,130,0.30);
             border-radius: 14px;
             padding: 4px 10px 4px 14px;
-            margin: 10px 0 16px;
+            margin: 0;
             transition: border-color .18s, box-shadow .18s, background .18s;
         }
         #identity-field:focus-within {
@@ -310,7 +335,7 @@
             border: none;
             outline: none;
             box-shadow: none;
-            width: 220px;
+            width: 200px;
             text-align: left;
             padding: 9px 6px;
             font-size: 16px;
@@ -544,6 +569,110 @@
         }
         .choice-desc.dim { color: #6b7d70; font-size: 10px; }
 
+        /* ── Mode / role picker wheels ───────────────────────────────── */
+        #setup-row {
+            display: flex;
+            gap: 22px;
+            justify-content: center;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            margin: 8px 0 6px;
+            animation: ff-rise 0.5s ease 0.06s both;
+        }
+        .picker-group { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+        .picker { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+        .picker-arrow {
+            width: 320px;
+            max-width: 80vw;
+            height: 20px;
+            line-height: 18px;
+            padding: 0;
+            font-size: 11px;
+            color: #8fb89c;
+            background: rgba(255,255,255,0.045);
+            border: 1px solid rgba(120,200,130,0.22);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background .15s, color .15s, transform .08s;
+        }
+        .picker-arrow:hover { background: rgba(120,200,130,0.20); color: #eafff0; }
+        .picker-arrow:active { transform: scale(0.97); }
+        /* Greyed out when the wheel can't go further that way — no hover, no
+           pointer, so the player isn't confused into clicking a dead arrow. */
+        .picker-arrow.disabled,
+        .picker-arrow.disabled:hover {
+            color: #4a5a50;
+            background: rgba(255,255,255,0.02);
+            border-color: rgba(120,200,130,0.10);
+            cursor: not-allowed;
+            transform: none;
+        }
+        .picker-window {
+            width: 320px;
+            max-width: 80vw;
+            height: 78px;
+            overflow: hidden;
+            border-radius: 14px;
+            position: relative;
+            background:
+                radial-gradient(120% 100% at 50% 0%, rgba(80,160,100,0.10), transparent 70%),
+                rgba(255,255,255,0.04);
+            border: 1px solid rgba(120,200,130,0.28);
+            box-shadow: inset 0 0 34px rgba(0,0,0,0.40), 0 6px 20px rgba(0,0,0,0.35);
+        }
+        /* subtle top/bottom fade so cards feel like they roll on a wheel */
+        .picker-window::before, .picker-window::after {
+            content: ""; position: absolute; left: 0; right: 0; height: 16px; pointer-events: none; z-index: 2;
+        }
+        .picker-window::before { top: 0; background: linear-gradient(rgba(8,16,10,0.55), transparent); }
+        .picker-window::after  { bottom: 0; background: linear-gradient(transparent, rgba(8,16,10,0.55)); }
+        .picker-track { will-change: transform; transition: transform .45s cubic-bezier(.22,.61,.36,1); }
+        .pcard {
+            position: relative;
+            height: 78px;
+            box-sizing: border-box;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0 16px;
+            cursor: pointer;
+        }
+        .pcard-ic {
+            flex-shrink: 0;
+            width: 48px;
+            height: 48px;
+            border-radius: 13px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 25px;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14), 0 4px 14px rgba(0,0,0,0.35);
+        }
+        .pcard-body { display: flex; flex-direction: column; text-align: left; min-width: 0; }
+        .pcard-name { color: #eaf6ec; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
+        .pcard-desc { color: #9bb1a3; font-size: 11px; line-height: 1.35; }
+        .pcard.active .pcard-name { color: #fff; }
+        /* A DELIBERATELY chosen card is HIGHLIGHTED with a green halo — a
+           glowing inset ring + soft tint + a lit-up icon. Only `chosen` cards
+           get it, never the merely auto-showcased centre card. */
+        .pcard.chosen {
+            background:
+                radial-gradient(120% 150% at 50% 50%, rgba(76,175,80,0.24), transparent 72%),
+                rgba(120,200,130,0.06);
+            border-radius: 12px;
+            box-shadow:
+                inset 0 0 0 2px rgba(120,225,140,0.85),
+                inset 0 0 26px rgba(76,175,80,0.34);
+            animation: ff-halo .3s ease both;
+        }
+        .pcard.chosen .pcard-name { color: #eafff0; text-shadow: 0 0 10px rgba(120,225,140,0.55); }
+        .pcard.chosen .pcard-desc { color: #b8d9c1; }
+        .pcard.chosen .pcard-ic {
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.30), 0 0 18px rgba(120,225,140,0.7);
+        }
+        @keyframes ff-halo { from { opacity: 0.55; } to { opacity: 1; } }
+        @media (max-width: 760px) { #setup-row { gap: 14px; } }
+
         /* Connect-screen country/region buttons.
            The generic `#connect-screen button` rule (ID specificity)
            was overriding the `.country-btn` / `.region-btn` class rules
@@ -573,3 +702,125 @@
             box-shadow: none;
             font-weight: bold;
         }
+
+        /* ── Aurona Singer (in-game store + oracle; no longer on connect screen) ── */
+        #aurona-modal {
+            position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+            background: rgba(4,2,8,0.86); z-index: 500; pointer-events: all;
+            backdrop-filter: blur(3px);
+        }
+        #aurona-card {
+            width: min(880px, 94vw); max-height: 92vh; overflow-y: auto;
+            background: radial-gradient(120% 80% at 50% 0%, rgba(122,24,200,0.18), transparent 60%), #100a18;
+            border: 1px solid rgba(255,93,143,0.35); border-radius: 18px;
+            padding: 20px 22px; box-shadow: 0 24px 80px rgba(0,0,0,0.7);
+        }
+        #aurona-head { display: flex; justify-content: space-between; align-items: flex-start; }
+        #aurona-name {
+            font-size: 24px; font-weight: 800;
+            background: linear-gradient(90deg, #ff5d8f, #c79bff); -webkit-background-clip: text;
+            background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        #aurona-tag { color: #c79bff; font-size: 12.5px; font-style: italic; margin-top: 2px; }
+        #aurona-close {
+            background: rgba(255,255,255,0.06); color: #d8c7e8; border: 1px solid rgba(255,93,143,0.3);
+            border-radius: 8px; width: 30px; height: 30px; cursor: pointer; font-size: 15px; flex-shrink: 0;
+        }
+        #aurona-close:hover { background: rgba(255,93,143,0.2); }
+        #aurona-bio { color: #b9a7cf; font-size: 12.5px; line-height: 1.55; margin: 10px 0 16px; }
+        #aurona-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+        .aurona-thumb {
+            background: rgba(255,255,255,0.03); border: 1px solid rgba(180,130,220,0.25);
+            border-radius: 14px; padding: 8px; cursor: pointer; display: flex; flex-direction: column;
+            align-items: center; gap: 6px; transition: transform .12s, box-shadow .2s, border-color .2s;
+        }
+        .aurona-thumb:hover { transform: translateY(-3px); border-color: #ff5d8f; box-shadow: 0 10px 30px rgba(255,93,143,0.25); }
+        .aurona-thumb canvas { width: 100%; height: auto; border-radius: 9px; display: block; }
+        .aurona-thumb-cap { text-align: center; line-height: 1.2; }
+        .aurona-thumb-cap b { display: block; color: #f3eaff; font-size: 14px; }
+        .aurona-thumb-cap span { color: #b48fd6; font-size: 11px; font-style: italic; }
+        /* Store: locked songs are dimmed until bought; each card carries a
+           Play (owned) or Buy (locked) action button. */
+        .aurona-thumb.locked { cursor: default; }
+        .aurona-thumb.locked canvas { filter: grayscale(0.55) brightness(0.62); }
+        .aurona-thumb-action {
+            margin-top: 2px; width: 100%; border: none; border-radius: 9px;
+            padding: 7px 0; font-size: 12px; font-weight: bold; cursor: pointer;
+            background: linear-gradient(180deg, #b3286a, #7a1850); color: #ffe6f1;
+            transition: filter .15s, transform .1s;
+        }
+        .aurona-thumb-action:hover:not(:disabled) { filter: brightness(1.15); transform: translateY(-1px); }
+        .aurona-thumb.locked .aurona-thumb-action {
+            background: linear-gradient(180deg, #5a4a2a, #3a2f1a); color: #ffe0a0;
+        }
+        .aurona-thumb-action:disabled { opacity: 0.5; cursor: not-allowed; }
+        #aurona-store-bar {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+            margin: 0 0 12px; padding: 8px 12px; border-radius: 10px;
+            background: rgba(255,200,80,0.07); border: 1px solid rgba(201,164,90,0.4);
+        }
+        .aurona-wallet {
+            color: #ffd966; font-weight: bold; font-size: 13px; white-space: nowrap;
+            background: rgba(255,200,80,0.16); border: 1px solid #c9a45a;
+            border-radius: 999px; padding: 3px 12px;
+        }
+        .aurona-store-hint { color: #c7a9a0; font-size: 11.5px; }
+
+        /* ── Aurona's Fate Oracle (death scene) ─────────────────────────── */
+        #aurona-oracle {
+            position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+            background: radial-gradient(1200px 700px at 50% 30%, rgba(60,8,24,0.55), rgba(2,1,4,0.94));
+            z-index: 700; pointer-events: all; animation: ff-rise .4s ease both;
+        }
+        #oracle-card {
+            width: min(560px, 92vw); padding: 22px 24px;
+            background: linear-gradient(180deg, rgba(28,6,16,0.96), rgba(12,4,18,0.97));
+            border: 1px solid rgba(255,93,143,0.45); border-radius: 18px;
+            box-shadow: 0 20px 80px rgba(0,0,0,0.6), 0 0 50px rgba(255,93,143,0.18);
+        }
+        #oracle-card.chipped { border-color: rgba(120,200,255,0.4); box-shadow: 0 20px 80px rgba(0,0,0,0.6), 0 0 50px rgba(90,150,255,0.18); }
+        .oracle-badge {
+            text-align: center; font-size: 12px; letter-spacing: 2px; font-weight: 800;
+            color: #ff9ec2; margin-bottom: 16px; text-transform: uppercase;
+        }
+        .oracle-badge.chip { color: #93c8ff; }
+        .oracle-top { display: flex; gap: 18px; align-items: center; }
+        .oracle-cover { width: 150px; height: 150px; border-radius: 12px; flex-shrink: 0; box-shadow: 0 8px 26px rgba(0,0,0,0.5); }
+        .oracle-meta { min-width: 0; }
+        .oracle-title { font-size: 26px; font-weight: 800; color: #fff; line-height: 1.05; }
+        .oracle-sub { font-size: 13px; color: #ffb3c8; font-style: italic; margin: 3px 0 10px; }
+        .oracle-line { font-size: 13px; color: #d9c4cf; line-height: 1.5; }
+        .oracle-choices { display: flex; gap: 12px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
+        .oracle-btn {
+            border: none; border-radius: 11px; padding: 12px 22px; font-size: 14px; font-weight: 700;
+            cursor: pointer; font-family: inherit; transition: filter .15s, transform .1s;
+        }
+        .oracle-btn:hover { filter: brightness(1.12); transform: translateY(-1px); }
+        .oracle-btn.ghost { background: rgba(255,255,255,0.08); color: #e6d2da; border: 1px solid rgba(255,255,255,0.18); }
+        .oracle-btn.chip { background: linear-gradient(180deg, #2aa6e2, #1565b8); color: #eaf6ff; box-shadow: 0 6px 20px rgba(40,140,230,0.4); }
+
+        #aurona-song-top { display: flex; gap: 18px; align-items: stretch; flex-wrap: wrap; }
+        #aurona-cover-big { width: 280px; max-width: 80vw; height: auto; border-radius: 14px; box-shadow: 0 12px 36px rgba(0,0,0,0.55); }
+        #aurona-song-meta { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 10px; justify-content: center; }
+        #aurona-back { align-self: flex-start; background: none; border: none; color: #b48fd6; cursor: pointer; font-size: 12.5px; padding: 0; }
+        #aurona-back:hover { color: #ff8fb6; }
+        #aurona-song-note { color: #d8c7e8; font-size: 14px; line-height: 1.5; font-style: italic; }
+        #aurona-play {
+            align-self: flex-start;
+            background: linear-gradient(90deg, #c81d4e, #7a18c8); color: #fff; border: none;
+            border-radius: 999px; padding: 11px 22px; font-size: 15px; font-weight: 700; cursor: pointer;
+            box-shadow: 0 6px 20px rgba(200,29,78,0.45); transition: transform .1s, box-shadow .2s;
+        }
+        #aurona-play:hover { transform: translateY(-1px); box-shadow: 0 8px 26px rgba(200,29,78,0.6); }
+        #aurona-disclaimer { color: #6f6285; font-size: 10.5px; }
+        #aurona-lyrics {
+            margin-top: 16px; max-height: 38vh; overflow-y: auto; padding: 10px 6px;
+            border-top: 1px solid rgba(180,130,220,0.18); line-height: 1.75;
+        }
+        .aurona-label { color: #b48fd6; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin: 12px 0 2px; }
+        .aurona-line { color: #cdbad9; font-size: 15px; transition: color .2s, transform .2s; }
+        .aurona-line.on {
+            color: #fff; transform: translateX(6px);
+            text-shadow: 0 0 14px rgba(255,93,143,0.7); font-weight: 600;
+        }
+        @media (max-width: 620px) { #aurona-gallery { grid-template-columns: 1fr; } }

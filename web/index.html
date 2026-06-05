@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <title>Food Forest Simulation</title>
-    <link rel="stylesheet" href="./styles.css?v=globe2" />
+    <link rel="stylesheet" href="./styles.css?v=oracle4" />
     <script type="importmap">
     {
         "imports": {
@@ -18,30 +18,26 @@
     <div id="connect-screen">
         <h1>Food Forest</h1>
         <p>Global ecosystem simulation</p>
-        <!-- Who are you — one friendly, prominent field. -->
-        <div id="identity-field">
-            <span id="identity-emoji">🧑‍🌾</span>
-            <input id="player-name" type="text" placeholder="Your name" value="Farmer" maxlength="22" spellcheck="false" autocomplete="off" />
-        </div>
 
-        <!-- How do you want to play? -->
-        <div class="choice-label">How do you want to play?</div>
-        <div class="seg-row">
-            <button class="mode-btn active" data-mode="0"><span class="seg-ic">🌿</span>Peaceful</button>
-            <button class="mode-btn" data-mode="1"><span class="seg-ic">🪓</span>Realistic</button>
-            <button class="mode-btn" data-mode="2"><span class="seg-ic">🔥</span>Survival</button>
-        </div>
-        <p id="mode-desc" class="choice-desc">No casualties. Trees disappear when cut. Relaxed pace for all ages.</p>
-
-        <!-- Role selector — only shown when Realistic mode is selected. -->
-        <div id="role-row" style="display:none; flex-direction:column; align-items:center; gap:6px; margin:6px 0 8px 0;">
-            <div class="choice-label">Choose your role</div>
-            <div class="seg-row">
-                <button class="role-btn active" data-role="0"><span>🧑‍🌾</span> Farmer</button>
-                <button class="role-btn" data-role="1"><span>🤖</span> Tech Monarch</button>
-                <button class="role-btn" data-role="2"><span>🔬</span> Innovator</button>
+        <!-- Mode + role wheels: auto-scroll to showcase, ▲▼ / scroll / click
+             to pick. Every world offers every role. -->
+        <div id="setup-row">
+            <div class="picker-group">
+                <div class="choice-label">How to play</div>
+                <div class="picker" id="mode-picker">
+                    <button type="button" class="picker-arrow" data-dir="-1" aria-label="Previous">▲</button>
+                    <div class="picker-window"><div class="picker-track"></div></div>
+                    <button type="button" class="picker-arrow" data-dir="1" aria-label="Next">▼</button>
+                </div>
             </div>
-            <p id="role-desc" class="choice-desc dim">Plant, harvest, and trade your own food forest.</p>
+            <div class="picker-group">
+                <div class="choice-label">Your role</div>
+                <div class="picker" id="role-picker">
+                    <button type="button" class="picker-arrow" data-dir="-1" aria-label="Previous">▲</button>
+                    <div class="picker-window"><div class="picker-track"></div></div>
+                    <button type="button" class="picker-arrow" data-dir="1" aria-label="Next">▼</button>
+                </div>
+            </div>
         </div>
 
         <!-- 3D Earth selector: spin the globe, click a territory pin, then
@@ -72,7 +68,15 @@
             </div>
         </div>
 
-        <button id="connect-btn">🌱 Enter World</button>
+        <!-- Name + Enter together: type your name (grey hint if blank), then enter. -->
+        <div id="enter-row">
+            <div id="identity-field">
+                <span id="identity-emoji">🧑‍🌾</span>
+                <input id="player-name" type="text" placeholder="Enter your name" maxlength="22" spellcheck="false" autocomplete="off" />
+            </div>
+            <button id="connect-btn">🌱 Enter World</button>
+        </div>
+        <div id="enter-hint">Pick a <b>mode</b> and a <b>role</b> above to enter</div>
 
         <!-- Advanced: the server endpoint is a dev/power-user detail, tucked
              out of the main flow so players never see it. -->
@@ -94,10 +98,11 @@
 
     <!-- World navigation overlay -->
     <div id="world-nav-overlay" style="position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.8); z-index:300; pointer-events:all;">
-        <div style="text-align:center;">
+        <div style="text-align:center; max-height:94vh; overflow-y:auto; padding:8px 12px;">
             <h2 style="color:#6d6; margin-bottom:8px;">Travel to Region</h2>
-            <p style="color:#888; font-size:12px; margin-bottom:12px;">Select a country and region to explore</p>
-            <canvas id="nav-world-canvas" width="700" height="320" style="border:1px solid rgba(100,200,100,0.3); border-radius:8px; cursor:crosshair; margin-bottom:8px;"></canvas>
+            <p style="color:#888; font-size:12px; margin-bottom:10px;">Spin the globe and click a glowing pin — just like the landing page.</p>
+            <div id="nav-globe-stage" style="width:min(440px,86vw); height:min(440px,48vh); margin:0 auto 4px; border:1px solid rgba(100,200,100,0.25); border-radius:12px; overflow:hidden; background:#04070c;"></div>
+            <div id="nav-globe-hint" style="color:#8aa; font-size:11px; margin-bottom:8px;">🌍 Drag to spin · click a glowing pin to choose where to travel</div>
             <div id="nav-country-bar" style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin:8px 0; max-width:700px;"></div>
             <div id="nav-region-list" style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin:6px 0; max-width:600px;"></div>
             <div id="nav-cost-line" style="color:#ffd966; font-size:13px; margin-top:8px; font-family:system-ui, sans-serif;">
@@ -117,6 +122,10 @@
         <div id="hud-stamina"></div>
         <div id="hud-hunger"></div>
     </div>
+
+    <!-- Aurona's Songbook — in-game store, top-right under Travel-to-Region
+         (clear of the left-edge objectives panel). Shown on every role's HUD. -->
+    <button id="songbook-btn" type="button" style="position:fixed; top:252px; right:12px; width:200px; display:none; align-items:center; justify-content:center; gap:6px; background:linear-gradient(90deg, rgba(200,29,78,0.32), rgba(122,24,200,0.32)); color:#ffd6ea; border:1px solid rgba(255,93,143,0.55); border-radius:8px; padding:7px 10px; font-size:12px; font-weight:600; font-family:system-ui,sans-serif; cursor:pointer; pointer-events:all; z-index:103;">🎵 Aurona's Songbook</button>
 
     <!-- Edge direction hints -->
     <div id="edge-hints" style="position:fixed; pointer-events:none; z-index:100; display:none;">
@@ -319,6 +328,6 @@
         <input id="chat-input" type="text" placeholder="Press Enter to chat..." />
     </div>
 
-    <script type="module" src="./main.js?v=globe2"></script>
+    <script type="module" src="./main.js?v=oracle4"></script>
 </body>
 </html>

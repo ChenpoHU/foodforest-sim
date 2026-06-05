@@ -153,3 +153,28 @@ export function encodeCraftAction(recipe) {
         recipe & 0xff,
     ];
 }
+
+export function encodeBuySongAction(songId) {
+    // BuySong { song_id: u8 } — variant 25. Buys one of Aurona's songs
+    // from the Songbook store (0=Strawberry, 1=Enhanced, 2=Humandroid).
+    return [
+        ...encodeVarint(25),
+        songId & 0xff,
+    ];
+}
+
+export function encodePlantBrainChipAction() {
+    // PlantBrainChip — variant 26, no fields. A dying Farmer takes the chip.
+    return [...encodeVarint(26)];
+}
+
+export function encodeAcceptFateAction() {
+    // AcceptFate — variant 27, no fields. A dying Farmer accepts death.
+    return [...encodeVarint(27)];
+}
+
+export function encodeRemoveChipAction() {
+    // RemoveChip — variant 28, no fields. Innovator de-chips the nearest
+    // chipped Farmer within reach.
+    return [...encodeVarint(28)];
+}

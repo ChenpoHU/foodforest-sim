@@ -108,7 +108,8 @@ pub async fn handle_agent_connection(
             sess.entity_id = eid;
         }
         match role {
-            PlayerRole::TechMonarch => {
+            // TechMonarch and the AI faction both deploy automation (Monarch).
+            PlayerRole::TechMonarch | PlayerRole::Ai => {
                 let _ = s.ecs_world.insert_one(entity, ff_ecs::components::player::Monarch::default());
             }
             PlayerRole::Innovator => {
@@ -289,7 +290,7 @@ fn apply_agent_message(s: &mut Shard, entity: hecs::Entity, player_id: PlayerId,
         }
         behaviour_log::record_action(
             s.resources.calendar.tick.0, player_id.0, true, role_u8(s, entity), "move",
-            serde_json::json!({"dx": dx, "dz": dz}), true,
+            serde_json::json!({"dx": dx, "dz": dz}), true, None, None,
         );
         return;
     }
@@ -316,6 +317,13 @@ fn apply_agent_message(s: &mut Shard, entity: hecs::Entity, player_id: PlayerId,
     };
 
     if let Some(act) = action {
+        // Pre-action context for teaching the house brain by imitation
+        // (external agents — incl. LLMs — count among "all players").
+        let a_role = role_u8(s, entity);
+        let a_mact = ff_ecs::systems::house_ai::macro_action_of(&act);
+        let a_feats: Option<[f32; ff_ecs::components::player::HOUSE_AI_FEATURES]> =
+            a_mact.map(|_| ff_ecs::systems::house_ai::extract_features(&s.ecs_world, entity, &s.resources));
+
         let result = s.process_action(entity, player_id, &act);
         let ok = matches!(
             result,
@@ -326,11 +334,18 @@ fn apply_agent_message(s: &mut Shard, entity: hecs::Entity, player_id: PlayerId,
             s.resources.calendar.tick.0,
             player_id.0,
             true,
-            role_u8(s, entity),
+            a_role,
             op,
             v.get("args").cloned().unwrap_or(serde_json::json!({})),
             ok,
+            a_mact.map(|m| m as u8),
+            a_feats.as_ref().map(|f| f.as_slice()),
         );
+        if ok {
+            if let (Some(m), Some(f)) = (a_mact, a_feats.as_ref()) {
+                s.house_brain.imitate(f, m, a_role);
+            }
+        }
     }
 }
 

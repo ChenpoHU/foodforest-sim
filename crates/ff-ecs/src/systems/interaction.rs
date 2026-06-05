@@ -863,7 +863,169 @@ pub fn process_action(
             ActionResult::Success(format!("Sold {} for {} FoFo", count, total))
         }
 
+        ActionKind::BuySong { song_id } => {
+            let price = song_price(*song_id);
+            if price == 0 {
+                return ActionResult::Failure("Aurona has no such song".into());
+            }
+            // song_id ∈ {0,1,2} is guaranteed by the price check above, so the
+            // shift can't overflow.
+            let bit = 1u8 << *song_id;
+
+            // Already owned?
+            let already = world
+                .get::<&crate::components::player::SongLibrary>(player_entity)
+                .map(|lib| lib.0 & bit != 0)
+                .unwrap_or(false);
+            if already {
+                return ActionResult::Failure("You already own that song".into());
+            }
+
+            // Enough FoFo Coin?
+            let balance = world
+                .get::<&crate::components::player::Wallet>(player_entity)
+                .map(|w| w.0)
+                .unwrap_or(0);
+            if balance < price {
+                return ActionResult::Failure(format!("Need {} FoFo Coin for that song", price));
+            }
+
+            // Charge the wallet, then set the owned bit (inserting a fresh
+            // SongLibrary if this is their first purchase).
+            if let Ok(mut wallet) = world.get::<&mut crate::components::player::Wallet>(player_entity) {
+                wallet.0 = wallet.0.saturating_sub(price);
+            }
+            let updated = if let Ok(mut lib) =
+                world.get::<&mut crate::components::player::SongLibrary>(player_entity)
+            {
+                lib.0 |= bit;
+                true
+            } else {
+                false
+            };
+            if !updated {
+                let _ = world
+                    .insert_one(player_entity, crate::components::player::SongLibrary(bit));
+            }
+            ActionResult::Success(format!("Bought a song from Aurona for {} FoFo Coin", price))
+        }
+
+        // ── Aurona Fate Oracle ──────────────────────────────────────────────
+        ActionKind::PlantBrainChip => {
+            // Only meaningful while the player is in the death-pending state.
+            if world
+                .get::<&crate::components::player::Dead>(player_entity)
+                .is_err()
+            {
+                return ActionResult::Failure("There is no fate to escape".into());
+            }
+            // The chip must bind to a Monarch. Snapshot one before mutating.
+            let monarch = {
+                let mut found = None;
+                for (_e, (pl, _m)) in world
+                    .query::<(
+                        &crate::components::player::Player,
+                        &crate::components::player::Monarch,
+                    )>()
+                    .iter()
+                {
+                    found = Some(pl.player_id);
+                    break;
+                }
+                found
+            };
+            let Some(monarch) = monarch else {
+                return ActionResult::Failure("No Tech-Monarch to take you".into());
+            };
+            // Revive as the Monarch's asset; the chip keeps you alive and owned.
+            let _ = world.remove_one::<crate::components::player::Dead>(player_entity);
+            let _ = world.remove_one::<crate::components::plant::Crushed>(player_entity);
+            let _ = world.insert_one(
+                player_entity,
+                crate::components::player::MonarchAsset { monarch },
+            );
+            if let Ok(mut s) =
+                world.get::<&mut crate::components::player::Stamina>(player_entity)
+            {
+                s.0 = 100.0;
+            }
+            if let Ok(mut h) = world.get::<&mut crate::components::player::Hunger>(player_entity) {
+                h.0 = 0.0;
+            }
+            ActionResult::Success("chip ok — you live, owned by the machine".into())
+        }
+
+        ActionKind::AcceptFate => {
+            if world
+                .get::<&crate::components::player::Dead>(player_entity)
+                .is_err()
+            {
+                return ActionResult::Failure("You are not dying".into());
+            }
+            let _ = world.remove_one::<crate::components::player::Dead>(player_entity);
+            let _ = world.remove_one::<crate::components::plant::Crushed>(player_entity);
+            // Die free — but reborn with nothing. That's the cost of refusing
+            // the chip (so servitude is a real temptation, not a trap).
+            if let Ok(mut inv) =
+                world.get::<&mut crate::components::player::Inventory>(player_entity)
+            {
+                inv.slots.clear();
+            }
+            if let Ok(mut wallet) =
+                world.get::<&mut crate::components::player::Wallet>(player_entity)
+            {
+                wallet.0 = 0;
+            }
+            if let Ok(mut s) =
+                world.get::<&mut crate::components::player::Stamina>(player_entity)
+            {
+                s.0 = 100.0;
+            }
+            if let Ok(mut h) = world.get::<&mut crate::components::player::Hunger>(player_entity) {
+                h.0 = 0.0;
+            }
+            ActionResult::Success("fate ok — reborn free, with nothing".into())
+        }
+
+        ActionKind::RemoveChip => {
+            // The liberator: only an Innovator can de-chip, and only a chipped
+            // Farmer who is physically within reach.
+            if world
+                .get::<&crate::components::player::Innovator>(player_entity)
+                .is_err()
+            {
+                return ActionResult::Failure("Only an Innovator can remove a chip".into());
+            }
+            let mut best: Option<(hecs::Entity, f32)> = None;
+            for (e, (pos, _ma)) in world
+                .query::<(&Position, &crate::components::player::MonarchAsset)>()
+                .iter()
+            {
+                let dist = pos.0.distance(player_pos);
+                if dist <= 8.0 && best.map_or(true, |(_, bd)| dist < bd) {
+                    best = Some((e, dist));
+                }
+            }
+            let Some((te, _)) = best else {
+                return ActionResult::Failure("No chipped farmer within reach".into());
+            };
+            let _ = world.remove_one::<crate::components::player::MonarchAsset>(te);
+            ActionResult::Success("freed — the chip is out, the Monarch's hold broken".into())
+        }
+
         _ => ActionResult::Failure("Action not implemented yet".into()),
+    }
+}
+
+/// FoFo Coin price of one of Aurona Singer's songs in the Songbook store.
+/// Returns 0 for an unknown id (which rejects the purchase). Indices match
+/// the client's SONGS list: 0=Strawberry, 1=Enhanced Love Games, 2=Humandroid.
+fn song_price(song_id: u8) -> u32 {
+    match song_id {
+        0 => 90,  // Strawberry — sweet but deadly
+        1 => 120, // Enhanced Love Games — upgrade your heart
+        2 => 90,  // Hu Hu Humandroid — clock in, clock in
+        _ => 0,
     }
 }
 

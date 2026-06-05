@@ -58,6 +58,9 @@ pub enum MessageType {
     /// or ends. Drives the catastrophe banner + Innovator's deploy
     /// hints.
     ServerCatastrophe = 0x0115,
+    /// Aurona's Fate Oracle — sent to a single player at a pivotal moment
+    /// (a Farmer's death) so she can sing their fate and offer the choice.
+    ServerOracle = 0x0116,
 
     // Shard Manager <-> Server
     ShardRegister = 0x0201,
@@ -189,6 +192,34 @@ pub enum ActionKind {
     ///   1 = Fur Coat     (costs animal hide)
     ///   255 = take it off (back to default clothes, free)
     Craft { recipe: u8 },
+    /// Buy one of Aurona Singer's songs from the in-game Songbook store,
+    /// paying its price in FoFo Coin. `song_id` indexes the song list
+    /// (0=Strawberry, 1=Enhanced Love Games, 2=Hu Hu Humandroid). Sets the
+    /// matching bit in the player's `SongLibrary`. Rejected if already owned
+    /// or the wallet is short.
+    BuySong { song_id: u8 },
+    /// Aurona Oracle: a dying Farmer plants the brain chip to escape death,
+    /// becoming the Tech-Monarch's partially-controlled asset (MonarchAsset).
+    PlantBrainChip,
+    /// Aurona Oracle: a dying Farmer accepts their fate — they respawn fresh
+    /// (death has a cost, but it isn't a dead end).
+    AcceptFate,
+    /// Innovator-only: surgically remove the brain chip from the nearest
+    /// chipped Farmer within reach, freeing them from the Monarch.
+    RemoveChip,
+}
+
+/// Aurona's Fate Oracle, sent to a single player. `kind`: 0 = a Farmer's death
+/// (sing the elegy, offer the choice); 1 = the chip was taken (sing the
+/// humandroid anthem). `song_id`: 0=Strawberry, 1=Enhanced, 2=Humandroid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerOracle {
+    pub kind: u8,
+    pub song_id: u8,
+    /// Show the "plant the chip" choice (only when a Monarch exists to own them).
+    pub offer_chip: bool,
+    /// The Monarch who would own the chipped Farmer (empty if none).
+    pub monarch_name: String,
 }
 
 /// State of a global catastrophe pushed to every player.
@@ -418,6 +449,12 @@ pub struct ServerPlayerState {
     pub innovator_focus_topic: u8,
     /// Currently-worn outfit (0=default, 1=Linen Tunic, 2=Fur Coat).
     pub outfit: u8,
+    /// Bitmask of Aurona songs this player owns (bit i ⇒ SONGS[i]). Trailing
+    /// field — older clients simply stop decoding before it.
+    pub owned_songs: u8,
+    /// 1 if this player is currently chipped (a Tech-Monarch's asset), else 0.
+    /// Trailing field — older clients simply stop decoding before it.
+    pub chipped: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

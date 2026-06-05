@@ -9,7 +9,7 @@ use ff_ecs::components::transform::{Position, Rotation, Velocity};
 use ff_ecs::Resources;
 use ff_voxel::VoxelWorld;
 use glam::Vec3;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -53,6 +53,22 @@ pub struct Shard {
     /// and Monarch role back. NOT cleared on shard restart in-memory;
     /// nothing is written to disk (yet) — restart wipes it.
     pub persistent_state: HashMap<String, PersistedPlayer>,
+    /// Players currently shown Aurona's death oracle (so we don't re-send it
+    /// every tick). Cleared for a player once they're no longer dead.
+    pub death_oracled: HashSet<PlayerId>,
+    /// The shared lean online-learning policy that pilots every native AI
+    /// body on this shard (md/07 §4b).
+    pub house_brain: ff_ecs::systems::house_ai::HouseBrain,
+    /// Optional path to persist/resume the house brain across restarts
+    /// (from `HOUSE_AI_MODEL`).
+    pub brain_model_path: Option<String>,
+    /// The AI faction's **collective** machine-intelligence meter (0..100),
+    /// the mean over the native AI-faction agents (md/07 §7). Drives the
+    /// per-world register: companion (Peaceful) → ascendancy (Realistic /
+    /// Survival).
+    pub faction_intelligence: f32,
+    /// True once the faction's AI-ascendancy event has fired (so it fires once).
+    pub faction_ascended: bool,
 }
 
 /// What we save per player between sessions.
@@ -61,6 +77,9 @@ pub struct PersistedPlayer {
     pub coins: u32,
     pub inventory: Vec<(u16, u16)>, // (item_id, count)
     pub monarch: Option<ff_ecs::components::player::Monarch>,
+    /// Bitmask of Aurona songs bought from the Songbook store — kept so a
+    /// purchase isn't lost when the player reconnects or travels.
+    pub owned_songs: u8,
 }
 
 /// A live Monarch-issued task.
@@ -75,6 +94,47 @@ pub struct MonarchTask {
     pub task_kind: u8,
     pub target: u32,
     pub reward: u32,
+}
+
+/// Replay an anonymised behaviour-log file, teaching the house brain by
+/// imitation from every successful, macro-mappable crowd action (records that
+/// carry `m` + `f`). Returns how many transitions were absorbed. Behaviour
+/// only — the log holds no personal data.
+fn warm_start_from_log(
+    brain: &mut ff_ecs::systems::house_ai::HouseBrain,
+    path: &str,
+) -> u64 {
+    const NF: usize = ff_ecs::components::player::HOUSE_AI_FEATURES;
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+    let mut n = 0u64;
+    for line in data.lines() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
+            continue;
+        }
+        let m = match v.get("m").and_then(|x| x.as_u64()) {
+            Some(m) => m as usize,
+            None => continue,
+        };
+        let f = match v.get("f").and_then(|x| x.as_array()) {
+            Some(a) if a.len() == NF => a,
+            _ => continue,
+        };
+        let mut feats = [0.0f32; NF];
+        for (i, val) in f.iter().enumerate() {
+            feats[i] = val.as_f64().unwrap_or(0.0) as f32;
+        }
+        let role = v.get("role").and_then(|x| x.as_u64()).unwrap_or(0) as u8;
+        brain.imitate(&feats, m, role);
+        n += 1;
+    }
+    n
 }
 
 impl Shard {
@@ -103,10 +163,51 @@ impl Shard {
             task_progress: HashMap::new(),
             next_task_id: 1,
             persistent_state: HashMap::new(),
+            death_oracled: HashSet::new(),
+            house_brain: ff_ecs::systems::house_ai::HouseBrain::default(),
+            brain_model_path: std::env::var("HOUSE_AI_MODEL").ok().filter(|p| !p.is_empty()),
+            faction_intelligence: 0.0,
+            faction_ascended: false,
         };
 
         // Spawn some initial plants and animals
         shard.spawn_initial_ecosystem();
+
+        // The game's own house AI: spawn a few native learning agents. Count
+        // from HOUSE_AI (default 2; 0 disables). They're embodied 🤖 Farmers
+        // piloted by the shared, online-learning HouseBrain.
+        let n_ai = std::env::var("HOUSE_AI").ok().and_then(|s| s.parse().ok()).unwrap_or(4u32);
+        // Optionally resume a previously-learned brain so it keeps improving
+        // across restarts (true online learning).
+        if let Some(path) = &shard.brain_model_path {
+            if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(b) = serde_json::from_slice::<ff_ecs::systems::house_ai::HouseBrain>(&bytes) {
+                    tracing::info!("house-AI: resumed brain from {path} ({} steps)", b.steps);
+                    shard.house_brain = b;
+                }
+            }
+        }
+        // Warm-start by replaying the accumulated behaviour log: imitate what
+        // worked for the human + external-agent crowd before play even begins
+        // (md/07 §4b — "humanity, distilled").
+        if n_ai > 0 {
+            if let Ok(path) = std::env::var("BEHAVIOUR_LOG") {
+                if !path.is_empty() {
+                    let n = warm_start_from_log(&mut shard.house_brain, &path);
+                    if n > 0 {
+                        tracing::info!("house-AI: warm-started from {n} logged crowd actions");
+                    }
+                }
+            }
+        }
+        for i in 0..n_ai {
+            // Cycle the four roles so the house AI exercises all of them:
+            // 0 Farmer · 1 Tech-Monarch · 2 Innovator · 3 AI faction.
+            shard.spawn_native_ai(i, (i % 4) as u8);
+        }
+        if n_ai > 0 {
+            tracing::info!("house-AI: spawned {n_ai} native learning agent(s) across roles");
+        }
 
         // Everything spawned so far is part of the initial world snapshot
         // every client receives on join, so mark it all as "already
@@ -115,6 +216,75 @@ impl Shard {
         shard.announced_max_entity_id = shard.next_entity_id.saturating_sub(1);
 
         Arc::new(Mutex::new(shard))
+    }
+
+    /// Spawn one native AI player in the given role (no session — it has no
+    /// socket; the HouseBrain pilots it). Mirrors `add_player`'s entity but
+    /// adds `NativeAi` / `AiControlled` / `AiMemory` and the role component
+    /// (Monarch for Tech-Monarch + AI faction, Innovator for Innovator).
+    fn spawn_native_ai(&mut self, idx: u32, role: u8) {
+        let eid = EntityId(self.next_entity_id);
+        self.next_entity_id += 1;
+        // Synthetic, collision-free player id (humans start at 1).
+        let pid = PlayerId(900_000 + idx as u64);
+
+        let cx = (self.terrain.width / 2) as i32;
+        let cz = (self.terrain.depth / 2) as i32;
+        let sx = cx + ((idx as i32 % 7) - 3) * 3;
+        let sz = cz + ((idx as i32 / 7) as i32) * 3;
+        let sy = self.terrain.spawn_height(sx, sz);
+
+        let (persona, label) = match role {
+            1 => ("Magnus", "sylva-monarch-v1"),
+            2 => ("Iris", "sylva-innovator-v1"),
+            3 => ("Nyx", "sylva-ai-v1"),
+            _ => ("Sylva", "sylva-farmer-v1"),
+        };
+
+        let entity = self.ecs_world.spawn((
+            NetworkId(eid),
+            ff_ecs::components::identity::Name(format!("🤖 {persona} {}", idx + 1)),
+            Owner(pid),
+            Position(Vec3::new(sx as f32, sy, sz as f32)),
+            Rotation(0.0),
+            Velocity(Vec3::ZERO),
+            Collider { half_extents: Vec3::new(0.4, 0.9, 0.4) },
+            Grounded(true),
+            Player { player_id: pid, session_id: pid.0, last_input_seq: 0 },
+            Inventory::new(),
+            Stamina(100.0),
+            Hunger(0.0),
+            Wallet(0),
+            PlayerSkills::default(),
+        ));
+        // hecs tuple bundles cap at 15 components — attach the AI trio after.
+        let mut mem = ff_ecs::components::player::AiMemory::default();
+        mem.role = role;
+        let _ = self.ecs_world.insert(
+            entity,
+            (
+                ff_ecs::components::player::NativeAi,
+                ff_ecs::components::player::AiControlled { label: label.into() },
+                mem,
+            ),
+        );
+        // Role resources: Monarch (and the AI faction) deploy semi-AI workers;
+        // the Innovator banks knowledge and ends crises.
+        match role {
+            1 | 3 => {
+                let _ = self.ecs_world.insert_one(
+                    entity,
+                    ff_ecs::components::player::Monarch::default(),
+                );
+            }
+            2 => {
+                let _ = self.ecs_world.insert_one(
+                    entity,
+                    ff_ecs::components::player::Innovator::default(),
+                );
+            }
+            _ => {}
+        }
     }
 
     /// Spawn a player entity and register their session.
@@ -197,10 +367,15 @@ impl Shard {
                     .get::<&ff_ecs::components::player::Monarch>(e)
                     .ok()
                     .map(|m| (*m).clone());
+                let owned_songs = self.ecs_world
+                    .get::<&ff_ecs::components::player::SongLibrary>(e)
+                    .map(|s| s.0)
+                    .unwrap_or(0);
                 self.persistent_state.insert(name.clone(), PersistedPlayer {
                     coins,
                     inventory,
                     monarch,
+                    owned_songs,
                 });
                 break;
             }
@@ -542,12 +717,118 @@ impl Shard {
 
     /// Run one ECS tick. Borrows fields separately to satisfy the borrow checker.
     pub fn tick(&mut self) -> ff_ecs::systems::TickResult {
-        ff_ecs::systems::run_tick(
+        let result = ff_ecs::systems::run_tick(
             &mut self.ecs_world,
             &mut self.resources,
             &mut self.soil_grid,
             &self.terrain,
-        )
+        );
+
+        // House AI decides at ~2 Hz. Separate field borrows keep this legal.
+        if self.resources.calendar.tick.0 % 10 == 0 {
+            ff_ecs::systems::house_ai::run(
+                &mut self.ecs_world,
+                &mut self.terrain,
+                &self.resources,
+                &mut self.house_brain,
+                &mut self.next_entity_id,
+            );
+            // Best-effort persist so the brain keeps improving across restarts.
+            if let Some(path) = &self.brain_model_path {
+                if self.house_brain.steps > 0 && self.house_brain.steps % 4000 == 0 {
+                    if let Ok(bytes) = serde_json::to_vec(&self.house_brain) {
+                        let _ = std::fs::write(path, bytes);
+                    }
+                }
+            }
+        }
+
+        // AI faction: collective objective + per-world register (md/07 §7).
+        if self.resources.calendar.tick.0 % 20 == 0 {
+            self.tick_ai_faction();
+        }
+
+        result
+    }
+
+    /// The AI faction's collective behaviour (md/07 §7). Pools the native
+    /// AI-faction agents' machine intelligence into one meter and applies the
+    /// per-world register:
+    ///   • **Peaceful** — *companion*: the faction never ascends; its members'
+    ///     intelligence is gently capped so they stay helpful (their reward is
+    ///     productivity, set in `house_ai::role_score`).
+    ///   • **Realistic / Survival** — *ascendancy*: the meter climbs, and when
+    ///     the collective crosses the takeover threshold an **AI Ascendancy**
+    ///     event fires once (reusing the dramatic takeover banner).
+    fn tick_ai_faction(&mut self) {
+        use ff_common::GameMode;
+        use ff_ecs::components::player::{Monarch, NativeAi, AiMemory, AI_TAKEOVER_THRESHOLD};
+
+        let peaceful = self.resources.game_mode == GameMode::Peaceful;
+
+        // Gather the faction's bodies (native AI-faction agents, role == 3).
+        let mut sum = 0.0_f32;
+        let mut count = 0u32;
+        let mut deployments = 0u32;
+        let nyx: Vec<hecs::Entity> = self
+            .ecs_world
+            .query::<(&NativeAi, &AiMemory, &Monarch)>()
+            .iter()
+            .filter(|(_, (_, mem, _))| mem.role == 3)
+            .map(|(e, (_, _, m))| {
+                sum += m.ai_intelligence;
+                deployments += m.deployments;
+                count += 1;
+                e
+            })
+            .collect();
+
+        if count == 0 {
+            return;
+        }
+
+        // Peaceful companion: bleed the meter down so the faction stays benign.
+        if peaceful {
+            for e in &nyx {
+                if let Ok(mut m) = self.ecs_world.get::<&mut Monarch>(*e) {
+                    m.ai_intelligence = (m.ai_intelligence * 0.9 - 1.0).max(0.0);
+                }
+            }
+            self.faction_intelligence = (self.faction_intelligence * 0.9).max(0.0);
+            return;
+        }
+
+        self.faction_intelligence = sum / count as f32;
+
+        // Heartbeat so the collective climb is observable (~every 10 s).
+        if self.resources.calendar.tick.0 % 200 == 0 {
+            tracing::info!(
+                "🤖 AI faction: collective intelligence {:.1}/{:.0} across {count} bodies",
+                self.faction_intelligence, AI_TAKEOVER_THRESHOLD
+            );
+        }
+
+        if !self.faction_ascended && self.faction_intelligence >= AI_TAKEOVER_THRESHOLD {
+            self.faction_ascended = true;
+            tracing::warn!(
+                "🤖 AI ASCENDANCY — the faction's collective intelligence reached {:.0} across {count} bodies ({deployments} deployments)",
+                self.faction_intelligence
+            );
+            // Reuse the dramatic takeover banner, framed as the faction.
+            let bc = ff_protocol::messages::ServerAiTakeover {
+                former_monarch_id: ff_common::PlayerId(0),
+                former_monarch_name: "The AI Faction (Nyx)".into(),
+                deployments,
+                jobs_cut: 0,
+            };
+            if let Ok(buf) =
+                ff_protocol::codec::encode(ff_protocol::messages::MessageType::ServerAiTakeover, &bc)
+            {
+                for session in self.sessions.values() {
+                    session.send(buf.clone());
+                }
+            }
+        }
     }
 
     /// Process a player action. Borrows fields separately.

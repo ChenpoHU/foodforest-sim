@@ -17,6 +17,10 @@ import {
 } from "./data/world.js";
 // 3D Earth start-screen selector.
 import { createGlobe } from "./globe.js";
+// Aurona Singer — the game's first cultural house AI (ironic songs). Her
+// songbook is an in-game FoFo-Coin store; songbookChanged() refreshes it
+// after a purchase round-trips through the server.
+import { openSongbookStore, songbookChanged, openFateOracle } from "./aurona.js";
 // Per-species animal movement "habits".
 import { ANIMAL_GAITS } from "./data/gaits.js";
 // ActionKind → wire-bytes encoders.
@@ -27,7 +31,8 @@ import {
     encodeSellAction, encodeDeployAIAction, encodePropagandaAction,
     encodeGrantUbiAction, encodeIssueTaskAction, encodeAscendAction,
     encodeRevoltAction, encodeResearchAction, encodeDeployBreakthroughAction,
-    encodeHochsitzAction, encodeCraftAction,
+    encodeHochsitzAction, encodeCraftAction, encodeBuySongAction,
+    encodePlantBrainChipAction, encodeAcceptFateAction, encodeRemoveChipAction,
 } from "./net/messages.js";
 // Ambient generative piano (Web Audio).
 import { startAmbientMusic } from "./audio/music.js";
@@ -83,6 +88,9 @@ let inputSeq = 0;
 
 // Connect screen
 document.getElementById("connect-btn").addEventListener("click", () => {
+    // Require a deliberate mode + role choice (the disabled button normally
+    // blocks this; the guard covers the keyboard-Enter path too).
+    if (!modeChosen || !roleChosen) { updateEnterEnabled(); return; }
     try {
         playerName = document.getElementById("player-name").value || "Farmer";
         const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
@@ -90,20 +98,10 @@ document.getElementById("connect-btn").addEventListener("click", () => {
         // Free the start-screen globe's GPU resources — the in-game
         // renderer is about to spin up.
         if (_globe) { _globe.dispose(); _globe = null; }
-        // Optimistically reflect the role the user picked so the toolbar
-        // renders correctly on first paint, before the server has had a
-        // chance to confirm or downgrade (Tech Monarch outside Realistic
-        // is silently downgraded server-side; the next ServerPlayerState
-        // will correct us if so).
-        // Optimistic role display until ServerPlayerState confirms.
-        // Monarch needs Realistic; Innovator needs Realistic OR Survival.
-        if (selectedRole === 1 && selectedGameMode === 1) {
-            playerRoleLive = 1;
-        } else if (selectedRole === 2 && (selectedGameMode === 1 || selectedGameMode === 2)) {
-            playerRoleLive = 2;
-        } else {
-            playerRoleLive = 0;
-        }
+        // Optimistically reflect the chosen role so the toolbar paints right
+        // away; ServerPlayerState confirms. Every role is valid in every world
+        // now. The AI faction (3) shares the Tech-Monarch toolbar (automation).
+        playerRoleLive = (selectedRole === 3) ? 1 : selectedRole;
         rebuildToolbar();
         init(serverUrl);
     } catch (err) {
@@ -119,13 +117,23 @@ document.getElementById("player-name").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("connect-btn").click();
 });
 
-const modeDescriptions = {
-    0: "No casualties. Trees disappear when cut. Relaxed pace for all ages.",
-    1: "Full felling physics. Falling trees can crush you. Real danger.",
-    2: "Wildfire deadline + animals with learning AI that adapt to your behavior.",
+// Aurona's Songbook — an in-game STORE reachable from every role's HUD (the
+// front page no longer carries songs). The store shows a live view of the
+// wallet + which songs are owned; Buy sends the server-authoritative purchase.
+// Death-trigger "oracle" playback comes later (see md/09-aurona-oracle.md).
+const songbookApi = {
+    coins: () => playerCoins,
+    owned: () => myOwnedSongs,
+    buy: (songId) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(buildActionMessage(encodeBuySongAction(songId)));
+    },
 };
+document.getElementById("songbook-btn").addEventListener("click", () => openSongbookStore(songbookApi));
 
-// Player role: 0 = Farmer (default), 1 = Tech Monarch (Realistic mode only).
+// Player role: 0 Farmer · 1 Tech Monarch · 2 Innovator · 3 AI faction.
+// Every role is selectable in every world now (the world sets difficulty,
+// not which roles exist).
 let selectedRole = 0;
 
 // Live Monarch state from the server. `playerRoleLive` is 0 (Farmer) or
@@ -151,72 +159,123 @@ function pushMonarchDecision(text, tone) {
     while (monarchDecisions.length > 12) monarchDecisions.shift();
 }
 
-const roleDescriptions = {
-    0: "Plant, harvest, and trade your own food forest.",
-    1: "Deploy semi-AI workers to auto-harvest the world. Each AI run accrues FoFo and Influence, and cuts a job a farmer might have done.",
-    2: "The distributed human counterweight to centralised AI. Research Climate, Medicine, Defense, and Food — then deploy breakthroughs that resolve global catastrophes the AI can't solve alone.",
-};
+// ── Mode + role pickers (auto-scrolling charming wheels) ─────────────
+// Every world offers every role now. Each picker is a vertical wheel that
+// auto-cycles to showcase the options; the player can also drive it with the
+// ▲▼ arrows, the scroll-wheel, or by clicking a peeking card.
+const MODE_OPTIONS = [
+    { v: 0, ic: "🌿", name: "Peaceful",  grad: "linear-gradient(135deg,#2e7d32,#66bb6a)",
+      desc: "No casualties. Pure, relaxed gardening — put the stress down." },
+    { v: 1, ic: "🪓", name: "Realistic", grad: "linear-gradient(135deg,#8a5a22,#d2a24a)",
+      desc: "Felling physics, hunting, economy & politics. Real stakes." },
+    { v: 2, ic: "🔥", name: "Survival",  grad: "linear-gradient(135deg,#a8322a,#ff7043)",
+      desc: "Wildfire clock + learning AI. A crucible for the resilient." },
+];
+const ROLE_OPTIONS = [
+    { v: 0, ic: "🧑‍🌾", name: "Farmer",       grad: "linear-gradient(135deg,#2e7d32,#7cb342)",
+      desc: "Plant, tend, harvest, hunt, craft, trade. The dignity of work." },
+    { v: 1, ic: "👑", name: "Tech Monarch", grad: "linear-gradient(135deg,#5b3a8a,#9a6ad6)",
+      desc: "Deploy AI workers to automate the world — power, and its price." },
+    { v: 2, ic: "🔬", name: "Innovator",    grad: "linear-gradient(135deg,#1f6f8b,#4ec3e0)",
+      desc: "Research breakthroughs that end the catastrophes AI can't." },
+    { v: 3, ic: "🤖", name: "AI Faction",   grad: "linear-gradient(135deg,#3a3f57,#7a86ff)",
+      desc: "Play as the machine intelligence — automate, learn, ascend." },
+];
 
-function refreshRoleVisibility() {
-    const row = document.getElementById("role-row");
-    if (!row) return;
-    // Tech Monarch is only legal in Realistic (mode 1).
-    // Innovator is legal in Realistic OR Survival (mode 2) — they're
-    // the role that earns its keep when catastrophes hit.
-    // Peaceful (mode 0): only Farmer.
-    const isRealistic = (selectedGameMode === 1);
-    const isSurvival  = (selectedGameMode === 2);
-    if (isRealistic || isSurvival) {
-        row.style.display = "flex";
-        // Hide the TechMonarch button when not Realistic.
-        document.querySelectorAll(".role-btn").forEach(b => {
-            const r = parseInt(b.dataset.role);
-            if (r === 1) b.style.display = isRealistic ? "flex" : "none";
+const PICKER_CARD_H = 78; // must match .pcard height in styles.css
+
+function makeCarousel(pickerEl, items, onChange) {
+    if (!pickerEl) return null;
+    const track = pickerEl.querySelector(".picker-track");
+    let active = 0, dir = 1, timer = null, paused = false;
+    let chosen = -1; // index the player has deliberately picked; -1 = none yet
+
+    track.innerHTML = items.map((it, i) =>
+        "<div class='pcard' data-i='" + i + "'>" +
+          "<span class='pcard-ic' style='background:" + it.grad + "'>" + it.ic + "</span>" +
+          "<span class='pcard-body'>" +
+            "<span class='pcard-name'>" + it.name + "</span>" +
+            "<span class='pcard-desc'>" + it.desc + "</span>" +
+          "</span>" +
+        "</div>").join("");
+    const cards = Array.from(track.querySelectorAll(".pcard"));
+    const upArrow = pickerEl.querySelector('.picker-arrow[data-dir="-1"]');
+    const downArrow = pickerEl.querySelector('.picker-arrow[data-dir="1"]');
+
+    function layout() {
+        track.style.transform = "translateY(" + (-active * PICKER_CARD_H) + "px)";
+        cards.forEach((c, i) => {
+            c.classList.toggle("active", i === active);
+            // The highlight/halo lives on `chosen`, not `active`, so it only
+            // shows once the player has DELIBERATELY picked this card — never
+            // while the wheel is just auto-showcasing.
+            c.classList.toggle("chosen", i === chosen);
         });
-        // If TechMonarch was selected and we just switched to Survival,
-        // drop back to Farmer so the connect button can't send invalid.
-        if (selectedRole === 1 && !isRealistic) {
-            selectedRole = 0;
-            applyRoleVisuals();
-        }
-    } else {
-        row.style.display = "none";
-        if (selectedRole !== 0) {
-            selectedRole = 0;
-            applyRoleVisuals();
-        }
+        // Grey an arrow out when there's nothing further that way, so it's
+        // obvious when the wheel can't scroll up / down any more.
+        if (upArrow) upArrow.classList.toggle("disabled", active <= 0);
+        if (downArrow) downArrow.classList.toggle("disabled", active >= items.length - 1);
     }
+    // `userPicked` = the change came from a deliberate action (arrow / scroll /
+    // click), not the auto-showcase. Only those count as a real selection.
+    function commit(userPicked) { onChange(items[active], active, !!userPicked); }
+    // Auto-cycle showcases the options; the moment the player takes manual
+    // control we stop so their choice sticks.
+    function stopAuto() { if (timer) { clearInterval(timer); timer = null; } }
+    // Lock the centred card in as the player's pick: stop the showcase, mark it
+    // chosen (highlighted halo), and report it as a real selection.
+    function pick() { stopAuto(); chosen = active; layout(); commit(true); }
+    function go(delta, fromUser) {
+        active = Math.max(0, Math.min(items.length - 1, active + delta));
+        if (fromUser) pick(); else { layout(); commit(false); }
+    }
+    function autoStep() {
+        if (paused) return;
+        if (active >= items.length - 1) dir = -1; else if (active <= 0) dir = 1;
+        active += dir; layout(); commit(false);
+    }
+
+    pickerEl.querySelectorAll(".picker-arrow").forEach((b) =>
+        b.addEventListener("click", () => {
+            if (b.classList.contains("disabled")) return; // at the end → no-op
+            go(parseInt(b.dataset.dir, 10), true);
+        }));
+    pickerEl.querySelector(".picker-window").addEventListener("wheel", (e) => {
+        e.preventDefault();
+        go(e.deltaY > 0 ? 1 : -1, true);
+    }, { passive: false });
+    // Clicking any card — even the one already centred — confirms it.
+    cards.forEach((c, i) => c.addEventListener("click", () => { active = i; pick(); }));
+    pickerEl.addEventListener("pointerenter", () => { paused = true; });
+    pickerEl.addEventListener("pointerleave", () => { paused = false; });
+
+    layout(); commit(false);   // initial showcase position — NOT a selection yet
+    timer = setInterval(autoStep, 3200);
+    return { pick };
 }
 
-function applyRoleVisuals() {
-    // Active state is purely a CSS class now (.role-btn.active) — no
-    // inline styles, so the stylesheet owns the look.
-    document.querySelectorAll(".role-btn").forEach(b => {
-        b.classList.toggle("active", parseInt(b.dataset.role) === selectedRole);
-    });
-    const desc = document.getElementById("role-desc");
-    if (desc) desc.textContent = roleDescriptions[selectedRole];
-    // Mirror the role in the name field's avatar for a cohesive identity.
+// The player must DELIBERATELY pick a mode and a role before they can enter —
+// the auto-showcase doesn't count. `modeChosen`/`roleChosen` flip true only on
+// a real pick, and Enter World stays disabled until both are set.
+let modeChosen = false, roleChosen = false;
+function updateEnterEnabled() {
+    const ready = modeChosen && roleChosen;
+    const btn = document.getElementById("connect-btn");
+    const hint = document.getElementById("enter-hint");
+    if (btn) btn.disabled = !ready;
+    if (hint) hint.style.display = ready ? "none" : "block";
+}
+makeCarousel(document.getElementById("mode-picker"), MODE_OPTIONS, (it, idx, userPicked) => {
+    selectedGameMode = it.v;
+    if (userPicked) { modeChosen = true; updateEnterEnabled(); }
+});
+makeCarousel(document.getElementById("role-picker"), ROLE_OPTIONS, (it, idx, userPicked) => {
+    selectedRole = it.v;
     const idEmoji = document.getElementById("identity-emoji");
-    if (idEmoji) idEmoji.textContent = ["🧑‍🌾", "🤖", "🔬"][selectedRole] || "🧑‍🌾";
-}
-
-document.querySelectorAll(".mode-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-        document.querySelectorAll(".mode-btn").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        selectedGameMode = parseInt(btn.dataset.mode);
-        document.getElementById("mode-desc").textContent = modeDescriptions[selectedGameMode];
-        refreshRoleVisibility();
-    });
+    if (idEmoji) idEmoji.textContent = it.ic;
+    if (userPicked) { roleChosen = true; updateEnterEnabled(); }
 });
-
-document.querySelectorAll(".role-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-        selectedRole = parseInt(btn.dataset.role);
-        applyRoleVisuals();
-    });
-});
+updateEnterEnabled(); // start disabled until both a mode and a role are chosen
 
 // === World data ===
 // WORLD_COUNTRIES → ./data/world.js (imported at top)
@@ -563,6 +622,20 @@ function rebuildToolbar() {
                 selectedPlant = null;
             });
         });
+
+        // De-chip — the liberator's act. An IMMEDIATE action (not a select-a-
+        // tool button): frees the nearest chipped Farmer within reach. Added
+        // after the delegated handler so it doesn't join the tool selection.
+        const dechipBtn = document.createElement("button");
+        dechipBtn.style.cssText =
+            "display:flex; align-items:center; gap:6px; padding:6px 12px; background:#143a4a; border:1px solid #2a7a9a;";
+        dechipBtn.innerHTML = "<span style='font-size:18px;'>🔓</span><span style='font-size:11px;'>De-chip</span>";
+        dechipBtn.addEventListener("click", () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(buildActionMessage(encodeRemoveChipAction()));
+            }
+        });
+        toolbar.appendChild(dechipBtn);
 
         selectedAction = null;
         refreshInnovatorHud();
@@ -1508,48 +1581,56 @@ function updateGrass(time) {
     }
 }
 
-// Grass tufts that can burn away near fire. We keep the InstancedMesh +
-// each tuft's base position & matrix so a fire pass can hide (zero-scale)
-// tufts within range of a burning entity and restore them once the fire
-// is gone. Reset whenever the terrain is rebuilt.
+// Grass tufts that burn away near fire — permanently. We keep the InstancedMesh
+// + each tuft's base position so a fire pass can zero-scale (scorch) tufts
+// within range of a burning entity; once burned they stay gone (scorched
+// earth — no green regrowth after the fire). Reset when the terrain rebuilds.
 let grassTuftMesh = null;
-let grassTuftData = null;            // { pos: [{x,z}], base: [Matrix4], hidden: [bool] }
+let grassTuftData = null;            // { pos: [{x,z}], base: [Matrix4], hidden: [bool=burned] }
 const _zeroScaleMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
 let _grassFireTimer = 0;
 
-// Throttled (~3 Hz from the game loop): hide grass tufts close to any
-// burning entity, restore the rest. Cheap enough — a few thousand tufts
-// against a capped list of fire sources.
+// Throttled (~3 Hz from the game loop): permanently scorch grass tufts as the
+// fire reaches them. Already-burned tufts are skipped, so it stays cheap.
 function updateGrassFire(dt) {
     _grassFireTimer += dt;
     if (_grassFireTimer < 0.33) return;
     _grassFireTimer = 0;
     if (!grassTuftMesh || !grassTuftData) return;
 
-    // Collect up to N burning-entity positions (flameEntities is the
-    // client's set of entities currently rendering a flame effect).
+    // Collect burning-entity positions (flameEntities = entities rendering a
+    // flame). Burning only ever comes from the wildfire, so a crowd of them
+    // means the whole field is alight.
     const fires = [];
     for (const eid of flameEntities.keys()) {
         const obj = entityMeshes.get(eid);
-        if (obj) { fires.push(obj.position); if (fires.length >= 80) break; }
+        if (obj) { fires.push(obj.position); if (fires.length >= 240) break; }
     }
+    if (fires.length === 0) return;
 
     const data = grassTuftData;
-    const R2 = 9.0;                  // burn radius² (3 m)
+    // A real wildfire ("Everything burns") throws up many flames at once and
+    // sweeps the entire region — so once we see a crowd of flames, scorch ALL
+    // remaining grass, not just the tufts standing right beside a flame (which
+    // left green gaps in between). A mere handful of flames (a local burn) only
+    // scorches grass within reach.
+    const wildfire = fires.length >= 12;
+    const R2 = 30.0;                 // local burn radius² (~5.5 m)
     let changed = false;
     for (let i = 0; i < data.pos.length; i++) {
-        const p = data.pos[i];
-        let near = false;
-        for (let f = 0; f < fires.length; f++) {
-            const dx = fires[f].x - p.x, dz = fires[f].z - p.z;
-            if (dx * dx + dz * dz < R2) { near = true; break; }
+        if (data.hidden[i]) continue;          // already burned — stays gone
+        let burn = wildfire;
+        if (!burn) {
+            const p = data.pos[i];
+            for (let f = 0; f < fires.length; f++) {
+                const dx = fires[f].x - p.x, dz = fires[f].z - p.z;
+                if (dx * dx + dz * dz < R2) { burn = true; break; }
+            }
         }
-        if (near && !data.hidden[i]) {
+        if (burn) {
+            // Scorch PERMANENTLY — grass does not spring back green.
             grassTuftMesh.setMatrixAt(i, _zeroScaleMatrix);
             data.hidden[i] = true; changed = true;
-        } else if (!near && data.hidden[i]) {
-            grassTuftMesh.setMatrixAt(i, data.base[i]);
-            data.hidden[i] = false; changed = true;
         }
     }
     if (changed) grassTuftMesh.instanceMatrix.needsUpdate = true;
@@ -1622,8 +1703,13 @@ function buildWaterMaterial({ shallow, deep, opacity }) {
 
                 // Diffuse against the sun + ambient sky tint.
                 float lambert = max(dot(nrm, normalize(sunDir)), 0.0);
-                vec3 baseColor = mix(deep, shallow, smoothstep(0.0, 1.0, vUv.y * 0.6 + nA * 0.6));
-                vec3 lit = baseColor * (0.55 + 0.45 * lambert);
+                // Large-scale "patch" noise drifts the depth blend across the
+                // surface, so the water shows many shades — bright turquoise
+                // shallows fading to deep blue, the way NZ glacial lakes do.
+                float patch = noise(vWorldPos.xz * 0.045 + 17.0);
+                float blend = smoothstep(0.0, 1.0, vUv.y * 0.5 + nA * 0.5 + (patch - 0.5) * 0.7);
+                vec3 baseColor = mix(deep, shallow, blend);
+                vec3 lit = baseColor * (0.6 + 0.4 * lambert);
 
                 // Sun glint — sharper than diffuse for sparkle.
                 vec3 halfDir = normalize(normalize(sunDir) + v);
@@ -1949,6 +2035,7 @@ function handleServerMessage(data) {
         case 0x0113: handleAiTakeover(payload); break;
         case 0x0114: handlePoliticsUpdate(payload); break;
         case 0x0115: handleCatastrophe(payload); break;
+        case 0x0116: handleOracle(payload); break;
         default:
             console.log("Unknown msg 0x" + msgType.toString(16), payloadLen, "bytes");
     }
@@ -1977,6 +2064,56 @@ function handleCatastrophe(payload) {
     // The Deploy Breakthrough button readiness depends on the active
     // catastrophe, so refresh the Innovator HUD too.
     refreshInnovatorHud();
+}
+
+// Aurona's Fate Oracle: she sings the player's fate and (if a Monarch exists)
+// offers the brain-chip escape. kind 0 = a Farmer's death.
+function handleOracle(payload) {
+    const r = new BincodeReader(payload);
+    let songId = 0, offerChip = false, monarchName = "";
+    try {
+        r.readU8();                 // kind (only 0 sent today)
+        songId = r.readU8();
+        offerChip = r.readBool();
+        monarchName = r.readString();
+    } catch (e) { console.warn("oracle decode failed:", e); }
+    // Let go of pointer-lock so the player can click their choice.
+    if (document.pointerLockElement) document.exitPointerLock();
+    openFateOracle({
+        songId, offerChip, monarchName,
+        onAccept: () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(buildActionMessage(encodeAcceptFateAction()));
+            }
+        },
+        onChip: () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(buildActionMessage(encodePlantBrainChipAction()));
+            }
+        },
+    });
+}
+
+// A standing HUD pill while the player is chipped (a Monarch's asset). Created
+// lazily; shown/hidden from the player-state decode.
+function refreshChipHud() {
+    let el = document.getElementById("chip-hud");
+    if (!el) {
+        el = document.createElement("div");
+        el.id = "chip-hud";
+        el.style.cssText =
+            "position:fixed; top:290px; right:12px; width:200px; display:none; align-items:center; " +
+            "justify-content:center; gap:6px; background:linear-gradient(90deg, rgba(40,140,230,0.22), rgba(20,80,160,0.22)); " +
+            "color:#bfe3ff; border:1px solid rgba(90,160,255,0.5); border-radius:8px; padding:6px 8px; font-size:11px; " +
+            "font-family:system-ui,sans-serif; pointer-events:none; z-index:103; text-align:center; line-height:1.3;";
+        document.body.appendChild(el);
+    }
+    if (myChipped) {
+        el.innerHTML = "⛓ Chipped — a Monarch's asset.<br><span style='opacity:.8;'>An Innovator can cut it out.</span>";
+        el.style.display = "flex";
+    } else {
+        el.style.display = "none";
+    }
 }
 
 function renderCatastropheBanner() {
@@ -2473,6 +2610,9 @@ function handleWelcome(payload) {
 
     const hud = document.getElementById("player-hud");
     hud.style.display = "block";
+    // Aurona's Songbook button rides on the HUD for every role.
+    const songbookBtn = document.getElementById("songbook-btn");
+    if (songbookBtn) songbookBtn.style.display = "flex";
     document.getElementById("hud-name").textContent = playerName;
     document.getElementById("hud-stamina").textContent = "Stamina: 100%";
     document.getElementById("hud-hunger").textContent = "Hunger: 0%";
@@ -3045,6 +3185,8 @@ let playerStamina = 100;
 let playerHunger = 0;
 let playerCoins = 0;
 let myOutfit = 0;             // currently-worn outfit id (0/1/2)
+let myOwnedSongs = 0;         // bitmask of Aurona songs bought (bit i = SONGS[i])
+let myChipped = 0;            // 1 if this player is a Monarch's chipped asset
 
 function handlePlayerState(payload) {
     const r = new BincodeReader(payload);
@@ -3101,6 +3243,16 @@ function handlePlayerState(payload) {
     try {
         myOutfit = r.readU8();
     } catch (_) { /* server doesn't speak outfits yet */ }
+    // Owned Aurona songs (bitmask) trails the outfit — the final field.
+    try {
+        myOwnedSongs = r.readU8();
+        songbookChanged(); // refresh the store if it's open (e.g. after a buy)
+    } catch (_) { /* server doesn't speak the songbook yet */ }
+    // Chipped state (Aurona Oracle) trails the songbook — the final field.
+    try {
+        myChipped = r.readU8();
+        refreshChipHud();
+    } catch (_) { /* server doesn't speak the chip yet */ }
 
     // Log notable monarch transitions for the dashboard.
     if (playerRoleLive === 1) {
@@ -3827,18 +3979,19 @@ const VOXEL_COLORS = {
     1: 0x9a9590, // Stone (warm gray)
     2: 0x7a5533, // Soil (rich brown)
     3: 0x5a9a3a, // Grass (lush green)
-    4: 0x3388bb, // Water (clear blue)
+    4: 0x2bbed2, // Water — turquoise (NZ glacial)
     5: 0xe8d4aa, // Sand (warm beige)
     6: 0xb58855, // Clay (terracotta)
     7: 0x5a4422, // Mulch (dark organic)
-    8: 0x3388aa, // Swale (teal)
+    8: 0x2aa7c4, // Swale (bright teal water)
     9: 0x6a4422, // HugelBed
     10: 0x2a7a2a, // Canopy (forest green)
     11: 0xf0f0ff, // Snow (bright white-blue)
     12: 0xccddee, // Ice (pale blue)
-    13: 0x1a4a7a, // Ocean (deep blue)
+    13: 0x0e57a0, // Ocean — deep sapphire blue
     14: 0xa09888, // Gravel (warm taupe)
     15: 0x9a4a2a, // RedSoil (warm terra)
+    16: 0x35d6c4, // Lake — bright glacial turquoise (Jiuzhaigou)
 };
 
 function renderTerrain(terrainData) {
@@ -3920,14 +4073,14 @@ function renderTerrain(terrainData) {
         const useVariation = (matInt === 1 || matInt === 2 || matInt === 3 || matInt === 5 || matInt === 6 || matInt === 14 || matInt === 15);
 
         // Per-material roughness for natural look
-        const roughnessMap = { 1: 0.95, 2: 0.92, 3: 0.88, 4: 0.15, 5: 0.85, 6: 0.9, 7: 0.95, 8: 0.2, 9: 0.93, 10: 0.85, 11: 0.7, 12: 0.3, 13: 0.1, 14: 0.93, 15: 0.9 };
+        const roughnessMap = { 1: 0.95, 2: 0.92, 3: 0.88, 4: 0.15, 5: 0.85, 6: 0.9, 7: 0.95, 8: 0.2, 9: 0.93, 10: 0.85, 11: 0.7, 12: 0.3, 13: 0.1, 14: 0.93, 15: 0.9, 16: 0.12 };
         const material = new THREE.MeshStandardMaterial({
             color: baseColor,
             roughness: roughnessMap[matInt] || 0.85,
-            metalness: (matInt === 4 || matInt === 13 || matInt === 12) ? 0.15 : 0.0,
+            metalness: (matInt === 4 || matInt === 13 || matInt === 12 || matInt === 16) ? 0.15 : 0.0,
         });
 
-        if (matInt === 4 || matInt === 8 || matInt === 13) {
+        if (matInt === 4 || matInt === 8 || matInt === 13 || matInt === 16) {
             material.transparent = true;
             material.opacity = 0.7;
         }
@@ -4143,14 +4296,15 @@ function renderTerrain(terrainData) {
     }
     scene.add(butterflyGroup);
 
-    // Water surface planes for animated water
+    // Water surface planes for animated water — rivers/shallows (4), ocean
+    // (13), and inland lakes (16), each with its own palette.
     waterMeshes = [];
     const waterPositions = [];
     for (let z = 0; z < depth; z++) {
         for (let x = 0; x < width; x++) {
             const si = z * width + x;
             const mat = surfaceMap[si];
-            if (mat === 4 || mat === 13) {
+            if (mat === 4 || mat === 13 || mat === 16) {
                 waterPositions.push(x, heightMap[si], z, mat);
             }
         }
@@ -4160,45 +4314,41 @@ function renderTerrain(terrainData) {
         // actually have something to bend; 8×8 is plenty for a 1×1 tile.
         const waterGeo = new THREE.PlaneGeometry(1, 1, 8, 8);
         waterGeo.rotateX(-Math.PI / 2);
+        // New-Zealand water palette — milky glacial turquoise shallows
+        // (Tekapo / Pukaki) fading through teal to a rich sapphire blue.
+        // Lakes get the brighter Jiuzhaigou emerald-turquoise and clearer
+        // water so the pale bed glows. Deeps stay BLUE, never near-black.
         const shallowMat = buildWaterMaterial({
-            shallow: new THREE.Color(0x4aa6d8),
-            deep:    new THREE.Color(0x1a4a78),
-            opacity: 0.78,
+            shallow: new THREE.Color(0x86ebe2),  // bright glacial turquoise
+            deep:    new THREE.Color(0x18a8cf),  // teal-blue
+            opacity: 0.82,
         });
         const deepMat = buildWaterMaterial({
-            shallow: new THREE.Color(0x1a6298),
-            deep:    new THREE.Color(0x062040),
+            shallow: new THREE.Color(0x2aa6e2),  // vivid cerulean
+            deep:    new THREE.Color(0x0c52a2),  // rich sapphire
             opacity: 0.88,
         });
-        waterMaterials.push(shallowMat, deepMat);
-        const shallowCount = waterPositions.filter((_, i) => i % 4 === 3 && waterPositions[i] === 4).length / 1;
-        let sc = 0, dc = 0;
-        for (let i = 3; i < waterPositions.length; i += 4) {
-            if (waterPositions[i] === 4) sc++; else dc++;
-        }
-        if (sc > 0) {
-            const mesh = new THREE.InstancedMesh(waterGeo, shallowMat, sc);
-            mesh.receiveShadow = true;
-            const m = new THREE.Matrix4();
-            let idx = 0;
-            for (let i = 0; i < waterPositions.length; i += 4) {
-                if (waterPositions[i + 3] !== 4) continue;
-                m.setPosition(waterPositions[i], waterPositions[i+1] + 0.55, waterPositions[i+2]);
-                mesh.setMatrixAt(idx++, m);
+        const lakeMat = buildWaterMaterial({
+            shallow: new THREE.Color(0x7af0d2),  // Jiuzhaigou emerald-turquoise
+            deep:    new THREE.Color(0x12a6b8),  // vivid teal
+            opacity: 0.76,                       // clearer → the bed glows
+        });
+        waterMaterials.push(shallowMat, deepMat, lakeMat);
+        const matFor = { 4: shallowMat, 13: deepMat, 16: lakeMat };
+        // One InstancedMesh per water material.
+        for (const matId of [4, 13, 16]) {
+            let count = 0;
+            for (let i = 3; i < waterPositions.length; i += 4) {
+                if (waterPositions[i] === matId) count++;
             }
-            mesh.instanceMatrix.needsUpdate = true;
-            mesh.userData.isWater = true;
-            terrainGroup.add(mesh);
-            waterMeshes.push(mesh);
-        }
-        if (dc > 0) {
-            const mesh = new THREE.InstancedMesh(waterGeo, deepMat, dc);
+            if (count === 0) continue;
+            const mesh = new THREE.InstancedMesh(waterGeo, matFor[matId], count);
             mesh.receiveShadow = true;
             const m = new THREE.Matrix4();
             let idx = 0;
             for (let i = 0; i < waterPositions.length; i += 4) {
-                if (waterPositions[i + 3] !== 13) continue;
-                m.setPosition(waterPositions[i], waterPositions[i+1] + 0.55, waterPositions[i+2]);
+                if (waterPositions[i + 3] !== matId) continue;
+                m.setPosition(waterPositions[i], waterPositions[i + 1] + 0.55, waterPositions[i + 2]);
                 mesh.setMatrixAt(idx++, m);
             }
             mesh.instanceMatrix.needsUpdate = true;
@@ -4216,7 +4366,8 @@ function renderTerrain(terrainData) {
     const fishBody = new THREE.ConeGeometry(0.08, 0.4, 4);
     let fishCount = 0;
     for (let i = 0; i < waterPositions.length && fishCount < 200; i += 4) {
-        if (waterPositions[i + 3] !== 4) continue;
+        const fishMt = waterPositions[i + 3];
+        if (fishMt !== 4 && fishMt !== 16) continue; // fish in shallows + lakes
         if (((waterPositions[i] * 7 + waterPositions[i+2] * 13) & 0x1F) !== 0) continue;
         const fx = waterPositions[i] + (Math.random() - 0.5) * 0.8;
         const fy = waterPositions[i+1] + 0.2;
@@ -4297,18 +4448,19 @@ const MINIMAP_COLORS = {
     1: [154,149,144], // Stone
     2: [122,85,51],   // Soil
     3: [90,154,58],   // Grass
-    4: [51,136,187],  // Water
+    4: [43,190,210],  // Water — turquoise (NZ glacial)
     5: [232,212,170], // Sand
     6: [181,136,85],  // Clay
     7: [90,68,34],    // Mulch
-    8: [51,136,170],  // Swale
+    8: [42,167,196],  // Swale — bright teal water
     9: [106,68,34],   // HugelBed
     10: [42,122,42],  // Canopy
     11: [240,240,255],// Snow
     12: [204,221,238],// Ice
-    13: [26,74,122],  // Ocean
+    13: [14,87,160],  // Ocean — deep sapphire blue
     14: [160,152,136],// Gravel
     15: [154,74,42],  // RedSoil
+    16: [53,214,196], // Lake — bright glacial turquoise (Jiuzhaigou)
 };
 
 const PLOT_SIZE = 80;
@@ -4540,6 +4692,48 @@ function refreshTravelCostUI() {
     }
 }
 
+// The in-game travel picker now uses the SAME 3D globe as the landing page
+// (globe.js) instead of a flat 2D map. Built lazily when the overlay opens and
+// disposed when it closes, so we never keep a second WebGL context alive during
+// play. Falls back to the country/region buttons if WebGL is unavailable.
+let _navGlobe = null;
+function initNavGlobe() {
+    const stage = document.getElementById("nav-globe-stage");
+    if (!stage) return;
+    if (_navGlobe) {
+        _navGlobe.focusCountry(navSelectedCountry, false);
+        _navGlobe.setSelectedRegion(navSelectedRegion);
+        return;
+    }
+    try {
+        _navGlobe = createGlobe(stage, {
+            onSelectCountry: (idx) => {
+                navSelectedCountry = idx;
+                navSelectedRegion = WORLD_COUNTRIES[idx].start;
+                buildNavUI();
+                refreshTravelCostUI();
+            },
+            onSelectRegion: (gIdx) => {
+                const cIdx = WORLD_COUNTRIES.findIndex(
+                    (c) => gIdx >= c.start && gIdx < c.start + c.count);
+                if (cIdx >= 0) navSelectedCountry = cIdx;
+                navSelectedRegion = gIdx;
+                buildNavUI();
+                refreshTravelCostUI();
+            },
+        });
+        // Start the globe focused on where the player currently is.
+        _navGlobe.focusCountry(navSelectedCountry, false);
+        _navGlobe.setSelectedRegion(navSelectedRegion);
+    } catch (err) {
+        console.error("Travel globe init failed; keeping list selectors:", err);
+        _navGlobe = null;
+        const hint = document.getElementById("nav-globe-hint");
+        if (hint) hint.textContent = "3D globe unavailable — use the country & region buttons below.";
+        stage.style.display = "none";
+    }
+}
+
 function openWorldNav() {
     if (document.pointerLockElement) document.exitPointerLock();
 
@@ -4547,12 +4741,14 @@ function openWorldNav() {
     navSelectedRegion = selectedRegion;
     document.getElementById("world-nav-overlay").style.display = "flex";
     buildNavUI();
-    drawNavMap();
+    initNavGlobe();
     refreshTravelCostUI();
 }
 
 function closeWorldNav() {
     document.getElementById("world-nav-overlay").style.display = "none";
+    // Free the travel globe's GPU resources — the in-game renderer keeps running.
+    if (_navGlobe) { try { _navGlobe.dispose(); } catch (e) {} _navGlobe = null; }
 }
 
 function buildNavUI() {
@@ -4566,7 +4762,7 @@ function buildNavUI() {
             navSelectedCountry = i;
             navSelectedRegion = c.start;
             buildNavUI();
-            drawNavMap();
+            if (_navGlobe) _navGlobe.focusCountry(i, true);
             refreshTravelCostUI();
         });
         bar.appendChild(btn);
@@ -4583,6 +4779,7 @@ function buildNavUI() {
         btn.addEventListener("click", () => {
             navSelectedRegion = rIdx;
             buildNavUI();
+            if (_navGlobe) _navGlobe.setSelectedRegion(rIdx);
             refreshTravelCostUI();
         });
         regionList.appendChild(btn);
@@ -4592,54 +4789,8 @@ function buildNavUI() {
     refreshTravelCostUI();
 }
 
-function drawNavMap() {
-    const canvas = document.getElementById("nav-world-canvas");
-    const ctx = canvas.getContext("2d");
-    const w = canvas.width, h = canvas.height;
-
-    // The in-game "Travel to Region" overlay keeps the lightweight 2D
-    // map; the connect screen uses the 3D globe instead. Build the
-    // offscreen base lazily the first time the overlay opens.
-    if (!_worldMapBase) _worldMapBase = buildWorldMapBase(w, h);
-    ctx.drawImage(_worldMapBase, 0, 0);
-
-    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
-        const c = WORLD_COUNTRIES[i];
-        const isSel = (i === navSelectedCountry);
-        ctx.fillStyle = isSel ? "#fff" : c.color;
-        ctx.beginPath();
-        ctx.arc(c.cx, c.cy, isSel ? 8 : 5, 0, Math.PI * 2);
-        ctx.fill();
-        if (isSel) {
-            ctx.strokeStyle = c.color;
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        }
-        ctx.fillStyle = isSel ? "#fff" : "#aaa";
-        ctx.font = isSel ? "bold 11px system-ui" : "10px system-ui";
-        ctx.textAlign = "center";
-        ctx.fillText(c.name, c.cx, c.cy - 10);
-    }
-}
-
-document.getElementById("nav-world-canvas").addEventListener("click", (e) => {
-    const canvas = document.getElementById("nav-world-canvas");
-    const rect = canvas.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const my = (e.clientY - rect.top) * (canvas.height / rect.height);
-    let bestDist = 40, bestIdx = -1;
-    for (let i = 0; i < WORLD_COUNTRIES.length; i++) {
-        const c = WORLD_COUNTRIES[i];
-        const dist = Math.sqrt((mx - c.cx) ** 2 + (my - c.cy) ** 2);
-        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
-    }
-    if (bestIdx >= 0) {
-        navSelectedCountry = bestIdx;
-        navSelectedRegion = WORLD_COUNTRIES[bestIdx].start;
-        buildNavUI();
-        drawNavMap();
-    }
-});
+// (The old flat 2D travel map + its canvas click handler were removed — the
+// travel picker now uses the 3D globe, built in initNavGlobe above.)
 
 document.getElementById("world-nav-btn").addEventListener("click", openWorldNav);
 document.getElementById("nav-cancel-btn").addEventListener("click", closeWorldNav);
@@ -5005,7 +5156,14 @@ function updateEntityAnimations(dt, nowSec) {
             }
             // Drone hover: float gently above the ground, never grazes.
             if (g.hover) dy = 0.05 + Math.sin(nowSec * 1.6 + phase) * 0.06;
-            obj.position.y += dy;
+            // The bob is a TRANSIENT visual offset on top of a clean base Y that
+            // tracks the server surface. Adding it straight onto obj.position.y
+            // let the (always-positive) hop/hover bob ACCUMULATE against the
+            // position lerp and float the animal up into the air — so keep the
+            // base Y separate and set the rendered Y absolutely.
+            if (u.baseY === undefined) u.baseY = u.targetPos.y;
+            u.baseY += (u.targetPos.y - u.baseY) * posBlend;
+            obj.position.y = u.baseY + dy;
 
             // Sway: side-to-side roll (boar waddle, chicken bustle).
             if (g.sway > 0) {

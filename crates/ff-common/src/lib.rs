@@ -116,6 +116,10 @@ pub enum PlayerRole {
     Farmer = 0,
     TechMonarch = 1,
     Innovator = 2,
+    /// The AI faction — a human (or agent) playing as the machine intelligence:
+    /// deploys automation and pursues collective intelligence. Shares the
+    /// Monarch's automation mechanics; distinguished by intent + faction.
+    Ai = 3,
 }
 
 impl From<u8> for PlayerRole {
@@ -123,6 +127,7 @@ impl From<u8> for PlayerRole {
         match v {
             1 => Self::TechMonarch,
             2 => Self::Innovator,
+            3 => Self::Ai,
             _ => Self::Farmer,
         }
     }
@@ -160,6 +165,7 @@ pub enum VoxelMaterial {
     Ocean = 13,
     Gravel = 14,
     RedSoil = 15,
+    Lake = 16,         // inland water — flooded hollows (Jiuzhaigou-style)
 }
 
 impl From<u8> for VoxelMaterial {
@@ -181,6 +187,7 @@ impl From<u8> for VoxelMaterial {
             13 => Self::Ocean,
             14 => Self::Gravel,
             15 => Self::RedSoil,
+            16 => Self::Lake,
             _ => Self::Air,
         }
     }

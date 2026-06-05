@@ -49,6 +49,10 @@ pub async fn run_tick_loop(shard: Arc<Mutex<Shard>>) {
                 }
             }
 
+            // Aurona's Fate Oracle: catch any Farmer who just died and sing
+            // them their fate (offering the brain-chip escape).
+            check_fate_oracle(&mut shard);
+
             if tick_count % NET_SEND_INTERVAL as u64 == 0 {
                 broadcast_updates(&mut shard);
             }
@@ -253,6 +257,12 @@ fn broadcast_updates(shard: &mut Shard) {
             flags |= 0x40;
         }
 
+        // Chipped — a Tech-Monarch's asset (Aurona Oracle). 0x80 marks the
+        // avatar so everyone sees who's owned, and Innovators can de-chip them.
+        if shard.ecs_world.get::<&ff_ecs::components::player::MonarchAsset>(_entity).is_ok() {
+            flags |= 0x80;
+        }
+
         updates.push(ServerEntityUpdate {
             entity_id: net_id.0,
             position: [pos.0.x, pos.0.y, pos.0.z],
@@ -360,6 +370,16 @@ fn check_political_thresholds(shard: &mut Shard) {
         )>()
         .iter()
     {
+        // Native AI agents (Magnus the Monarch, Nyx the AI faction) are not
+        // human monarchs to overthrow — their arc is the faction system
+        // (`Shard::tick_ai_faction`), not this human-politics demotion.
+        if shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::NativeAi>(entity)
+            .is_ok()
+        {
+            continue;
+        }
         // AI takeover wins ties (it's the more dramatic outcome).
         if monarch.ai_intelligence >= AI_TAKEOVER_THRESHOLD {
             outcomes.push(Outcome {
@@ -611,6 +631,72 @@ pub fn ensure_wallets(shard: &mut Shard) {
 /// Build and send a fresh `ServerPlayerState` for a single player. Safe
 /// to call after any action that mutates inventory / hunger / wallet —
 /// the client modal will reflect the change on the next render.
+/// Aurona's Fate Oracle: when a Farmer dies (outside Peaceful), sing them the
+/// elegy and offer the brain-chip escape. Tracks who's been shown the oracle so
+/// it isn't re-sent every tick, and clears the flag once they're alive again.
+fn check_fate_oracle(shard: &mut Shard) {
+    use ff_ecs::components::player::{Dead, Innovator, Monarch, MonarchAsset, Player};
+
+    // Peaceful keeps its no-casualties promise — no death, no oracle.
+    if shard.resources.game_mode == ff_common::GameMode::Peaceful {
+        return;
+    }
+
+    // Is there a Monarch to own a chipped Farmer? Grab a name for flavour.
+    let monarch_name: Option<String> = {
+        let mut nm = None;
+        for (e, _m) in shard.ecs_world.query::<&Monarch>().iter() {
+            if let Ok(pl) = shard.ecs_world.get::<&Player>(e) {
+                nm = shard.sessions.get(&pl.player_id).map(|s| s.player_name.clone());
+                if nm.is_some() {
+                    break;
+                }
+            }
+        }
+        nm
+    };
+    let offer_chip = monarch_name.is_some();
+    let monarch_name = monarch_name.unwrap_or_default();
+
+    // Newly-dead Farmers → oracle; revived players → clear the flag.
+    let mut to_oracle: Vec<ff_common::PlayerId> = Vec::new();
+    let mut revived: Vec<ff_common::PlayerId> = Vec::new();
+    for (e, pl) in shard.ecs_world.query::<&Player>().iter() {
+        let dead = shard.ecs_world.get::<&Dead>(e).is_ok();
+        let known = shard.death_oracled.contains(&pl.player_id);
+        if dead && !known {
+            // Only Farmers get the Farmer fate (not Monarch / Innovator), and
+            // not someone already chipped.
+            let is_monarch = shard.ecs_world.get::<&Monarch>(e).is_ok();
+            let is_innov = shard.ecs_world.get::<&Innovator>(e).is_ok();
+            let already_chipped = shard.ecs_world.get::<&MonarchAsset>(e).is_ok();
+            if !is_monarch && !is_innov && !already_chipped {
+                to_oracle.push(pl.player_id);
+            }
+        } else if !dead && known {
+            revived.push(pl.player_id);
+        }
+    }
+
+    for pid in revived {
+        shard.death_oracled.remove(&pid);
+    }
+    for pid in to_oracle {
+        shard.death_oracled.insert(pid);
+        let oracle = ServerOracle {
+            kind: 0,    // a Farmer's death
+            song_id: 0, // Strawberry — sweet but deadly
+            offer_chip,
+            monarch_name: monarch_name.clone(),
+        };
+        if let Ok(buf) = encode(MessageType::ServerOracle, &oracle) {
+            if let Some(s) = shard.sessions.get(&pid) {
+                s.send(buf);
+            }
+        }
+    }
+}
+
 pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
     ensure_wallets(shard);
     let Some(session) = shard.sessions.get(&player_id) else { return };
@@ -664,6 +750,20 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             .get::<&ff_ecs::components::player::Outfit>(entity)
             .map(|o| o.0)
             .unwrap_or(0);
+        let owned_songs = shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::SongLibrary>(entity)
+            .map(|s| s.0)
+            .unwrap_or(0);
+        let chipped = if shard
+            .ecs_world
+            .get::<&ff_ecs::components::player::MonarchAsset>(entity)
+            .is_ok()
+        {
+            1
+        } else {
+            0
+        };
         payload = Some(ServerPlayerState {
             stamina: stamina.0,
             hunger: hunger.0,
@@ -682,6 +782,8 @@ pub fn send_player_state(shard: &mut Shard, player_id: ff_common::PlayerId) {
             innovator_breakthroughs: inv_breakthroughs,
             innovator_focus_topic: inv_focus,
             outfit,
+            owned_songs,
+            chipped,
         });
         break;
     }

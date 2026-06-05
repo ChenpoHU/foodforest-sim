@@ -61,6 +61,12 @@ pub fn record_action(
     action: &str,
     args: serde_json::Value,
     ok: bool,
+    // House-AI training context: the macro-action index (`m`) and the brain's
+    // feature vector (`f`) at action time, present only when this action maps
+    // to a macro the house brain can imitate. Lets the brain warm-start by
+    // replaying this log on startup.
+    mact: Option<u8>,
+    feats: Option<&[f32]>,
 ) {
     let Some(tx) = TX.get() else { return };
     let line = serde_json::json!({
@@ -71,6 +77,8 @@ pub fn record_action(
         "act": action,
         "args": args,
         "ok": ok,
+        "m": mact,
+        "f": feats,
     })
     .to_string();
     let _ = tx.try_send(line);

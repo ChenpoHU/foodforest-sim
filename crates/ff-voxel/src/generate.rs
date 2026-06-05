@@ -313,7 +313,166 @@ pub fn generate_terrain(region_index: u8, plot_seed: u32) -> VoxelWorld {
         }
     }
 
+    // ── Inland lakes: flood genuine basins so low hollows become real water,
+    // Jiuzhaigou-style — a flat per-basin spill surface over a pale sand bed. ──
+    flood_lakes(&mut world, &params, ocean_level);
+
     world
+}
+
+/// Fill inland depressions with lake water via a priority-flood (Barnes /
+/// Planchon "fill"): for every column, compute the level it would flood to
+/// before water could spill off the map edge. Where that sits above the actual
+/// ground we have an enclosed basin, so we pour still water onto a pale sand
+/// bed (which makes the shallows glow turquoise). This targets the REAL hollows
+/// the player sees, not noise-defined patches.
+fn flood_lakes(world: &mut VoxelWorld, params: &RegionParams, ocean_level: u32) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let w = world.width as i32;
+    let d = world.depth as i32;
+    let n = (w * d) as usize;
+    if n < 4 {
+        return;
+    }
+    let idx = |x: i32, z: i32| (z * w + x) as usize;
+
+    // Top solid height per column.
+    let mut ground = vec![0i32; n];
+    for z in 0..d {
+        for x in 0..w {
+            ground[idx(x, z)] = world.height_at(x, z);
+        }
+    }
+
+    // Priority-flood. Border columns drain off the map (water level = ground);
+    // the interior is filled to the lowest spill level reachable from a border.
+    let mut water = vec![i32::MAX; n];
+    let mut heap: BinaryHeap<Reverse<(i32, i32)>> = BinaryHeap::new(); // (level, index)
+    for z in 0..d {
+        for x in 0..w {
+            if x == 0 || z == 0 || x == w - 1 || z == d - 1 {
+                let i = idx(x, z);
+                water[i] = ground[i];
+                heap.push(Reverse((water[i], i as i32)));
+            }
+        }
+    }
+    while let Some(Reverse((lvl, i32idx))) = heap.pop() {
+        let i = i32idx as usize;
+        if lvl > water[i] {
+            continue; // stale entry
+        }
+        let x = (i as i32) % w;
+        let z = (i as i32) / w;
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let (nx, nz) = (x + dx, z + dz);
+            if nx < 0 || nz < 0 || nx >= w || nz >= d {
+                continue;
+            }
+            let ni = idx(nx, nz);
+            let spill = water[i].max(ground[ni]);
+            if spill < water[ni] {
+                water[ni] = spill;
+                heap.push(Reverse((spill, ni as i32)));
+            }
+        }
+    }
+
+    // Precompute basin depth per column (0 = drains away / disqualified). A
+    // column only qualifies if it's inland, above sea level, and not already
+    // river/ocean water. Done before any mutation so we never hold an immutable
+    // borrow of `world` while pouring.
+    let mut depth = vec![0i32; n];
+    for z in 0..d {
+        for x in 0..w {
+            let i = idx(x, z);
+            let g = ground[i];
+            if g < ocean_level as i32 {
+                continue;
+            }
+            if ocean_blend(x as u32, z as u32, world.width, world.depth, params) < 0.45 {
+                continue;
+            }
+            if matches!(world.get(x, g, z), VoxelMaterial::Water | VoxelMaterial::Ocean) {
+                continue;
+            }
+            depth[i] = (water[i] - g).max(0);
+        }
+    }
+
+    // Group flooded cells (depth ≥ 1) into connected basins, then flood each
+    // kept basin WHOLE — its shallow shores AND deep middle. That's the fix for
+    // "water in the air": if we flooded only the deep core, the dry shallow rim
+    // would leave the core standing as an exposed column. A whole basin is
+    // contained by its own dry banks (which sit at the water line), so it reads
+    // as a proper lake. We keep only basins with a genuinely deep core, and cap
+    // total coverage by taking the deepest basins first.
+    const MIN_CORE_DEPTH: i32 = 3;
+    let cap = (n as f32 * 0.07) as usize; // ≤ ~7% of the map as lakes
+    let mut visited = vec![false; n];
+    let mut keep = vec![false; n];
+    let mut components: Vec<(i32, Vec<usize>)> = Vec::new(); // (max_depth, cells)
+    let mut stack: Vec<usize> = Vec::new();
+    for start in 0..n {
+        if visited[start] || depth[start] < 1 {
+            continue;
+        }
+        visited[start] = true;
+        stack.clear();
+        stack.push(start);
+        let mut cells: Vec<usize> = Vec::new();
+        let mut max_depth = 0i32;
+        while let Some(c) = stack.pop() {
+            cells.push(c);
+            if depth[c] > max_depth {
+                max_depth = depth[c];
+            }
+            let cx = (c % w as usize) as i32;
+            let cz = (c / w as usize) as i32;
+            for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let (nx, nz) = (cx + dx, cz + dz);
+                if nx < 0 || nz < 0 || nx >= w || nz >= d {
+                    continue;
+                }
+                let ni = idx(nx, nz);
+                if !visited[ni] && depth[ni] >= 1 {
+                    visited[ni] = true;
+                    stack.push(ni);
+                }
+            }
+        }
+        if max_depth >= MIN_CORE_DEPTH {
+            components.push((max_depth, cells));
+        }
+    }
+    components.sort_by(|a, b| b.0.cmp(&a.0)); // deepest basins first
+    let mut used = 0usize;
+    for (_md, cells) in &components {
+        if used > 0 && used + cells.len() > cap {
+            continue; // would blow the budget — skip (but always keep at least one)
+        }
+        for &c in cells {
+            keep[c] = true;
+        }
+        used += cells.len();
+    }
+
+    // Pour the kept basins: pale sand bed, then water up to the spill surface.
+    for z in 0..d {
+        for x in 0..w {
+            let i = idx(x, z);
+            if !keep[i] {
+                continue;
+            }
+            let g = ground[i];
+            world.set(x, g, z, VoxelMaterial::Sand);
+            for y in (g + 1)..=water[i] {
+                world.set(x, y, z, VoxelMaterial::Lake);
+            }
+        }
+    }
 }
 
 fn ocean_blend(x: u32, z: u32, w: u32, d: u32, params: &RegionParams) -> f32 {
@@ -385,4 +544,30 @@ fn hash_f(x: i32, z: i32, seed: u64) -> f32 {
     h = h ^ (h >> 33);
     let bits = (h & 0xFFFF) as f32 / 65535.0;
     bits * 2.0 - 1.0
+}
+
+#[cfg(test)]
+mod lake_check {
+    use super::*;
+    use ff_common::VoxelMaterial;
+    #[test]
+    fn lakes_are_generated() {
+        let mut total_surface = 0usize;
+        for region in [0u8, 4] {
+            for seed in [42u32] {
+                let world = generate_terrain(region, seed);
+                let mut surf = 0usize;
+                for z in 0..world.depth as i32 {
+                    for x in 0..world.width as i32 {
+                        let h = world.height_at(x, z);
+                        if world.get(x, h, z) == VoxelMaterial::Lake { surf += 1; }
+                    }
+                }
+                total_surface += surf;
+                println!("region {region} seed {seed}: {surf} lake surface tiles");
+            }
+        }
+        println!("TOTAL lake surface tiles across samples: {total_surface}");
+        assert!(total_surface > 0, "no lakes generated in any sampled region/seed");
+    }
 }

@@ -190,16 +190,23 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
                     inv.add(item_id, count);
                 }
             }
+            // Songbook — restore any songs bought from Aurona's store.
+            if p.owned_songs != 0 {
+                let _ = shard
+                    .ecs_world
+                    .insert_one(entity, ff_ecs::components::player::SongLibrary(p.owned_songs));
+            }
             // Monarch role (overrides the hello.player_role choice on
             // reconnect — once a monarch, stays a monarch).
             if let Some(m) = &p.monarch {
                 let _ = shard.ecs_world.insert_one(entity, m.clone());
             }
         }
-        // If we DIDN'T have persistent state for this player AND they
-        // asked for TechMonarch in hello, install a default Monarch.
+        // If we DIDN'T have persistent state for this player AND they asked
+        // for TechMonarch or the AI faction, install a default Monarch (the
+        // AI faction role shares the Monarch's automation mechanics).
         if persisted.as_ref().and_then(|p| p.monarch.as_ref()).is_none()
-            && role == ff_common::PlayerRole::TechMonarch
+            && (role == ff_common::PlayerRole::TechMonarch || role == ff_common::PlayerRole::Ai)
         {
             let _ = shard
                 .ecs_world
@@ -439,6 +446,21 @@ async fn handle_message(
             }
 
             if let Some(pe) = player_entity {
+                // Capture the *pre-action* macro + features so we can teach the
+                // house brain (md/07 §4b) by imitation if the action succeeds —
+                // behavioural cloning wants the state the decision was made in.
+                let h_mact = ff_ecs::systems::house_ai::macro_action_of(&action.action);
+                let h_feats: Option<[f32; ff_ecs::components::player::HOUSE_AI_FEATURES]> =
+                    h_mact.map(|_| ff_ecs::systems::house_ai::extract_features(&shard.ecs_world, pe, &shard.resources));
+                // This human's role selects which policy the brain learns.
+                let h_role: u8 = if shard.ecs_world.get::<&ff_ecs::components::player::Innovator>(pe).is_ok() {
+                    2
+                } else if shard.ecs_world.get::<&ff_ecs::components::player::Monarch>(pe).is_ok() {
+                    1
+                } else {
+                    0
+                };
+
                 let result = shard.process_action(pe, player_id, &action.action);
 
                 let (success, message, despawned) = match result {
@@ -449,18 +471,25 @@ async fn handle_message(
                     }
                 };
 
-                // Feed the house-AI behaviour log: humans count too — the
-                // learning AI is "humanity, distilled" (md/07 §4b). No-op
-                // unless BEHAVIOUR_LOG is set.
+                // House-AI fuel: log this human's action AND teach the shared
+                // brain by imitation when it succeeds — "humanity, distilled."
+                // Both no-ops unless their features are enabled.
                 crate::behaviour_log::record_action(
                     shard.resources.calendar.tick.0,
                     player_id.0,
                     shard.sessions.get(&player_id).map(|s| s.is_ai).unwrap_or(false),
-                    0,
+                    h_role,
                     &action_tag(&action.action),
                     serde_json::json!({}),
                     success,
+                    h_mact.map(|m| m as u8),
+                    h_feats.as_ref().map(|f| f.as_slice()),
                 );
+                if success {
+                    if let (Some(m), Some(f)) = (h_mact, h_feats.as_ref()) {
+                        shard.house_brain.imitate(f, m, h_role);
+                    }
+                }
 
                 let response = ServerActionResult {
                     seq: action.seq,
@@ -1179,5 +1208,14 @@ fn action_tag(action: &ff_protocol::messages::ActionKind) -> String {
             255 => "undressing".into(),
             _ => "crafting".into(),
         },
+        BuySong { song_id } => match song_id {
+            0 => "bought 'Strawberry'".into(),
+            1 => "bought 'Enhanced Love Games'".into(),
+            2 => "bought 'Hu Hu Humandroid'".into(),
+            _ => "bought a song".into(),
+        },
+        PlantBrainChip => "planted the chip".into(),
+        AcceptFate => "accepted their fate".into(),
+        RemoveChip => "removed a chip".into(),
     }
 }

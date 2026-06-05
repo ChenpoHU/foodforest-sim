@@ -17,17 +17,8 @@ export function buildEucalyptus() {
     );
     trunk.position.y = trunkH / 2; trunk.castShadow = true; g.add(trunk);
 
-    const patchMat = new THREE.MeshStandardMaterial({ color: 0x7a8a78, roughness: 0.95 });
-    for (let i = 0; i < 6; i++) {
-        const y = 1.0 + Math.random() * (trunkH - 2);
-        const a = (i / 6) * Math.PI * 2 + Math.random() * 0.5;
-        const patch = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.32, 0.32, 0.4, 8, 1, true), patchMat,
-        );
-        patch.position.set(0, y, 0);
-        patch.rotation.y = a;
-        g.add(patch);
-    }
+    // (Removed the grey ring-band "peel patches" — they circled the trunk like
+    // unnatural hoops. The smooth pale bark reads better.)
 
     // Eucalyptus topology: tall bare trunk, branches only near the very
     // top, rising almost vertically (startElevation high) with little

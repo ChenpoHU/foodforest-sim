@@ -49,7 +49,7 @@ impl VoxelWorld {
     pub fn is_water_surface(&self, x: i32, z: i32) -> bool {
         let h = self.height_at(x, z);
         let mat = self.get(x, h, z);
-        matches!(mat, VoxelMaterial::Water | VoxelMaterial::Ocean)
+        matches!(mat, VoxelMaterial::Water | VoxelMaterial::Ocean | VoxelMaterial::Lake)
     }
 
     /// Simple slope check: max height difference among 4 neighbors.

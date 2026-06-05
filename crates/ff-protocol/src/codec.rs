@@ -81,6 +81,7 @@ pub fn decode(bytes: &[u8]) -> Result<(MessageType, &[u8]), ProtocolError> {
         0x0113 => MessageType::ServerAiTakeover,
         0x0114 => MessageType::ServerPoliticsUpdate,
         0x0115 => MessageType::ServerCatastrophe,
+        0x0116 => MessageType::ServerOracle,
         0x0201 => MessageType::ShardRegister,
         0x0202 => MessageType::ShardPlayerTransfer,
         0x0203 => MessageType::ShardHealthReport,

@@ -2,6 +2,7 @@
 
 pub mod animal_ai;
 pub mod catastrophe;
+pub mod house_ai;
 pub mod interaction;
 pub mod monarch_ai;
 pub mod npc_ai;
