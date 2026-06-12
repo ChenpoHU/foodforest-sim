@@ -129,6 +129,11 @@ mod tests {
             region_index: 0,
             plot_seed: 42,
             player_role: 0,
+            traveling: false,
+            is_ai: false,
+            agent_label: String::new(),
+            realm_id: 0,
+            world_hop: false,
         };
         let buf = encode(MessageType::ClientHello, &hello).unwrap();
         // Print each byte as hex for JS replication

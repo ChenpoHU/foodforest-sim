@@ -69,6 +69,53 @@ let playerName = "Farmer";
 let selectedAction = null;
 let myEntityId = 0;
 let myPlayerId = 0;
+// Which world (realm) we're on. Realm 0 is "Base Earth" (the all-AI simulation
+// of reality, not playable); every playable world is a fork of it. Fresh players
+// start on a fork and can leap between forks from the World Board. Updated from
+// ServerWelcome on every (re)connect; a paid leap reconnects with the chosen fork.
+let myRealm = 1;
+// The fork chosen on the connect screen (realm id). Defaults to Terra Nova.
+let selectedRealm = 1;
+// Latest World Board pushed by the server (array of EarthMeta). Drives the
+// 🌐 HUD button label + the World Board modal.
+let worldBoardCache = [];
+// Mirror of the server's *playable* fork names (crates/ff-server/src/tick.rs),
+// to populate the connect-screen picker BEFORE we connect (the live World Board
+// only arrives post-connect). Every fork starts as a blank timeline of Base
+// Earth — its vital signs emerge from what its settlers do. Keep names in sync.
+const PLAYABLE_EARTHS = [
+    { realm: 1, name: "Terra Nova" },
+    { realm: 2, name: "Gaia Prime" },
+    { realm: 3, name: "New Eden" },
+    { realm: 4, name: "Arcadia" },
+    { realm: 5, name: "Verdant" },
+    { realm: 6, name: "Elysium" },
+    { realm: 7, name: "Concord" },
+];
+// Populate the connect-screen fork picker (module scripts run after the DOM is
+// parsed, so the <select> exists by now).
+(function setupEarthPicker() {
+    const sel = document.getElementById("earth-select");
+    if (!sel) return;
+    sel.innerHTML = "";
+    PLAYABLE_EARTHS.forEach((e) => {
+        const opt = document.createElement("option");
+        opt.value = String(e.realm);
+        opt.textContent = e.name + " — a fresh fork of Base Earth";
+        sel.appendChild(opt);
+    });
+    sel.value = String(selectedRealm);
+    sel.addEventListener("change", () => { selectedRealm = parseInt(sel.value, 10) || 1; });
+})();
+// Resolve which server URL hosts a given world (realm). Multi-process routing:
+// if window.REALM_SERVERS maps the realm to an address, connect there (each
+// fork = its own ff-server process). Otherwise everyone shares the single
+// server-url field — single-process dev. The production gateway populates this.
+function realmServerUrl(realm) {
+    const map = (typeof window !== "undefined" && window.REALM_SERVERS) || {};
+    if (map[realm]) return map[realm];
+    return document.getElementById("server-url").value || "ws://localhost:9000";
+}
 let selectedGameMode = 0;
 let selectedRegion = 0;
 let selectedPlotSeed = 42;
@@ -90,10 +137,11 @@ let inputSeq = 0;
 document.getElementById("connect-btn").addEventListener("click", () => {
     // Require a deliberate mode + role choice (the disabled button normally
     // blocks this; the guard covers the keyboard-Enter path too).
-    if (!modeChosen || !roleChosen) { updateEnterEnabled(); return; }
+    if (!modeChosen || !roleChosen || !territoryChosen || !nameOk()) { updateEnterEnabled(); return; }
     try {
         playerName = document.getElementById("player-name").value || "Farmer";
-        const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
+        myRealm = selectedRealm;                       // land on the chosen fork
+        const serverUrl = realmServerUrl(selectedRealm); // route to that fork's server
         document.getElementById("connect-screen").style.display = "none";
         // Free the start-screen globe's GPU resources — the in-game
         // renderer is about to spin up.
@@ -116,6 +164,8 @@ document.getElementById("connect-btn").addEventListener("click", () => {
 document.getElementById("player-name").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("connect-btn").click();
 });
+// Typing a name is now required to enter — re-gate the button as they type.
+document.getElementById("player-name").addEventListener("input", () => updateEnterEnabled());
 
 // Aurona's Songbook — an in-game STORE reachable from every role's HUD (the
 // front page no longer carries songs). The store shows a live view of the
@@ -257,13 +307,24 @@ function makeCarousel(pickerEl, items, onChange) {
 // The player must DELIBERATELY pick a mode and a role before they can enter —
 // the auto-showcase doesn't count. `modeChosen`/`roleChosen` flip true only on
 // a real pick, and Enter World stays disabled until both are set.
-let modeChosen = false, roleChosen = false;
+let modeChosen = false, roleChosen = false, territoryChosen = false;
+function nameOk() {
+    const el = document.getElementById("player-name");
+    return !!(el && el.value.trim().length > 0);
+}
 function updateEnterEnabled() {
-    const ready = modeChosen && roleChosen;
+    const ready = modeChosen && roleChosen && territoryChosen && nameOk();
     const btn = document.getElementById("connect-btn");
     const hint = document.getElementById("enter-hint");
     if (btn) btn.disabled = !ready;
-    if (hint) hint.style.display = ready ? "none" : "block";
+    if (hint) {
+        hint.style.display = ready ? "none" : "block";
+        const need = [];
+        if (!modeChosen || !roleChosen) need.push("a <b>mode</b> &amp; <b>role</b>");
+        if (!territoryChosen) need.push("a <b>territory</b> (click a globe pin)");
+        if (!nameOk()) need.push("your <b>name</b>");
+        if (need.length) hint.innerHTML = "Choose " + need.join(", ") + " to enter";
+    }
 }
 makeCarousel(document.getElementById("mode-picker"), MODE_OPTIONS, (it, idx, userPicked) => {
     selectedGameMode = it.v;
@@ -429,6 +490,7 @@ function selectRegionCard(gIdx, fromUser) {
         b.classList.toggle("active", parseInt(b.dataset.region, 10) === gIdx);
     });
     if (fromUser && _globe) _globe.setSelectedRegion(gIdx);
+    if (fromUser) { territoryChosen = true; updateEnterEnabled(); }
 }
 
 // Build the globe (the connect screen is in the DOM by the time this
@@ -438,12 +500,16 @@ function initGlobe() {
     if (!stage || _globe) return;
     try {
         _globe = createGlobe(stage, {
-            onSelectCountry: (idx) => renderCountryPanel(idx),
+            onSelectCountry: (idx) => {
+                renderCountryPanel(idx);
+                territoryChosen = true; updateEnterEnabled();
+            },
             onSelectRegion: (gIdx) => {
                 const cIdx = WORLD_COUNTRIES.findIndex(
                     (c) => gIdx >= c.start && gIdx < c.start + c.count);
                 if (cIdx >= 0 && cIdx !== selectedCountryIdx) renderCountryPanel(cIdx);
                 selectRegionCard(gIdx, false);
+                territoryChosen = true; updateEnterEnabled();
             },
         });
     } catch (err) {
@@ -1902,7 +1968,11 @@ function initRenderer() {
 // `traveling` is the trailing bool: true when this hello is a
 // Travel-to-Region reconnect from a player already in the world
 // (server then restores persistent state minus TRAVEL_COST coins).
-function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole, traveling, isAi = false, agentLabel = "") {
+// `realmId` selects which parallel Earth to join (0 = first Earth);
+// `worldHop` is true only on a *paid* cross-Earth jump (charges
+// WORLD_HOP_COST instead of the cheap region TRAVEL_COST). Both trail
+// the message so older fields keep their wire positions.
+function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole, traveling, isAi = false, agentLabel = "", realmId = 0, worldHop = false) {
     const payload = new Uint8Array([
         ...encodeBincodeString(name),
         ...encodeBincodeString("dev-token"),
@@ -1917,6 +1987,9 @@ function buildHelloMessage(name, gameMode, regionIndex, plotSeed, playerRole, tr
         // they connect; see md/07-master-design.md §4.
         isAi ? 1 : 0,
         ...encodeBincodeString(agentLabel),
+        // Realm (parallel Earth) + paid-hop flag.
+        ...encodeVarint(realmId),
+        worldHop ? 1 : 0,
     ]);
     return buildFramedMessage(0x0001, payload);
 }
@@ -1989,8 +2062,8 @@ function connectWebSocket(url) {
     ws.onopen = () => {
         updateStatus("Connected! Sending hello...");
         connected = true;
-        // Fresh connect from the splash screen — no travel charge.
-        ws.send(buildHelloMessage(playerName, selectedGameMode, selectedRegion, selectedPlotSeed, selectedRole, false));
+        // Fresh connect from the splash screen — no travel charge, Earth `myRealm`.
+        ws.send(buildHelloMessage(playerName, selectedGameMode, selectedRegion, selectedPlotSeed, selectedRole, false, false, "", myRealm, false));
     };
 
     ws.onmessage = (event) => {
@@ -2036,6 +2109,7 @@ function handleServerMessage(data) {
         case 0x0114: handlePoliticsUpdate(payload); break;
         case 0x0115: handleCatastrophe(payload); break;
         case 0x0116: handleOracle(payload); break;
+        case 0x0117: handleWorldBoard(payload); break;
         default:
             console.log("Unknown msg 0x" + msgType.toString(16), payloadLen, "bytes");
     }
@@ -2172,9 +2246,10 @@ function handlePoliticsUpdate(payload) {
         const ai_intelligence = r.readF32();
         const deployments = r.readU32();
         const jobs_cut = r.readU32();
+        const welfare = r.readF32();
         monarchs.push({
             player_id, player_name, discontent, ai_intelligence,
-            deployments, jobs_cut,
+            deployments, jobs_cut, welfare,
         });
     }
     politicsState = { tick, monarchs };
@@ -2605,14 +2680,22 @@ function handleWelcome(payload) {
     const shardId = r.readU32();
     const tick = r.readU64();
     const tickRate = r.readU32();
+    // Trailing field: which parallel Earth (realm) we landed on.
+    myRealm = r.readU32();
     updateStatus("Welcome! Entity " + myEntityId + " | Tick " + tick + " | " + tickRate + "Hz");
-    console.log("Welcome: entity=" + myEntityId + " player=" + playerId + " shard=" + shardId);
+    console.log("Welcome: entity=" + myEntityId + " player=" + playerId + " shard=" + shardId + " earth=" + (myRealm + 1));
 
     const hud = document.getElementById("player-hud");
     hud.style.display = "block";
     // Aurona's Songbook button rides on the HUD for every role.
     const songbookBtn = document.getElementById("songbook-btn");
     if (songbookBtn) songbookBtn.style.display = "flex";
+    // The Parallel-Worlds button rides on the HUD too, for every role.
+    const worldsBtn = document.getElementById("worlds-btn");
+    if (worldsBtn) {
+        worldsBtn.style.display = "flex";
+        updateWorldsButtonLabel();
+    }
     document.getElementById("hud-name").textContent = playerName;
     document.getElementById("hud-stamina").textContent = "Stamina: 100%";
     document.getElementById("hud-hunger").textContent = "Hunger: 0%";
@@ -3366,10 +3449,12 @@ function renderMonarchDashboard() {
     // we haven't received one yet.
     let myDiscontent = 0;
     let myAiIntel = 0;
+    let myWelfare = 0;
     for (const m of (politicsState.monarchs || [])) {
         if (m.player_id === myPlayerId) {
             myDiscontent = m.discontent;
             myAiIntel = m.ai_intelligence;
+            myWelfare = m.welfare || 0;
             break;
         }
     }
@@ -3386,6 +3471,9 @@ function renderMonarchDashboard() {
     html += bar("AI intelligence", myAiIntel, 100,
         "linear-gradient(90deg, #4a6cff, #ff6cdc)",
         "Grows with every drone deploy / auto-harvest. Reach 100 → the AI replaces you.");
+    html += bar("Welfare (shared)", myWelfare, 100,
+        "linear-gradient(90deg, #2e8b57, #7fe0a0)",
+        "Wire UBI to share automation's gains. Offsets the unrest + Coexistence hit from cutting jobs — the difference between freeing people and dispossessing them.");
     html += "<div style='margin-bottom:10px;'>" +
         "<div style='font-size:12px; color:#cfe; margin-bottom:3px;'>FoFo Coin balance</div>" +
         "<div style='font-size:22px; font-weight:bold; color:#ffd966;'>🪙 " + playerCoins + "</div>" +
@@ -4667,6 +4755,11 @@ let navSelectedRegion = 0;
 // constant, change this too; server is still authoritative.
 const TRAVEL_COST = 25;
 
+// Mirror of ff-common::WORLD_HOP_COST — the price of a paid cross-Earth
+// hop to a parallel world. Server is authoritative; this is for previewing
+// the cost and greying the Hop button when the wallet is short.
+const WORLD_HOP_COST = 200;
+
 function refreshTravelCostUI() {
     const walletEl = document.getElementById("nav-cost-wallet");
     const amountEl = document.getElementById("nav-cost-amount");
@@ -4826,16 +4919,17 @@ function travelToRegion(regionIndex, plotSeed) {
     if (butterflyGroup) { scene.remove(butterflyGroup); butterflyGroup = null; }
     waterMeshes = [];
 
-    // Reconnect with new region
+    // Reconnect with new region — same fork, so route to this fork's server.
     ws.close();
-    const serverUrl = document.getElementById("server-url").value || "ws://localhost:9000";
+    const serverUrl = realmServerUrl(myRealm);
     ws = new WebSocket(serverUrl);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
         connected = true;
         // Travel reconnect — server restores persistent state (wallet
-        // + inventory + Monarch role) minus TRAVEL_COST.
-        ws.send(buildHelloMessage(playerName, selectedGameMode, regionIndex, plotSeed, selectedRole, true));
+        // + inventory + Monarch role) minus TRAVEL_COST. Stays on the
+        // SAME Earth (`myRealm`): region travel never leaves your world.
+        ws.send(buildHelloMessage(playerName, selectedGameMode, regionIndex, plotSeed, selectedRole, true, false, "", myRealm, false));
     };
     ws.onmessage = (event) => {
         handleServerMessage(new Uint8Array(event.data));
@@ -4849,6 +4943,221 @@ function travelToRegion(regionIndex, plotSeed) {
     };
     updateStatus("Traveling...");
 }
+
+// --- World Board (parallel Earths) ------------------------------------------
+// The server pushes a registry of every parallel Earth (realm) with its live
+// stats: biosphere health, civilization stage, AI ascendancy, population.
+// Realm 0 = "Our Earth", the all-AI simulation of the real planet everything
+// forked from. Players settle the fresher worlds and can LEAP between them —
+// a deliberate, paid jump (WORLD_HOP_COST); wallet/inventory/role come along.
+// One world = one Earth, shared by everyone on it; region travel stays local.
+
+const CIV_STAGES = ["Wilderness", "Settlements", "Townships", "City-States", "Industrial", "Information", "Synthetic"];
+function healthLabel(h) { return h >= 85 ? "Pristine" : h >= 65 ? "Thriving" : h >= 45 ? "Stable" : h >= 25 ? "Fragile" : "Dying"; }
+function aiLabel(a)     { return a >= 80 ? "Singular" : a >= 60 ? "Dominant" : a >= 40 ? "Ascendant" : a >= 20 ? "Awakening" : "Dormant"; }
+function healthColor(h) { return h >= 65 ? "#5fcf6a" : h >= 40 ? "#e0c54a" : "#e0683a"; }
+function aiColor(a)     { return a >= 60 ? "#d65bd6" : a >= 30 ? "#e08a4a" : "#6a9fe0"; }
+// Coexistence — the goal metric: do humans AND AI both survive here?
+function coexLabel(c)   { return c >= 75 ? "Flourishing" : c >= 55 ? "Holding" : c >= 35 ? "Fragile" : "Collapsing"; }
+function coexColor(c)   { return c >= 70 ? "#5fcf6a" : c >= 45 ? "#ffd34d" : "#e0683a"; }
+function fmtPop(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+    return "" + n;
+}
+
+function handleWorldBoard(payload) {
+    const r = new BincodeReader(payload);
+    const n = r.readVarint();               // Vec<EarthMeta> length
+    const earths = [];
+    for (let i = 0; i < n; i++) {
+        earths.push({
+            realm_id:   r.readU32(),
+            name:       r.readString(),
+            population: r.readU64(),
+            ai_players: r.readU64(),
+            health:     r.readU8(),
+            civ_stage:  r.readU8(),
+            ai_status:  r.readU8(),
+            coexistence: r.readU8(),
+            is_origin:  r.readBool(),
+            crowded:    r.readBool(),
+            playable:   r.readBool(),
+            notable:    (() => {
+                const m = r.readVarint();
+                const names = [];
+                for (let j = 0; j < m; j++) names.push(r.readString());
+                return names;
+            })(),
+        });
+    }
+    worldBoardCache = earths;
+    updateWorldsButtonLabel();
+    const ov = document.getElementById("worlds-overlay");
+    if (ov && ov.style.display === "flex") renderWorldBoard();
+}
+
+function updateWorldsButtonLabel() {
+    const btn = document.getElementById("worlds-btn");
+    if (!btn) return;
+    const cur = worldBoardCache.find((e) => e.realm_id === myRealm);
+    btn.textContent = "🌐 " + (cur ? cur.name : "Worlds");
+}
+
+function makeStatBar(label, value, valueLabel, color) {
+    const row = document.createElement("div");
+    row.style.cssText = "margin:5px 0;";
+    const top = document.createElement("div");
+    top.style.cssText = "display:flex; justify-content:space-between; font-size:11px; opacity:0.85; margin-bottom:2px;";
+    top.innerHTML = "<span>" + label + "</span><span>" + valueLabel + "</span>";
+    const track = document.createElement("div");
+    track.style.cssText = "height:6px; border-radius:4px; background:rgba(255,255,255,0.12); overflow:hidden;";
+    const fill = document.createElement("div");
+    fill.style.cssText = "height:100%; width:" + Math.max(0, Math.min(100, value)) + "%; background:" + color + "; border-radius:4px;";
+    track.appendChild(fill);
+    row.appendChild(top);
+    row.appendChild(track);
+    return row;
+}
+
+function renderWorldBoard() {
+    const list = document.getElementById("worlds-list");
+    if (!list) return;
+    const walletEl = document.getElementById("worlds-wallet");
+    if (walletEl) walletEl.textContent = playerCoins;
+    const costEl = document.getElementById("worlds-cost");
+    if (costEl) costEl.textContent = WORLD_HOP_COST;
+
+    list.innerHTML = "";
+    if (!worldBoardCache.length) {
+        const empty = document.createElement("div");
+        empty.style.cssText = "opacity:0.7; font-size:12px; padding:10px;";
+        empty.textContent = "Waiting for the World Board…";
+        list.appendChild(empty);
+        return;
+    }
+
+    const canAfford = playerCoins >= WORLD_HOP_COST;
+    worldBoardCache.forEach((e) => {
+        const here = e.realm_id === myRealm;
+        const card = document.createElement("div");
+        card.style.cssText = "background:" + (here ? "rgba(110,190,255,0.14)" : "rgba(255,255,255,0.05)")
+            + "; border:1px solid " + (here ? "rgba(110,190,255,0.6)" : "rgba(255,255,255,0.12)")
+            + "; border-radius:10px; padding:11px 13px; margin-bottom:10px;";
+
+        const title = document.createElement("div");
+        title.style.cssText = "display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-bottom:7px;";
+        const name = document.createElement("div");
+        name.style.cssText = "font-size:15px; font-weight:700;";
+        name.textContent = (e.is_origin ? "🌍 " : "🪐 ") + e.name;
+        title.appendChild(name);
+        const badge = (text, bg, fg) => {
+            const b = document.createElement("span");
+            b.textContent = text;
+            b.style.cssText = "font-size:10px; background:" + bg + "; color:" + fg + "; padding:2px 7px; border-radius:10px;";
+            return b;
+        };
+        if (here)        title.appendChild(badge("You are here", "#2c7fb8", "#fff"));
+        if (e.is_origin) title.appendChild(badge("Origin · all-AI", "rgba(200,80,224,0.4)", "#fbe6ff"));
+        if (e.crowded)   title.appendChild(badge("Crowded", "rgba(224,120,60,0.4)", "#ffe7d6"));
+        card.appendChild(title);
+
+        // Coexistence first — it's the whole point: do both make it here?
+        card.appendChild(makeStatBar("🤝 Coexistence", e.coexistence, coexLabel(e.coexistence) + " · " + e.coexistence + "%", coexColor(e.coexistence)));
+        card.appendChild(makeStatBar("Biosphere", e.health, healthLabel(e.health) + " · " + e.health + "%", healthColor(e.health)));
+        card.appendChild(makeStatBar("AI ascendancy", e.ai_status, aiLabel(e.ai_status) + " · " + e.ai_status + "%", aiColor(e.ai_status)));
+
+        const meta = document.createElement("div");
+        meta.style.cssText = "display:flex; justify-content:space-between; font-size:11px; opacity:0.85; margin-top:6px;";
+        const aiPct = e.population > 0 ? Math.round(e.ai_players / e.population * 100) : 0;
+        meta.innerHTML = "<span>🏛 " + CIV_STAGES[e.civ_stage] + "</span><span>👥 " + fmtPop(e.population) + " souls · " + aiPct + "% AI</span>";
+        card.appendChild(meta);
+
+        // Notable AI inhabitants — Base Earth spins off real-world figures.
+        if (e.notable && e.notable.length) {
+            const who = document.createElement("div");
+            who.style.cssText = "font-size:11px; opacity:0.7; margin-top:6px; line-height:1.45;";
+            who.textContent = "🧠 Simulated: " + e.notable.join(", ");
+            card.appendChild(who);
+        }
+
+        const leap = document.createElement("button");
+        leap.type = "button";
+        leap.style.cssText = "width:100%; margin-top:9px; border:none; border-radius:8px; padding:8px; font-size:12px; font-weight:600; font-family:system-ui,sans-serif;";
+        if (!e.playable) {
+            // Base Earth — observe-only, the AI simulation of reality.
+            leap.textContent = "🛰 Simulation of reality — not playable";
+            leap.disabled = true;
+            leap.style.cssText += "background:rgba(200,80,224,0.14); color:#d9b6e6; cursor:default;";
+        } else if (here) {
+            leap.textContent = "Your current Earth";
+            leap.disabled = true;
+            leap.style.cssText += "background:rgba(255,255,255,0.08); color:#9fb4c4; cursor:default;";
+        } else if (!canAfford) {
+            leap.textContent = "Need " + WORLD_HOP_COST + " 🪙 to leap";
+            leap.disabled = true;
+            leap.style.cssText += "background:rgba(255,255,255,0.06); color:#cc9a88; cursor:not-allowed;";
+        } else {
+            leap.textContent = "Leap to " + e.name + " — " + WORLD_HOP_COST + " 🪙";
+            leap.style.cssText += "background:linear-gradient(90deg,#1d6fb0,#18a0a8); color:#fff; cursor:pointer;";
+            leap.addEventListener("click", () => hopToParallelWorld(e.realm_id));
+        }
+        card.appendChild(leap);
+        list.appendChild(card);
+    });
+}
+
+function openWorldBoard() {
+    if (!connected) return;
+    if (document.pointerLockElement) document.exitPointerLock();
+    renderWorldBoard();
+    document.getElementById("worlds-overlay").style.display = "flex";
+}
+
+function closeWorldsModal() {
+    const ov = document.getElementById("worlds-overlay");
+    if (ov) ov.style.display = "none";
+}
+
+// Leap to a chosen parallel Earth. Paid (WORLD_HOP_COST), server-authoritative;
+// reconnects with world_hop = true so the server charges the fee and restores
+// wallet/inventory/role. Region stays the same — you land in the same place on
+// a different Earth.
+function hopToParallelWorld(target) {
+    if (!connected) return;
+    if (target === myRealm) return;            // already there
+    if (playerCoins < WORLD_HOP_COST) return;  // server is authoritative; guard anyway
+    closeWorldsModal();
+
+    // Tear down the current world's render state — the parallel Earth is a
+    // fresh instance (same regions, different population/economy server-side).
+    for (const [eid, obj] of entityMeshes) { scene.remove(obj); }
+    entityMeshes.clear();
+    entityKinds.clear();
+    if (fishGroup) { scene.remove(fishGroup); fishGroup = null; }
+    if (butterflyGroup) { scene.remove(butterflyGroup); butterflyGroup = null; }
+    waterMeshes = [];
+
+    // Optimistic — confirmed by ServerWelcome.realm_id on the new socket.
+    myRealm = target;
+
+    ws.close();
+    const serverUrl = realmServerUrl(target);   // route to the target fork's server
+    ws = new WebSocket(serverUrl);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => {
+        connected = true;
+        ws.send(buildHelloMessage(playerName, selectedGameMode, selectedRegion, selectedPlotSeed, selectedRole, false, false, "", target, true));
+    };
+    ws.onmessage = (event) => { handleServerMessage(new Uint8Array(event.data)); };
+    ws.onclose = () => { updateStatus("Disconnected. Refresh to reconnect."); connected = false; };
+    ws.onerror = () => { updateStatus("Connection failed."); };
+    updateStatus("Crossing to a parallel Earth…");
+}
+
+document.getElementById("worlds-btn").addEventListener("click", openWorldBoard);
+document.getElementById("worlds-cancel").addEventListener("click", closeWorldsModal);
 
 // --- Entity rendering ---
 // `makeTree` is imported from ./models/trees/_tree.js (see top of file).

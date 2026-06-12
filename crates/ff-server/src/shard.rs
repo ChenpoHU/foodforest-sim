@@ -71,8 +71,10 @@ pub struct Shard {
     pub faction_ascended: bool,
 }
 
-/// What we save per player between sessions.
-#[derive(Debug, Clone)]
+/// What we save per player between sessions. Serializable so it can be
+/// written to disk — a player's wallet / inventory / role / songs survive a
+/// server restart, so they can pick up and play later.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PersistedPlayer {
     pub coins: u32,
     pub inventory: Vec<(u16, u16)>, // (item_id, count)
@@ -329,6 +331,52 @@ impl Shard {
         tracing::info!("Player {:?} joined shard {:?}", player_id, self.id);
 
         (eid, entity)
+    }
+
+    /// Snapshot every currently-connected player's wallet / inventory / role /
+    /// songs into `persistent_state` (keyed by the name they typed) WITHOUT
+    /// despawning them — so a periodic disk save captures live progress, not
+    /// just players who already disconnected.
+    pub fn snapshot_live_players(&mut self) {
+        let roster: Vec<(PlayerId, String)> = self
+            .sessions
+            .values()
+            .map(|s| (s.player_id, s.origin_name.clone()))
+            .collect();
+        for (pid, origin) in roster {
+            let mut ent = None;
+            for (e, p) in self.ecs_world.query::<&Player>().iter() {
+                if p.player_id == pid {
+                    ent = Some(e);
+                    break;
+                }
+            }
+            let Some(e) = ent else { continue };
+            let coins = self
+                .ecs_world
+                .get::<&ff_ecs::components::player::Wallet>(e)
+                .map(|w| w.0)
+                .unwrap_or(0);
+            let inventory: Vec<(u16, u16)> = self
+                .ecs_world
+                .get::<&ff_ecs::components::player::Inventory>(e)
+                .map(|inv| inv.slots.iter().map(|s| (s.item_id, s.count)).collect())
+                .unwrap_or_default();
+            let monarch = self
+                .ecs_world
+                .get::<&ff_ecs::components::player::Monarch>(e)
+                .ok()
+                .map(|m| (*m).clone());
+            let owned_songs = self
+                .ecs_world
+                .get::<&ff_ecs::components::player::SongLibrary>(e)
+                .map(|s| s.0)
+                .unwrap_or(0);
+            self.persistent_state.insert(
+                origin,
+                PersistedPlayer { coins, inventory, monarch, owned_songs },
+            );
+        }
     }
 
     /// Remove a player from the shard.

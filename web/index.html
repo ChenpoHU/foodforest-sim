@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <title>Food Forest Simulation</title>
-    <link rel="stylesheet" href="./styles.css?v=oracle4" />
+    <link rel="stylesheet" href="./styles.css?v=labour1" />
     <script type="importmap">
     {
         "imports": {
@@ -17,7 +17,7 @@
     <!-- Connect screen -->
     <div id="connect-screen">
         <h1>Food Forest</h1>
-        <p>Global ecosystem simulation</p>
+        <p>A living simulation in search of one answer: can humans <b>and</b> AI both survive?</p>
 
         <!-- Mode + role wheels: auto-scroll to showcase, ▲▼ / scroll / click
              to pick. Every world offers every role. -->
@@ -66,6 +66,13 @@
                     <span class="leg-item"><i style="background:#f4453d"></i>Brutal</span>
                 </div>
             </div>
+        </div>
+
+        <!-- Starting world: every playable world is a fork of Base Earth, a fresh
+             timeline you'll shape. Base Earth itself (the AI reality sim) isn't listed. -->
+        <div id="earth-row" style="display:flex; align-items:center; gap:8px; justify-content:center; margin:4px 0 2px; font-family:system-ui,sans-serif;">
+            <span style="font-size:12px; color:#9fb4c4;">🌍 Starting world</span>
+            <select id="earth-select" style="background:rgba(10,20,30,0.9); color:#d6f0ff; border:1px solid rgba(110,190,255,0.45); border-radius:6px; padding:4px 8px; font-size:12px; font-family:system-ui,sans-serif;"></select>
         </div>
 
         <!-- Name + Enter together: type your name (grey hint if blank), then enter. -->
@@ -126,6 +133,28 @@
     <!-- Aurona's Songbook — in-game store, top-right under Travel-to-Region
          (clear of the left-edge objectives panel). Shown on every role's HUD. -->
     <button id="songbook-btn" type="button" style="position:fixed; top:252px; right:12px; width:200px; display:none; align-items:center; justify-content:center; gap:6px; background:linear-gradient(90deg, rgba(200,29,78,0.32), rgba(122,24,200,0.32)); color:#ffd6ea; border:1px solid rgba(255,93,143,0.55); border-radius:8px; padding:7px 10px; font-size:12px; font-weight:600; font-family:system-ui,sans-serif; cursor:pointer; pointer-events:all; z-index:103;">🎵 Aurona's Songbook</button>
+
+    <!-- Parallel Worlds — which Earth you're on + the paid cross-Earth hop.
+         Stacks under the Songbook button; shown on every role's HUD. -->
+    <button id="worlds-btn" type="button" style="position:fixed; top:286px; right:12px; width:200px; display:none; align-items:center; justify-content:center; gap:6px; background:linear-gradient(90deg, rgba(24,60,120,0.38), rgba(24,140,150,0.38)); color:#d6f0ff; border:1px solid rgba(110,190,255,0.55); border-radius:8px; padding:7px 10px; font-size:12px; font-weight:600; font-family:system-ui,sans-serif; cursor:pointer; pointer-events:all; z-index:103;">🌐 World Board</button>
+
+    <!-- World Board — every parallel Earth + the paid leap between them -->
+    <div id="worlds-overlay" style="position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.62); z-index:200; pointer-events:all;">
+        <div style="width:420px; max-width:92vw; max-height:86vh; display:flex; flex-direction:column; background:linear-gradient(160deg, rgba(14,20,42,0.98), rgba(18,40,56,0.98)); border:1px solid rgba(110,190,255,0.5); border-radius:14px; padding:20px; color:#e6f3ff; font-family:system-ui,sans-serif; box-shadow:0 12px 44px rgba(0,0,0,0.6);">
+            <div style="font-size:18px; font-weight:700; margin-bottom:4px;">🌐 World Board</div>
+            <div style="font-size:12px; line-height:1.5; opacity:0.8; margin-bottom:10px;">
+                <b>The goal:</b> find the world where humans <b>and</b> AI both survive — watch
+                <b>🤝 Coexistence</b>. <b>Base Earth</b> is the AI simulation of reality (observe-only);
+                every other world is a <b>fork</b> of it whose vital signs <b>emerge from what its
+                settlers do</b>. <b>Leap</b> to another fork for a paid jump (<b id="worlds-cost">200</b> 🪙);
+                your wallet (<span id="worlds-wallet">0</span> 🪙), inventory and role come with you.
+            </div>
+            <div id="worlds-list" style="overflow-y:auto; flex:1; margin:4px 0 12px; padding-right:4px;"></div>
+            <div style="display:flex; justify-content:flex-end;">
+                <button id="worlds-cancel" type="button" style="background:rgba(255,255,255,0.08); color:#cdd9e6; border:1px solid rgba(255,255,255,0.2); border-radius:8px; padding:8px 18px; font-size:13px; cursor:pointer;">Close</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Edge direction hints -->
     <div id="edge-hints" style="position:fixed; pointer-events:none; z-index:100; display:none;">
@@ -328,6 +357,6 @@
         <input id="chat-input" type="text" placeholder="Press Enter to chat..." />
     </div>
 
-    <script type="module" src="./main.js?v=oracle4"></script>
+    <script type="module" src="./main.js?v=labour1"></script>
 </body>
 </html>

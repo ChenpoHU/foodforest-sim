@@ -59,6 +59,14 @@ pub const MAX_PLAYERS_PER_SHARD: u32 = 500;
 /// disables the Travel button when the wallet can't cover the trip.
 pub const TRAVEL_COST: u32 = 25;
 
+/// Coin cost charged for a **cross-Earth hop** — jumping to a *parallel
+/// world* (a different `realm_id`). Far pricier than region travel: an
+/// Earth is shared with everyone on it, so leaving your population for a
+/// fresh one is a deliberate, earned move ("pay enough FoFo Coin"). The
+/// server enforces it; the client previews it and greys the Hop button
+/// when the wallet is short. Tuned below the Monarch ascension price.
+pub const WORLD_HOP_COST: u32 = 200;
+
 /// Voxels per chunk side (horizontal).
 pub const CHUNK_SIZE: u32 = 16;
 

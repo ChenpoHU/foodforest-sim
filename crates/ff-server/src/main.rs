@@ -63,5 +63,15 @@ async fn main() {
 
     let shard = shard::Shard::new(ff_common::ShardId(shard_id), terrain, terrain_bytes, game_mode, region_index);
 
+    // Restore saved players (wallet · inventory · role · songs) from disk so
+    // anyone who played before can pick up where they left off.
+    {
+        let players = persistence::load_players(&persistence::players_path());
+        if !players.is_empty() {
+            info!("Restoring {} saved player(s)", players.len());
+        }
+        shard.lock().await.persistent_state = players;
+    }
+
     net::ws::run_server(addr, shard).await;
 }

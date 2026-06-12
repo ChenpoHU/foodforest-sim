@@ -26,8 +26,38 @@ const INFLUENCE_PER_HARVEST: f32 = 1.0;
 const FOFO_PER_HARVEST: u32 = 3;
 
 pub fn tick_monarchs(world: &mut hecs::World) {
-    for (_e, monarch) in world.query_mut::<&mut Monarch>() {
+    use crate::components::player::{
+        AiControlled, MonarchAsset, DISCONTENT_FROM_AUTOMATION, WELFARE_DECAY_PER_SEC,
+    };
+
+    // Snapshot the labour picture once (immutable) before the mutable pass:
+    // how many *free* humans there are, and how many AI workers each Monarch
+    // has fielded (the units displacing human labour).
+    let mut free_humans = 0u32;
+    for (_e, (_p, ai, asset)) in world
+        .query::<(&Player, Option<&AiControlled>, Option<&MonarchAsset>)>()
+        .iter()
+    {
+        if ai.is_none() && asset.is_none() {
+            free_humans += 1;
+        }
+    }
+    let mut workers_by_owner: std::collections::HashMap<u64, f32> = std::collections::HashMap::new();
+    for (_e, w) in world.query::<&SemiAIWorker>().iter() {
+        *workers_by_owner.entry(w.owner.0).or_insert(0.0) += 1.0;
+    }
+
+    for (_e, (player, monarch)) in world.query_mut::<(&Player, &mut Monarch)>() {
         monarch.compute = (monarch.compute + COMPUTE_REGEN_PER_TICK * 20.0).min(COMPUTE_CAP);
+        // Shared prosperity fades over time — welfare reflects *recent* sharing.
+        monarch.welfare = (monarch.welfare - WELFARE_DECAY_PER_SEC).max(0.0);
+        // Automating human livelihoods without a safety net breeds unrest. Each
+        // of this Monarch's AI workers displaces human labour; UBI (welfare)
+        // offsets it. Unmet displacement slowly stokes discontent → revolt.
+        let workers = *workers_by_owner.get(&player.player_id.0).unwrap_or(&0.0);
+        let pressure = (workers / free_humans.max(1) as f32).min(1.5);
+        let unmet = (pressure * 30.0 - monarch.welfare).max(0.0);
+        monarch.discontent = (monarch.discontent + unmet * DISCONTENT_FROM_AUTOMATION).min(100.0);
     }
 }
 

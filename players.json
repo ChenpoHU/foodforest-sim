@@ -1,0 +1,17 @@
+{
+  "Hi": {
+    "coins": 84,
+    "inventory": [],
+    "monarch": {
+      "compute": 100.0,
+      "influence": 28.0,
+      "deployments": 1,
+      "jobs_cut": 28,
+      "discontent": 33.60001,
+      "ai_intelligence": 32.0,
+      "welfare": 0.0,
+      "revolt_voters": []
+    },
+    "owned_songs": 0
+  }
+}

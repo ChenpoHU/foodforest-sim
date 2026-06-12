@@ -107,6 +107,11 @@ pub struct Monarch {
     /// an AI takeover — the Monarch is demoted to Farmer and a global
     /// announcement is broadcast.
     pub ai_intelligence: f32,
+    /// 0..100. Recent **welfare / shared prosperity** — bumped when this Monarch
+    /// wires UBI, decaying over time. Sharing the automation gains: it offsets
+    /// the unrest *and* the coexistence hit from replacing human livelihoods
+    /// with AI labour. Share enough and both humans and AI hold.
+    pub welfare: f32,
     /// PlayerIds (as u64) of every Farmer who has already revolted
     /// against this Monarch — prevents one player from grinding
     /// discontent up alone.
@@ -213,6 +218,13 @@ pub const AI_TAKEOVER_THRESHOLD: f32 = 100.0;
 pub const AI_INT_PER_DEPLOY: f32 = 4.0;
 /// Per-auto-harvest intelligence bump (drone successfully harvested).
 pub const AI_INT_PER_HARVEST: f32 = 1.0;
+/// Welfare points decayed each second (welfare reflects *recent* sharing).
+pub const WELFARE_DECAY_PER_SEC: f32 = 0.4;
+/// Welfare gained per coin of UBI wired (shared automation gains).
+pub const WELFARE_PER_UBI_COIN: f32 = 0.25;
+/// Discontent per second per unit of unmet automation pressure (automating
+/// human work without sharing the gains breeds unrest → eventual revolt).
+pub const DISCONTENT_FROM_AUTOMATION: f32 = 0.04;
 
 impl Default for Monarch {
     fn default() -> Self {
@@ -223,6 +235,7 @@ impl Default for Monarch {
             jobs_cut: 0,
             discontent: 0.0,
             ai_intelligence: 0.0,
+            welfare: 0.0,
             revolt_voters: Vec::new(),
         }
     }

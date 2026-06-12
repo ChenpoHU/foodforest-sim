@@ -55,6 +55,28 @@ pub async fn run_server(addr: SocketAddr, shard: Arc<Mutex<Shard>>) {
     }
 }
 
+/// Resolve which Earth (realm) a connecting player actually lands on.
+///
+/// - **Multi-process routing:** if this process is pinned to one Earth via the
+///   `REALM_ID` env var, it serves only that realm (each Earth = its own
+///   `ff-server`). This is the production model — a gateway routes the client
+///   to the right Earth's process.
+/// - **Single-process dev:** otherwise honour the client's requested realm, but
+///   never let anyone *play* on a non-playable world (Base Earth is
+///   observe-only) — bump them to the first playable Earth.
+fn resolve_realm(requested: u32) -> u32 {
+    if let Ok(pinned) = std::env::var("REALM_ID") {
+        if let Ok(r) = pinned.parse::<u32>() {
+            return r;
+        }
+    }
+    if crate::tick::is_realm_playable(requested) {
+        requested
+    } else {
+        crate::tick::default_playable_realm()
+    }
+}
+
 async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<Mutex<Shard>>) {
     let ws_stream = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws) => ws,
@@ -111,6 +133,13 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let player_id = PlayerId(NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed));
 
+    // Which Earth this player actually lands on. A process pinned to one Earth
+    // (REALM_ID env, the multi-process routing model) serves only that realm;
+    // otherwise we honour the client's pick — but never let anyone *play* on a
+    // non-playable world (Base Earth is observe-only), bumping them to the
+    // first playable Earth instead.
+    let realm = resolve_realm(hello.realm_id);
+
     let (entity_id, shard_id, tick, terrain_bytes) = {
         let mut shard = shard.lock().await;
 
@@ -152,6 +181,7 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
         );
         session.is_ai = hello.is_ai;
         session.agent_label = hello.agent_label.clone();
+        session.realm_id = realm;
         let (eid, entity) = shard.add_player(player_id, display_name, session);
         // Tag the entity so the game's native learning-AI systems can find
         // the players they are allowed to pilot, and so future snapshots /
@@ -177,7 +207,15 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
             // Wallet
             if let Ok(mut w) = shard.ecs_world.get::<&mut ff_ecs::components::player::Wallet>(entity) {
                 w.0 = p.coins;
-                if hello.traveling {
+                // A paid cross-Earth hop costs WORLD_HOP_COST; a within-Earth
+                // region travel costs the cheap TRAVEL_COST. They're mutually
+                // exclusive — a hop reconnect sets `world_hop`, a region travel
+                // sets `traveling` — so charge whichever the client declared.
+                if hello.world_hop {
+                    let cost = ff_common::WORLD_HOP_COST.min(w.0);
+                    w.0 -= cost;
+                    applied_travel_cost = cost;
+                } else if hello.traveling {
                     let cost = ff_common::TRAVEL_COST.min(w.0);
                     w.0 -= cost;
                     applied_travel_cost = cost;
@@ -220,7 +258,12 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
                 .ecs_world
                 .insert_one(entity, ff_ecs::components::player::Innovator::default());
         }
-        if hello.traveling {
+        if hello.world_hop {
+            info!(
+                "  → hopped to parallel Earth {} (-{} coins) for '{}'",
+                hello.realm_id, applied_travel_cost, hello.player_name
+            );
+        } else if hello.traveling {
             info!(
                 "  → restored persistent state (traveling, -{} coins) for '{}'",
                 applied_travel_cost, hello.player_name
@@ -247,9 +290,21 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
         shard_id: shard_id,
         tick,
         tick_rate: ff_common::TICK_RATE,
+        realm_id: realm,
     };
     if let Ok(buf) = encode(MessageType::ServerWelcome, &welcome) {
         let _ = ws_sender.send(Message::Binary(buf.into())).await;
+    }
+
+    // Push the World Board immediately so the player can see every parallel
+    // Earth (with health / civilization / AI / population) and choose where
+    // to leap. It's also re-broadcast periodically from the tick loop.
+    {
+        let shard = shard.lock().await;
+        let board = crate::tick::build_world_board(&shard);
+        if let Ok(buf) = encode(MessageType::ServerWorldBoard, &board) {
+            let _ = ws_sender.send(Message::Binary(buf.into())).await;
+        }
     }
 
     // Build entity snapshots from ECS
@@ -371,6 +426,13 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, shard: Arc<
     {
         let mut shard = shard.lock().await;
         shard.remove_player(player_id);
+        // Persist to disk on the way out so this player can resume later.
+        if let Err(e) = crate::persistence::save_players(
+            &crate::persistence::players_path(),
+            &shard.persistent_state,
+        ) {
+            warn!("Failed to save players on disconnect: {e}");
+        }
     }
     outbound.abort();
 }

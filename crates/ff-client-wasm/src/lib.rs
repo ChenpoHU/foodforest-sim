@@ -88,6 +88,7 @@ pub fn client_connect(server_url: &str, player_name: &str) -> bool {
         plot_seed: 42,
         player_role: 0, traveling: false,
         is_ai: false, agent_label: String::new(),
+        realm_id: 0, world_hop: false,
     };
 
     if let Ok(_buf) = encode(MessageType::ClientHello, &hello) {
@@ -110,6 +111,7 @@ pub fn build_hello_message(player_name: &str) -> Vec<u8> {
         plot_seed: 42,
         player_role: 0, traveling: false,
         is_ai: false, agent_label: String::new(),
+        realm_id: 0, world_hop: false,
     };
     encode(MessageType::ClientHello, &hello).unwrap_or_default()
 }

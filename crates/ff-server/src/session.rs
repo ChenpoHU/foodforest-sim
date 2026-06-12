@@ -29,6 +29,9 @@ pub struct PlayerSession {
     /// Controller label for an AI session (learning-agent build/version);
     /// empty for humans.
     pub agent_label: String,
+    /// Which parallel Earth (realm) this session is on. Used to tally
+    /// per-Earth population for the World Board. 0 = "Our Earth" (origin).
+    pub realm_id: u32,
 }
 
 impl PlayerSession {
@@ -49,6 +52,7 @@ impl PlayerSession {
             last_action: "joined".into(),
             is_ai: false,
             agent_label: String::new(),
+            realm_id: 0,
         }
     }
 

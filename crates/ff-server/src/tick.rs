@@ -320,6 +320,25 @@ fn broadcast_updates(shard: &mut Shard) {
         }
     }
 
+    // World Board — refresh every parallel Earth's stats for all players
+    // ~every 5 s so the dashboard stays live (population shifts as players
+    // join / leave / leap between Earths).
+    if tick.0 % 100 == 0 {
+        broadcast_world_board(shard);
+    }
+
+    // Persist all players to disk every ~30 s so progress survives a crash,
+    // not just a graceful disconnect — "play later" should mean it.
+    if tick.0 % 600 == 0 && tick.0 > 0 {
+        shard.snapshot_live_players();
+        if let Err(e) = crate::persistence::save_players(
+            &crate::persistence::players_path(),
+            &shard.persistent_state,
+        ) {
+            tracing::warn!("Periodic player save failed: {e}");
+        }
+    }
+
     // Catastrophe broadcast — push the current state to everyone
     // either every second OR whenever the catastrophe just changed
     // (start / end / intensity flip).
@@ -483,6 +502,7 @@ fn broadcast_politics(shard: &mut Shard) {
             ai_intelligence: monarch.ai_intelligence,
             deployments: monarch.deployments,
             jobs_cut: monarch.jobs_cut,
+            welfare: monarch.welfare,
         });
     }
     let msg = ff_protocol::messages::ServerPoliticsUpdate {
@@ -490,6 +510,230 @@ fn broadcast_politics(shard: &mut Shard) {
         monarchs,
     };
     if let Ok(buf) = encode(MessageType::ServerPoliticsUpdate, &msg) {
+        for session in shard.sessions.values() {
+            session.send(buf.clone());
+        }
+    }
+}
+
+/// The catalog of worlds on the World Board. `realm_id 0` is **Base Earth** —
+/// the all-AI simulation of the real, current planet (spinning off AI versions
+/// of real figures: Elon Musk, Peter Thiel, …). It is **not playable**: it only
+/// simulates reality, the "before" that everything else forks from. Every other
+/// entry is a **fork of Base Earth** — a fresh timeline of the same planet that
+/// players settle and shape. Forks carry NO authored stats: their vital signs
+/// **emerge from what players do there** (see `live_metrics`). Fields:
+/// `(realm_id, name, is_origin, playable, notable_figures)`.
+const EARTH_CATALOG: &[(u32, &str, bool, bool, &[&str])] = &[
+    (0, "Base Earth", true, false,
+        &["Elon Musk", "Peter Thiel", "Sam Altman", "Mark Zuckerberg", "Jensen Huang", "Sundar Pichai"]),
+    (1, "Terra Nova", false, true, &[]),
+    (2, "Gaia Prime", false, true, &[]),
+    (3, "New Eden",   false, true, &[]),
+    (4, "Arcadia",    false, true, &[]),
+    (5, "Verdant",    false, true, &[]),
+    (6, "Elysium",    false, true, &[]),
+    (7, "Concord",    false, true, &[]),
+];
+
+// Base Earth — the simulation of reality: teeming, AI-ascendant, biosphere
+// strained, humans losing ground. The cautionary "before".
+const BASE_POP: u64 = 8_100_000_000;
+const BASE_HEALTH: u8 = 30;
+const BASE_CIV: u8 = 6; // Synthetic
+const BASE_AI: u8 = 85;
+const BASE_COEX: u8 = 22;
+
+// A fresh, unsettled fork of Base Earth — a blank timeline waiting for its
+// first settlers. Recovering wilderness, no civilisation or AI yet. Once
+// players arrive its numbers come from `live_metrics`, not these.
+const FORK_HEALTH: u8 = 64;
+const FORK_CIV: u8 = 0;
+const FORK_AI: u8 = 6;
+const FORK_COEX: u8 = 58;
+
+/// A fork is flagged "crowded" past this many live settlers — the nudge to spin
+/// up a new parallel fork.
+const CROWD_THRESHOLD: u64 = 50;
+
+/// The realm a fresh player defaults to — the first *playable* fork (Base Earth
+/// is observe-only, so it's skipped).
+pub fn default_playable_realm() -> u32 {
+    EARTH_CATALOG.iter().find(|e| e.3).map(|e| e.0).unwrap_or(1)
+}
+
+/// Whether `realm` is a world players may actually live in. Base Earth is not.
+/// Realms beyond the static catalog are assumed playable (forward-compat with
+/// dynamically-spawned forks).
+pub fn is_realm_playable(realm: u32) -> bool {
+    match EARTH_CATALOG.iter().find(|e| e.0 == realm) {
+        Some(e) => e.3,
+        None => true,
+    }
+}
+
+/// A world's vital signs, computed live from the simulation.
+struct LiveMetrics {
+    health: u8,
+    civ_stage: u8,
+    ai_status: u8,
+    coexistence: u8,
+}
+
+/// Read a world's vital signs straight out of the ECS — they **emerge from what
+/// players have done**, they aren't authored. Heal the land and biosphere rises;
+/// build and settle and civilisation rises; let a Monarch + machines dominate
+/// and AI rises; the **coexistence** index (the game's goal) rewards a living
+/// world where humans *and* AI both make it without one crushing the other.
+fn live_metrics(shard: &Shard) -> LiveMetrics {
+    use ff_ecs::components::{ai_agent, animal, identity, plant, player};
+    let w = &shard.ecs_world;
+
+    // Biosphere — living vegetation + wildlife, hurt by active fires.
+    let mut plants_alive = 0i32;
+    let mut burning = 0i32;
+    for (_e, (_p, crushed, burn)) in w
+        .query::<(
+            &plant::Plant,
+            Option<&plant::Crushed>,
+            Option<&plant::Burning>,
+        )>()
+        .iter()
+    {
+        if crushed.is_none() {
+            plants_alive += 1;
+        }
+        if burn.is_some() {
+            burning += 1;
+        }
+    }
+    let animals = w.query::<&animal::Animal>().iter().count() as i32;
+    let health = ((plants_alive + animals * 2) / 2 - burning * 4).clamp(3, 100) as u8;
+
+    // Civilisation — people, what they've built, accumulated wealth.
+    let mut players = 0u32;
+    let mut wealth = 0u32;
+    for (_e, (_p, wallet)) in w
+        .query::<(&player::Player, Option<&player::Wallet>)>()
+        .iter()
+    {
+        players += 1;
+        if let Some(wal) = wallet {
+            wealth = wealth.saturating_add(wal.0);
+        }
+    }
+    let structures = w.query::<&identity::Structure>().iter().count() as u32;
+    let civ_score = players * 6 + structures * 2 + wealth / 200;
+    let civ_stage = match civ_score {
+        0 => 0,
+        1..=8 => 1,
+        9..=25 => 2,
+        26..=60 => 3,
+        61..=120 => 4,
+        121..=240 => 5,
+        _ => 6,
+    };
+
+    // AI ascendancy — strongest machine intelligence + its reach (workers,
+    // chipped humans, AI-piloted players).
+    let mut max_ai = 0.0f32;
+    let mut total_welfare = 0.0f32;
+    for (_e, m) in w.query::<&player::Monarch>().iter() {
+        if m.ai_intelligence > max_ai {
+            max_ai = m.ai_intelligence;
+        }
+        total_welfare += m.welfare;
+    }
+    let workers = w.query::<&ai_agent::SemiAIWorker>().iter().count() as i32;
+    let chipped = w.query::<&player::MonarchAsset>().iter().count() as u32;
+    let ai_players = w.query::<&player::AiControlled>().iter().count() as u32;
+    let ai_status =
+        (max_ai as i32 + workers * 4 + chipped as i32 * 8 + ai_players as i32 * 6).clamp(0, 100) as u8;
+
+    // Coexistence — the GOAL: do humans AND AI both survive here? High when the
+    // biosphere lives, humans are present and un-chipped, and AI is present but
+    // not domineering. This is the number the whole game tries to maximise.
+    let humans = players.saturating_sub(ai_players);
+    let human_freedom = if humans == 0 {
+        0
+    } else {
+        let chipped_ratio = (chipped as f32 / humans as f32).min(1.0);
+        (100.0 * (1.0 - chipped_ratio)) as i32
+    };
+    let ai_balance = (100 - (ai_status as i32 - 45).abs() * 3 / 2).clamp(0, 100);
+
+    // Economic security — does automation free people or displace them? Each AI
+    // worker displaces human labour; the Monarchs' welfare (shared UBI gains)
+    // cushions it. No automation → fully secure; heavy automation with no
+    // sharing → people are dispossessed.
+    let pressure = (workers as f32 / humans.max(1) as f32).min(1.5);
+    let displacement = (pressure * 60.0).min(90.0);
+    let cushion = total_welfare.min(displacement);
+    let economic_security = (100.0 - displacement + cushion).clamp(10.0, 100.0) as i32;
+
+    let coexistence =
+        ((health as i32 + human_freedom + ai_balance + economic_security) / 4).clamp(0, 100) as u8;
+
+    LiveMetrics { health, civ_stage, ai_status, coexistence }
+}
+
+/// Assemble the World Board: Base Earth (fixed reality) plus its forks, whose
+/// vital signs **emerge from live play** once they have settlers.
+pub fn build_world_board(shard: &Shard) -> ff_protocol::messages::ServerWorldBoard {
+    use std::collections::HashMap;
+
+    // Live souls per realm, from the connected sessions.
+    let mut live_total: HashMap<u32, u64> = HashMap::new();
+    let mut live_ai: HashMap<u32, u64> = HashMap::new();
+    for s in shard.sessions.values() {
+        *live_total.entry(s.realm_id).or_insert(0) += 1;
+        if s.is_ai {
+            *live_ai.entry(s.realm_id).or_insert(0) += 1;
+        }
+    }
+    // The lived-in world's emergent vital signs (one shared sim in this
+    // process; applied to whichever fork actually has settlers).
+    let live = live_metrics(shard);
+
+    let earths = EARTH_CATALOG
+        .iter()
+        .map(|&(realm_id, name, is_origin, playable, notable)| {
+            let lt = *live_total.get(&realm_id).unwrap_or(&0);
+            let la = *live_ai.get(&realm_id).unwrap_or(&0);
+            let (population, ai_players, health, civ_stage, ai_status, coexistence) = if is_origin {
+                // Base Earth — the fixed simulation of reality.
+                (BASE_POP, BASE_POP, BASE_HEALTH, BASE_CIV, BASE_AI, BASE_COEX)
+            } else if lt > 0 {
+                // A settled fork: its vital signs are whatever its players made.
+                (lt, la, live.health, live.civ_stage, live.ai_status, live.coexistence)
+            } else {
+                // A fresh, unsettled fork — a blank timeline of Base Earth.
+                (0, 0, FORK_HEALTH, FORK_CIV, FORK_AI, FORK_COEX)
+            };
+            ff_protocol::messages::EarthMeta {
+                realm_id,
+                name: name.to_string(),
+                population,
+                ai_players,
+                health,
+                civ_stage,
+                ai_status,
+                coexistence,
+                is_origin,
+                crowded: lt > CROWD_THRESHOLD,
+                playable,
+                notable: notable.iter().map(|s| s.to_string()).collect(),
+            }
+        })
+        .collect();
+
+    ff_protocol::messages::ServerWorldBoard { earths }
+}
+
+/// Push the World Board to every connected player.
+fn broadcast_world_board(shard: &mut Shard) {
+    let board = build_world_board(shard);
+    if let Ok(buf) = encode(MessageType::ServerWorldBoard, &board) {
         for session in shard.sessions.values() {
             session.send(buf.clone());
         }

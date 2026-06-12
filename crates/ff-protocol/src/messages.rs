@@ -61,6 +61,11 @@ pub enum MessageType {
     /// Aurona's Fate Oracle — sent to a single player at a pivotal moment
     /// (a Farmer's death) so she can sing their fate and offer the choice.
     ServerOracle = 0x0116,
+    /// The World Board — a registry of every parallel Earth (realm) with its
+    /// live stats (health · civilization · AI · population), so a player can
+    /// browse all worlds and choose which to leap to. Pushed on connect and
+    /// refreshed periodically.
+    ServerWorldBoard = 0x0117,
 
     // Shard Manager <-> Server
     ShardRegister = 0x0201,
@@ -96,6 +101,18 @@ pub struct ClientHello {
     /// (e.g. "sylva-rl-v1"). Empty for humans. Deliberately not a
     /// market-LLM name: this game runs its own native learning AI.
     pub agent_label: String,
+    /// Which **parallel Earth** (realm) the player joins. One world = one
+    /// Earth, shared by everyone on it; players travel its regions freely.
+    /// When an Earth fills up the matchmaker hands out a new realm id, so
+    /// `realm_id` selects *which* Earth. 0 = the first/default Earth. The
+    /// server echoes it back in `ServerWelcome` so the HUD can show it.
+    pub realm_id: u32,
+    /// True when this reconnect is a **paid cross-Earth hop** (a different
+    /// `realm_id` than where the player was). The server charges
+    /// `WORLD_HOP_COST` instead of the cheap region `TRAVEL_COST`. Mutually
+    /// exclusive with `traveling` in practice — region travel stays inside
+    /// one Earth; this is the deliberate, pricier jump to a parallel world.
+    pub world_hop: bool,
 }
 
 /// Sent every tick (50ms) with the player's movement input.
@@ -278,12 +295,60 @@ pub struct PoliticsRow {
     pub ai_intelligence: f32,
     pub deployments: u32,
     pub jobs_cut: u32,
+    /// 0..100 recent **welfare** (shared UBI) — the offset to automation's
+    /// displacement of human labour. Shown next to `jobs_cut` so a Monarch can
+    /// see whether they're sharing the gains or just cutting jobs.
+    pub welfare: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerPoliticsUpdate {
     pub tick: Tick,
     pub monarchs: Vec<PoliticsRow>,
+}
+
+/// One Earth (parallel world / realm) as shown on the World Board.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EarthMeta {
+    pub realm_id: u32,
+    pub name: String,
+    /// Total souls on this Earth (players + AI). Civilization-scale for the
+    /// origin Earth; a handful of pioneer-settlers for fresh worlds.
+    pub population: u64,
+    /// How many of `population` are AI rather than human.
+    pub ai_players: u64,
+    /// Biosphere health, 0 (dying) .. 100 (pristine).
+    pub health: u8,
+    /// Civilization stage, 0 (wilderness) .. 6 (synthetic).
+    pub civ_stage: u8,
+    /// AI ascendancy, 0 (dormant) .. 100 (singular / takeover).
+    pub ai_status: u8,
+    /// **Coexistence index**, 0..100 — the game's north-star metric: how well
+    /// *both* humans and AI are surviving together here (a living biosphere +
+    /// free humans + AI present but not domineering). The whole simulation is
+    /// a search for the actions that push this high.
+    pub coexistence: u8,
+    /// True only for **Base Earth** — the all-AI simulation of the real,
+    /// current planet that every other world is forked from.
+    pub is_origin: bool,
+    /// Near capacity — a hint that a new parallel Earth may soon open.
+    pub crowded: bool,
+    /// False for **Base Earth**: it only *simulates* reality, so nobody can
+    /// settle or leap into it — it's observe-only. True for every world
+    /// players can actually live in.
+    pub playable: bool,
+    /// Notable AI inhabitants — Base Earth spins off simulated versions of
+    /// real-world figures (Elon Musk, Peter Thiel, …). Empty for the fresh
+    /// player worlds.
+    pub notable: Vec<String>,
+}
+
+/// The World Board: every known parallel Earth with its live stats. The
+/// client highlights whichever realm it is on (it already knows its own
+/// `realm_id` from `ServerWelcome`). Pushed on connect + refreshed ~every 5 s.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerWorldBoard {
+    pub earths: Vec<EarthMeta>,
 }
 
 /// A Monarch-issued task pushed to every player. The client shows it as
@@ -341,6 +406,10 @@ pub struct ServerWelcome {
     pub shard_id: ShardId,
     pub tick: Tick,
     pub tick_rate: u32,
+    /// The parallel Earth (realm) this session landed on — echoes the
+    /// `realm_id` the client asked for in `ClientHello`. The HUD shows it
+    /// as "Earth N" so players know which world they're in.
+    pub realm_id: u32,
 }
 
 /// Full world snapshot sent on initial join.

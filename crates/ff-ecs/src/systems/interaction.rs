@@ -434,6 +434,15 @@ pub fn process_action(
                 // Multi-recipient transfer is handled in ws.rs which has
                 // access to the session map and ECS world. We just return
                 // success here so ws.rs can perform the credit pass.
+                // Sharing the gains lifts this Monarch's welfare (offsets the
+                // automation hit to unrest + coexistence).
+                if let Ok(mut m) =
+                    world.get::<&mut crate::components::player::Monarch>(player_entity)
+                {
+                    m.welfare = (m.welfare
+                        + *amount as f32 * crate::components::player::WELFARE_PER_UBI_COIN)
+                        .min(100.0);
+                }
                 return ActionResult::Success(format!(
                     "UBI dispatch queued: {} coins each",
                     amount
@@ -471,6 +480,13 @@ pub fn process_action(
             // Credit target.
             if let Ok(mut w) = world.get::<&mut crate::components::player::Wallet>(te) {
                 w.0 = w.0.saturating_add(*amount);
+            }
+            // Sharing the gains lifts this Monarch's welfare (offsets the
+            // automation hit to unrest + coexistence).
+            if let Ok(mut m) = world.get::<&mut crate::components::player::Monarch>(player_entity) {
+                m.welfare = (m.welfare
+                    + *amount as f32 * crate::components::player::WELFARE_PER_UBI_COIN)
+                    .min(100.0);
             }
             // Monarch → Innovator support loop: if the recipient is an
             // Innovator, the grant is "research funding" — convert a
